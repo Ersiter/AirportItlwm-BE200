@@ -6,7 +6,8 @@ or validated on hardware. Do not install baseline CI artifacts as a BE200 driver
 
 The base is laobamac/itlwm commit `d695c971420cc8af0daa286dcd3297e8236c0a63`.
 See [BE200 development status](BE200.md) for the implementation and validation
-record. CI builds this repository on a standard Intel macOS runner, on demand.
+record. CI builds changed source or a requested configuration on a standard
+Intel macOS runner.
 There is no automatic installation or modification of OpenCore configurations.
 
 The following documentation describes the upstream adapter support and targets.

@@ -1,6 +1,16 @@
 name: BE200 Tahoe build
 
 on:
+  push:
+    branches: [be200-tahoe]
+    paths:
+      - 'itlwm/**'
+      - 'itl80211/**'
+      - 'AirportItlwm/**'
+      - 'include/**'
+      - 'itlwm.xcodeproj/**'
+      - 'scripts/**'
+      - '.github/workflows/main.yml'
   workflow_dispatch:
     inputs:
       configuration:
@@ -31,7 +41,7 @@ jobs:
           path: MacKernelSDK
       - name: Build Tahoe x86_64 kext
         env:
-          CONFIGURATION: ${{ inputs.configuration }}
+          CONFIGURATION: ${{ inputs.configuration || 'Debug' }}
         run: |
           set -euo pipefail
           mkdir -p logs artifacts
@@ -57,7 +67,7 @@ jobs:
       - name: Upload experimental build
         uses: actions/upload-artifact@v4
         with:
-          name: AirportItlwm-Tahoe-${{ inputs.configuration }}-${{ github.sha }}
+          name: AirportItlwm-Tahoe-${{ inputs.configuration || 'Debug' }}-${{ github.sha }}
           path: artifacts/
           retention-days: 7
           if-no-files-found: error
