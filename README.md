@@ -1,4 +1,17 @@
-[![Version](https://img.shields.io/github/v/tag/laobamac/itlwm?style=flat&label=Downloads)](https://github.com/laobamac/itlwm/releases)
+# AirportItlwm BE200 / Tahoe development
+
+This repository develops a source port for Intel BE200 (`8086:272B`) on the
+native macOS Tahoe AirportItlwm target. BE200 support is not yet implemented
+or validated on hardware. Do not install baseline CI artifacts as a BE200 driver.
+
+The base is laobamac/itlwm commit `d695c971420cc8af0daa286dcd3297e8236c0a63`.
+See [BE200 development status](BE200.md) for the implementation and validation
+record. CI builds this repository on a standard Intel macOS runner, on demand.
+There is no automatic installation or modification of OpenCore configurations.
+
+The following documentation describes the upstream adapter support and targets.
+
+[![Version](https://img.shields.io/github/v/tag/laobamac/itlwm?style=flat&label=Upstream)](https://github.com/laobamac/itlwm/releases)
 # itlwm
 
 **An Intel Wi-Fi Adapter Kernel Extension for macOS, based on the OpenBSD Project.**
