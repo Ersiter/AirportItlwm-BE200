@@ -2114,11 +2114,7 @@ iwx_read_pnvm(struct iwx_softc *sc)
     
     if (fw->pnvm_rawdata != NULL)
         iwx_pnvm_free(fw);
-    /*
-     * The prefix unfortunately includes a hyphen at the end, so
-     * don't add the dot here...
-     */
-    memcpy(fwname_copy, sc->sc_fwname, sizeof(fwname_copy));
+    strlcpy(fwname_copy, sc->sc_fwname, sizeof(fwname_copy));
     find = strrchr(sc->sc_fwname, '-');
     if (!find)
         goto out;
@@ -2193,6 +2189,8 @@ iwx_read_pnvm(struct iwx_softc *sc)
     }
     
     XYLog("PNVM parse done\n");
+    if (sc->sc_device_family >= IWX_DEVICE_FAMILY_BZ)
+        err = ENOENT;
     
 out:
     OSSafeReleaseNULL(fwData);
@@ -2208,24 +2206,28 @@ iwx_load_pnvm(struct iwx_softc *sc)
     
     /* if the SKU_ID is empty, there's nothing to do */
     if (!sc->sku_id[0] && !sc->sku_id[1] && !sc->sku_id[2])
-        return 0;
+        return sc->sc_device_family >= IWX_DEVICE_FAMILY_BZ ? ENOENT : 0;
     
     err = iwx_read_pnvm(sc);
     if (err)
         return err;
     sc->sc_init_complete &= ~IWX_PNVM_COMPLETE;
+    sc->sc_pnvm_status = UINT32_MAX;
     /* kick the doorbell */
     if (iwx_nic_lock(sc)) {
         iwx_write_umac_prph(sc, IWX_UREG_DOORBELL_TO_ISR6,
         IWX_UREG_DOORBELL_TO_ISR6_PNVM);
         iwx_nic_unlock(sc);
-    }
+    } else
+        return EBUSY;
     
     err = iwx_wait_notification(sc, &sc->sc_init_complete, IWX_PNVM_COMPLETE, 2000);
     if (err == ENXIO)
         return err;
     
     iwx_pnvm_free(&sc->sc_fw);
+    if (!err && sc->sc_pnvm_status != 0)
+        return EIO;
     
     return err;
 }
@@ -3931,7 +3933,7 @@ iwx_schedule_protect_session(struct iwx_softc *sc, struct iwx_node *in,
         .id_and_color =
             htole32(IWX_FW_CMD_ID_AND_COLOR(in->in_id, in->in_color)),
         .action = htole32(IWX_FW_CTXT_ACTION_ADD),
-        .duration_tu = htole32(duration * IEEE80211_DUR_TU),
+        .duration_tu = htole32(sc->sc_use_mld_api ? duration : duration * IEEE80211_DUR_TU),
     };
     int err;
     
@@ -8069,11 +8071,17 @@ iwx_config_umac_scan(struct iwx_softc *sc)
     scan_config->tx_chains = htole32(iwx_fw_valid_tx_ant(sc));
     scan_config->rx_chains = htole32(iwx_fw_valid_rx_ant(sc));
     
-    cmdver = iwx_lookup_cmd_ver(sc, IWX_LONG_GROUP, IWX_ADD_STA);
-    if (cmdver == IWX_FW_CMD_VER_UNKNOWN || cmdver < 12)
-        scan_config->bcast_sta_id = IWX_AUX_STA_ID;
-    else if (cmdver == IWX_FW_CMD_VER_UNKNOWN || cmdver < 5)
-        scan_config->bcast_sta_id = 0xFF;
+    if (sc->sc_use_mld_api) {
+        cmdver = iwx_lookup_cmd_ver(sc, IWX_LONG_GROUP, IWX_SCAN_CFG_CMD);
+        if (cmdver == IWX_FW_CMD_VER_UNKNOWN || cmdver < 5)
+            scan_config->bcast_sta_id = 0xFF;
+    } else {
+        cmdver = iwx_lookup_cmd_ver(sc, IWX_LONG_GROUP, IWX_ADD_STA);
+        if (cmdver == IWX_FW_CMD_VER_UNKNOWN || cmdver < 12)
+            scan_config->bcast_sta_id = IWX_AUX_STA_ID;
+        else if (cmdver == IWX_FW_CMD_VER_UNKNOWN || cmdver < 5)
+            scan_config->bcast_sta_id = 0xFF;
+    }
     
     hcmd.data[0] = scan_config;
     hcmd.len[0] = cmd_size;
@@ -11878,13 +11886,18 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                 break;
             }
                 
-            case IWX_WIDE_ID(IWX_REGULATORY_AND_NVM_GROUP, IWX_PNVM_INIT_COMPLETE_NTFY):
+            case IWX_WIDE_ID(IWX_REGULATORY_AND_NVM_GROUP, IWX_PNVM_INIT_COMPLETE_NTFY): {
+                struct iwl_pnvm_init_complete_ntfy *pnvm_ntf;
+                sc->sc_pnvm_status = UINT32_MAX;
+                if (iwx_rx_packet_payload_len(pkt) == sizeof(*pnvm_ntf)) {
+                    pnvm_ntf = (struct iwl_pnvm_init_complete_ntfy *)pkt->data;
+                    sc->sc_pnvm_status = le32toh(pnvm_ntf->status);
+                }
                 sc->sc_init_complete |= IWX_PNVM_COMPLETE;
                 getMainCommandGate()->commandWakeup(&sc->sc_init_complete);
-                struct iwl_pnvm_init_complete_ntfy *pnvm_ntf;
-                SYNC_RESP_STRUCT(pnvm_ntf, pkt, struct iwl_pnvm_init_complete_ntfy *);
-                XYLog("PNVM complete notification received with status 0x%0x\n", le32toh(pnvm_ntf->status));
+                XYLog("PNVM complete notification received with status 0x%0x\n", sc->sc_pnvm_status);
                 break;
+            }
                 
             case IWX_INIT_COMPLETE_NOTIF:
                 sc->sc_init_complete |= IWX_INIT_COMPLETE;

@@ -664,6 +664,7 @@ struct iwx_softc {
     struct iwx_dma_info pnvm_dram;
     struct iwx_dma_info pnvm_seg_dma[IWX_MAX_DRAM_ENTRY];
     int pnvm_seg_count;
+    uint32_t sc_pnvm_status;
     int sc_use_mld_api;
     int sc_mld_link_active;
     int sc_mld_phy_active;
