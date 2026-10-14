@@ -206,7 +206,7 @@ iwx_mld_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
         break;
     default:
         printf("%s: unsupported STA_CONFIG_CMD version %d\n",
-            DEVNAME(sc), cmd_ver);
+            sc->sc_dev.dv_xname, cmd_ver);
         return ENOTSUP;
     }
 
@@ -528,7 +528,7 @@ fail:
         cleanup_err = iwx_mld_deauth(sc);
         if (cleanup_err)
             XYLog("%s: MLD AUTH cleanup failed (%d), original error %d\n",
-                DEVNAME(sc), cleanup_err, err);
+                sc->sc_dev.dv_xname, cleanup_err, err);
     }
     return err;
 }

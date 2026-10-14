@@ -19,6 +19,17 @@
 #include "if_iwxapi86.h"
 #include <net80211/ieee80211_priv.h>
 
+static constexpr uint8_t IWL_SCAN_DWELL_ACTIVE = 10;
+static constexpr uint8_t IWL_SCAN_DWELL_PASSIVE = 110;
+static constexpr uint8_t IWL_SCAN_NUM_OF_FRAGS = 3;
+static constexpr uint8_t IWX_SCAN_ADWELL_DEFAULT_N_APS_SOCIAL = 10;
+static constexpr uint8_t IWX_SCAN_ADWELL_DEFAULT_LB_N_APS = 2;
+static constexpr uint8_t IWX_SCAN_ADWELL_DEFAULT_HB_N_APS = 8;
+static constexpr uint16_t IWX_SCAN_ADWELL_MAX_BUDGET_DIRECTED_SCAN = 100;
+static constexpr uint16_t IWX_SCAN_ADWELL_MAX_BUDGET_FULL_SCAN = 300;
+static constexpr uint8_t IWX_SCAN_ADWELL_N_APS_GO_FRIENDLY = 10;
+static constexpr uint8_t IWX_SCAN_ADWELL_N_APS_SOCIAL_CHS = 2;
+
 int ItlIwx::
 iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
 {
