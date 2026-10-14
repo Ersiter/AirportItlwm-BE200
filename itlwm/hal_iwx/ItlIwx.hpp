@@ -124,6 +124,7 @@
 
 #include "if_iwxreg.h"
 #include "if_iwxvar.h"
+#include "if_iwxmld.h"
 #include <sys/pcireg.h>
 
 #include <IOKit/network/IOEthernetController.h>
@@ -145,6 +146,17 @@ class ItlIwx : public ItlHalService, ItlDriverInfo, ItlDriverController {
     OSDeclareDefaultStructors(ItlIwx)
     
 public:
+    void iwx_mld_modify_link_fill(iwx_softc *, iwx_node *, iwx_mld_link_config_cmd *, int, int);
+    int iwx_mld_mac_ctxt_cmd(iwx_softc *, iwx_node *, uint32_t, int);
+    int iwx_mld_add_sta_cmd(iwx_softc *, iwx_node *, int);
+    int iwx_mld_rm_sta_cmd(iwx_softc *, iwx_node *);
+    int iwx_mld_auth(iwx_softc *);
+    int iwx_mld_run(iwx_softc *);
+    int iwx_mld_run_stop(iwx_softc *);
+    int iwx_mld_deauth(iwx_softc *);
+    int iwx_mld_set_key(iwx_softc *, ieee80211_node *, ieee80211_key *, int);
+    int iwx_mld_queue_cmd(iwx_softc *, int, int, int, uint32_t, uint64_t, uint64_t, uint16_t *, uint16_t *);
+    int iwx_umac_scan_v17(struct iwx_softc *, int);
     
     //kext
     void free() override;
@@ -219,6 +231,7 @@ public:
     int    iwx_set_default_calib(struct iwx_softc *, const void *);
     void    iwx_fw_info_free(struct iwx_fw_info *);
     void    iwx_pnvm_free(struct iwx_fw_info *);
+    void    iwx_free_pnvm_dma(struct iwx_softc *);
     int    iwx_read_firmware(struct iwx_softc *);
     int    iwx_read_pnvm(struct iwx_softc *);
     int     iwx_load_pnvm(struct iwx_softc *);
@@ -266,6 +279,7 @@ public:
     void    iwx_apm_config(struct iwx_softc *);
     int    iwx_apm_init(struct iwx_softc *);
     void    iwx_apm_stop(struct iwx_softc *);
+    void    iwx_sw_reset(struct iwx_softc *);
     int    iwx_allow_mcast(struct iwx_softc *);
     void    iwx_init_msix_hw(struct iwx_softc *);
     void    iwx_conf_msix_hw(struct iwx_softc *, int);

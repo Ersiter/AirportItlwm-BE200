@@ -1,8 +1,9 @@
 # AirportItlwm BE200 / Tahoe development
 
 This repository develops a source port for Intel BE200 (`8086:272B`) on the
-native macOS Tahoe AirportItlwm target. BE200 support is not yet implemented
-or validated on hardware. Do not install baseline CI artifacts as a BE200 driver.
+native macOS Tahoe AirportItlwm target. An experimental GL-86 single-link port
+is implemented but has not been validated on hardware. Baseline CI artifacts
+do not contain this port; use the source commit recorded with each artifact.
 
 The base is laobamac/itlwm commit `d695c971420cc8af0daa286dcd3297e8236c0a63`.
 See [BE200 development status](BE200.md) for the implementation and validation

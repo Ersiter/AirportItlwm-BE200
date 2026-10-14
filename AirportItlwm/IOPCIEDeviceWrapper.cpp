@@ -82,6 +82,18 @@ probe(IOService *provider, SInt32 *score)
     }
     if (isMatch) {
         XYLog("%s Found\n", __FUNCTION__);
+#ifdef AIRPORT_WCL
+        if (device->configRead16(kIOPCIConfigDeviceID) == 0x272b) {
+            IOReturn ret = device->configureInterrupts(kIOInterruptTypePCIMessagedX, 1, 1, 0);
+            if (ret != kIOReturnSuccess) {
+                XYLog("BE200 MSI-X allocation failed: 0x%x\n", ret);
+                fHalService->release();
+                fHalService = NULL;
+                return NULL;
+            }
+        } else
+#endif
+        {
         device->findPCICapability(PCI_CAP_ID_MSIX, &msixCap);
         if (msixCap)
             pciMsiXClearAndSet(device, msixCap, PCI_MSIX_FLAGS_ENABLE, 0);
@@ -93,6 +105,7 @@ probe(IOService *provider, SInt32 *score)
             fHalService->release();
             fHalService = NULL;
             return NULL;
+        }
         }
         this->pciNub = device;
         return this;

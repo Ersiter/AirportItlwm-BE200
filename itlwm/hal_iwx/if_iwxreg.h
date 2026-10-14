@@ -73,6 +73,10 @@
 
 /* maximmum number of DRAM map entries supported by FW */
 #define IWX_MAX_DRAM_ENTRY    64
+
+struct iwx_pnvm_info_dram {
+    uint64_t pnvm_img[IWX_MAX_DRAM_ENTRY];
+} __packed;
 #define IWX_CSR_CTXT_INFO_BA    0x40
 
 #define IWX_CSR_CTXT_INFO_BOOT_CTRL         0x0
@@ -596,6 +600,8 @@ enum iwx_fw_ini_allocation_id {
  *  1-0:  "Dash" (-) value, as in A-1, etc.
  */
 #define IWX_CSR_HW_REV              (0x028)
+#define IWX_CSR_FUNC_SCRATCH        (0x02c)
+#define IWX_CSR_FUNC_SCRATCH_INIT_VALUE (0x01010101)
 /*
 * RF ID revision info
 * Bit fields:
@@ -761,6 +767,13 @@ enum iwx_fw_ini_allocation_id {
  */
 #define IWX_CSR_GP_CNTRL_REG_FLAG_MAC_CLOCK_READY        (0x00000001)
 #define IWX_CSR_GP_CNTRL_REG_FLAG_INIT_DONE              (0x00000004)
+#define IWX_CSR_GP_CNTRL_REG_FLAG_MAC_INIT               (1U << 6)
+#define IWX_CSR_GP_CNTRL_REG_FLAG_ROM_START              (1U << 7)
+#define IWX_CSR_GP_CNTRL_REG_FLAG_MAC_STATUS             (1U << 20)
+#define IWX_CSR_GP_CNTRL_REG_FLAG_BZ_MAC_ACCESS_REQ      (1U << 21)
+#define IWX_CSR_GP_CNTRL_REG_FLAG_BUS_MASTER_DISABLE_STATUS (1U << 28)
+#define IWX_CSR_GP_CNTRL_REG_FLAG_BUS_MASTER_DISABLE_REQ (1U << 29)
+#define IWX_CSR_GP_CNTRL_REG_FLAG_SW_RESET               (1U << 31)
 #define IWX_CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ         (0x00000008)
 #define IWX_CSR_GP_CNTRL_REG_FLAG_GOING_TO_SLEEP         (0x00000010)
 
@@ -1101,6 +1114,7 @@ enum iwx_fw_ini_allocation_id {
  * 11-8:  queue selector
  */
 #define IWX_HBUS_TARG_WRPTR         (IWX_HBUS_BASE+0x060)
+#define IWX_HBUS_TARG_WRPTR_RX_Q(q) (((q) + 512) << 16)
 
 /**********************************************************
  * CSR values
@@ -1153,6 +1167,7 @@ enum iwx_msix_hw_int_causes {
     IWX_MSIX_HW_INT_CAUSES_REG_WAKEUP    = (1 << 1),
     IWX_MSIX_HW_INT_CAUSES_REG_IPC        = (1 << 1),
     IWX_MSIX_HW_INT_CAUSES_REG_IML        = (1 << 2),
+    IWX_MSIX_HW_INT_CAUSES_REG_RESET_DONE = (1 << 2),
     IWX_MSIX_HW_INT_CAUSES_REG_SW_ERR_V2    = (1 << 5),
     IWX_MSIX_HW_INT_CAUSES_REG_CT_KILL    = (1 << 6),
     IWX_MSIX_HW_INT_CAUSES_REG_RF_KILL    = (1 << 7),
@@ -1175,6 +1190,7 @@ enum iwx_msix_ivar_for_cause {
     IWX_MSIX_IVAR_CAUSE_REG_ALIVE        = 0x10,
     IWX_MSIX_IVAR_CAUSE_REG_WAKEUP        = 0x11,
     IWX_MSIX_IVAR_CAUSE_REG_IML        = 0x12,
+    IWX_MSIX_IVAR_CAUSE_REG_SW_ERR_V2 = 0x15,
     IWX_MSIX_IVAR_CAUSE_REG_CT_KILL        = 0x16,
     IWX_MSIX_IVAR_CAUSE_REG_RF_KILL        = 0x17,
     IWX_MSIX_IVAR_CAUSE_REG_PERIODIC    = 0x18,
@@ -1397,6 +1413,7 @@ enum iwx_msix_ivar_for_cause {
 #define IWX_UCODE_TLV_CAPA_CS_MODIFY                49
 #define IWX_UCODE_TLV_CAPA_SET_LTR_GEN2             50
 #define IWX_UCODE_TLV_CAPA_SET_PPAG                 52
+#define IWX_UCODE_TLV_CAPA_FRAGMENTED_PNVM_IMG       32
 #define IWX_UCODE_TLV_CAPA_SESSION_PROT_CMD         54
 #define IWX_UCODE_TLV_CAPA_EXTENDED_DTS_MEASURE        64
 #define IWX_UCODE_TLV_CAPA_SHORT_PM_TIMEOUTS        65
@@ -2383,6 +2400,13 @@ struct iwx_alive_resp_v5 {
     struct iwx_umac_alive umac_data;
     struct iwx_sku_id sku_id;
 } __packed; /* UCODE_ALIVE_NTFY_API_S_VER_5 */ 
+
+struct iwx_alive_resp_v6 {
+    struct iwx_alive_resp_v5 common;
+    uint64_t imr_base_addr;
+    uint32_t imr_size;
+    uint32_t imr_enabled;
+} __packed;
 
 #define IWX_SOC_CONFIG_CMD_FLAGS_DISCRETE    (1 << 0)
 #define IWX_SOC_CONFIG_CMD_FLAGS_LOW_LATENCY    (1 << 1)

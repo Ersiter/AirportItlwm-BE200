@@ -147,6 +147,8 @@
 		35CBE6A0251CB89700435CBC /* zutil.c in Sources */ = {isa = PBXBuildFile; fileRef = F8FA0EED2501E8C100B1822E /* zutil.c */; };
 		35CBE6A1251CB89700435CBC /* ItlHalService.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D364F624F93AFD0029340B /* ItlHalService.cpp */; };
 		35CBE6A2251CB89700435CBC /* ItlIwx.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D6CD642442E8F200D2A454 /* ItlIwx.cpp */; };
+		12ECDC36BDA11A6815179B8D /* ItlIwxApi86.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2FCFFCACFACE2B6B898E0941 /* ItlIwxApi86.cpp */; };
+		A23591609721807BEB08060E /* ItlIwxMld.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6805B64BC9316BE1F210EADC /* ItlIwxMld.cpp */; };
 		35CBE6A3251CB89700435CBC /* utils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08BF23FCD4E2009FBA6C /* utils.cpp */; };
 		35CBE6A4251CB89700435CBC /* fw.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08BD23FCD314009FBA6C /* fw.cpp */; };
 		35CBE6A5251CB89700435CBC /* io.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08C123FCD999009FBA6C /* io.cpp */; };
@@ -221,6 +223,8 @@
 		35CBE70A251CB8BF00435CBC /* zutil.c in Sources */ = {isa = PBXBuildFile; fileRef = F8FA0EED2501E8C100B1822E /* zutil.c */; };
 		35CBE70B251CB8BF00435CBC /* ItlHalService.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D364F624F93AFD0029340B /* ItlHalService.cpp */; };
 		35CBE70C251CB8BF00435CBC /* ItlIwx.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D6CD642442E8F200D2A454 /* ItlIwx.cpp */; };
+		E54F8782330C9C1457C7DA3D /* ItlIwxApi86.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2FCFFCACFACE2B6B898E0941 /* ItlIwxApi86.cpp */; };
+		3C0BDC9B097B306A022AC0E2 /* ItlIwxMld.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6805B64BC9316BE1F210EADC /* ItlIwxMld.cpp */; };
 		35CBE70D251CB8BF00435CBC /* utils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08BF23FCD4E2009FBA6C /* utils.cpp */; };
 		35CBE70E251CB8BF00435CBC /* fw.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08BD23FCD314009FBA6C /* fw.cpp */; };
 		35CBE70F251CB8BF00435CBC /* io.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08C123FCD999009FBA6C /* io.cpp */; };
@@ -295,6 +299,8 @@
 		35CBE775251CB8CA00435CBC /* zutil.c in Sources */ = {isa = PBXBuildFile; fileRef = F8FA0EED2501E8C100B1822E /* zutil.c */; };
 		35CBE776251CB8CA00435CBC /* ItlHalService.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D364F624F93AFD0029340B /* ItlHalService.cpp */; };
 		35CBE777251CB8CA00435CBC /* ItlIwx.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D6CD642442E8F200D2A454 /* ItlIwx.cpp */; };
+		859DFE87DDBE5405604C3747 /* ItlIwxApi86.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2FCFFCACFACE2B6B898E0941 /* ItlIwxApi86.cpp */; };
+		2BA96DCF9727C12B03821E3F /* ItlIwxMld.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6805B64BC9316BE1F210EADC /* ItlIwxMld.cpp */; };
 		35CBE778251CB8CA00435CBC /* utils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08BF23FCD4E2009FBA6C /* utils.cpp */; };
 		35CBE779251CB8CA00435CBC /* fw.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08BD23FCD314009FBA6C /* fw.cpp */; };
 		35CBE77A251CB8CA00435CBC /* io.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08C123FCD999009FBA6C /* io.cpp */; };
@@ -507,6 +513,8 @@
 		F897ECFC266EFF93005EE8F7 /* zutil.c in Sources */ = {isa = PBXBuildFile; fileRef = F8FA0EED2501E8C100B1822E /* zutil.c */; };
 		F897ECFD266EFF93005EE8F7 /* ItlHalService.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D364F624F93AFD0029340B /* ItlHalService.cpp */; };
 		F897ECFE266EFF93005EE8F7 /* ItlIwx.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D6CD642442E8F200D2A454 /* ItlIwx.cpp */; };
+		CC0EEDFD28CA17A736929173 /* ItlIwxApi86.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2FCFFCACFACE2B6B898E0941 /* ItlIwxApi86.cpp */; };
+		E1FFB2245384D00D34A2C3EA /* ItlIwxMld.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6805B64BC9316BE1F210EADC /* ItlIwxMld.cpp */; };
 		F897ECFF266EFF93005EE8F7 /* utils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08BF23FCD4E2009FBA6C /* utils.cpp */; };
 		F897ED00266EFF93005EE8F7 /* fw.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08BD23FCD314009FBA6C /* fw.cpp */; };
 		F897ED01266EFF93005EE8F7 /* io.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08C123FCD999009FBA6C /* io.cpp */; };
@@ -551,6 +559,8 @@
 		F89B6BEE2502315B000F77FF /* scan.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08D523FCF4D7009FBA6C /* scan.cpp */; };
 		F89B6BEF2502315B000F77FF /* ItlIwm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8AF3A2F24F9F35B008911C1 /* ItlIwm.cpp */; };
 		F89B6BF025023162000F77FF /* ItlIwx.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D6CD642442E8F200D2A454 /* ItlIwx.cpp */; };
+		4C2A8256483DFF4572B0B6C8 /* ItlIwxApi86.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2FCFFCACFACE2B6B898E0941 /* ItlIwxApi86.cpp */; };
+		B9345A3CE8712AA37ABE46C9 /* ItlIwxMld.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6805B64BC9316BE1F210EADC /* ItlIwxMld.cpp */; };
 		F89B6BF12502316A000F77FF /* ItlHalService.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D364F624F93AFD0029340B /* ItlHalService.cpp */; };
 		F89B6BF3250231E3000F77FF /* FwBinary.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 5076FA7F24CC71E40011B2BB /* FwBinary.cpp */; };
 		F89B6BF5250231E3000F77FF /* ieee80211_proto.c in Sources */ = {isa = PBXBuildFile; fileRef = F8C2EC2F24080319007A9422 /* ieee80211_proto.c */; };
@@ -682,6 +692,8 @@
 		F8AE653B285471560085B4CF /* zutil.c in Sources */ = {isa = PBXBuildFile; fileRef = F8FA0EED2501E8C100B1822E /* zutil.c */; };
 		F8AE653C285471560085B4CF /* ItlHalService.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D364F624F93AFD0029340B /* ItlHalService.cpp */; };
 		F8AE653D285471560085B4CF /* ItlIwx.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D6CD642442E8F200D2A454 /* ItlIwx.cpp */; };
+		5F7022FA9CA57DE560758E47 /* ItlIwxApi86.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2FCFFCACFACE2B6B898E0941 /* ItlIwxApi86.cpp */; };
+		8E75689B1CDEB7A06A56A12B /* ItlIwxMld.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6805B64BC9316BE1F210EADC /* ItlIwxMld.cpp */; };
 		F8AE653E285471560085B4CF /* utils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08BF23FCD4E2009FBA6C /* utils.cpp */; };
 		F8AE653F285471560085B4CF /* fw.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08BD23FCD314009FBA6C /* fw.cpp */; };
 		F8AE6540285471560085B4CF /* io.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08C123FCD999009FBA6C /* io.cpp */; };
@@ -772,6 +784,8 @@
 		F8B210ED2A2EC2680043ECBD /* zutil.c in Sources */ = {isa = PBXBuildFile; fileRef = F8FA0EED2501E8C100B1822E /* zutil.c */; };
 		F8B210EE2A2EC2680043ECBD /* ItlHalService.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D364F624F93AFD0029340B /* ItlHalService.cpp */; };
 		F8B210EF2A2EC2680043ECBD /* ItlIwx.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D6CD642442E8F200D2A454 /* ItlIwx.cpp */; };
+		1BF6EBAC01596D2D096A673F /* ItlIwxApi86.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2FCFFCACFACE2B6B898E0941 /* ItlIwxApi86.cpp */; };
+		3A9DB8B460994F213E3BE28D /* ItlIwxMld.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6805B64BC9316BE1F210EADC /* ItlIwxMld.cpp */; };
 		F8B210F02A2EC2680043ECBD /* utils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08BF23FCD4E2009FBA6C /* utils.cpp */; };
 		F8B210F12A2EC2680043ECBD /* fw.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08BD23FCD314009FBA6C /* fw.cpp */; };
 		F8B210F22A2EC2680043ECBD /* io.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08C123FCD999009FBA6C /* io.cpp */; };
@@ -940,6 +954,8 @@
 		F8D94CDB2B9ABFE20081A3C4 /* zutil.c in Sources */ = {isa = PBXBuildFile; fileRef = F8FA0EED2501E8C100B1822E /* zutil.c */; };
 		F8D94CDC2B9ABFE20081A3C4 /* ItlHalService.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D364F624F93AFD0029340B /* ItlHalService.cpp */; };
 		F8D94CDD2B9ABFE20081A3C4 /* ItlIwx.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D6CD642442E8F200D2A454 /* ItlIwx.cpp */; };
+		05CE876E5DD1273BACA2257F /* ItlIwxApi86.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2FCFFCACFACE2B6B898E0941 /* ItlIwxApi86.cpp */; };
+		14BA3EB9CA00385AEA097AC1 /* ItlIwxMld.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6805B64BC9316BE1F210EADC /* ItlIwxMld.cpp */; };
 		F8D94CDE2B9ABFE20081A3C4 /* utils.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08BF23FCD4E2009FBA6C /* utils.cpp */; };
 		F8D94CDF2B9ABFE20081A3C4 /* fw.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08BD23FCD314009FBA6C /* fw.cpp */; };
 		F8D94CE02B9ABFE20081A3C4 /* io.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 024A08C123FCD999009FBA6C /* io.cpp */; };
@@ -961,6 +977,8 @@
 		F8E49A14249B923500BE6868 /* ItlNetworkUserClient.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8E49A12249B923500BE6868 /* ItlNetworkUserClient.cpp */; };
 		F8E49A15249B923500BE6868 /* ItlNetworkUserClient.hpp in Headers */ = {isa = PBXBuildFile; fileRef = F8E49A13249B923500BE6868 /* ItlNetworkUserClient.hpp */; };
 		F8ED134424FBB5B70068C831 /* ItlIwx.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8D6CD642442E8F200D2A454 /* ItlIwx.cpp */; };
+		C26F731CAE3E760DAA702821 /* ItlIwxApi86.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2FCFFCACFACE2B6B898E0941 /* ItlIwxApi86.cpp */; };
+		D572A7717906063013656EEE /* ItlIwxMld.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 6805B64BC9316BE1F210EADC /* ItlIwxMld.cpp */; };
 		F8F7EA3A252D834600520FD4 /* IO80211VirtualInterface.h in Headers */ = {isa = PBXBuildFile; fileRef = F8F7EA34252D834500520FD4 /* IO80211VirtualInterface.h */; };
 		F8F7EA3B252D834600520FD4 /* IO80211VirtualInterface.h in Headers */ = {isa = PBXBuildFile; fileRef = F8F7EA34252D834500520FD4 /* IO80211VirtualInterface.h */; };
 		F8F7EA3C252D834600520FD4 /* IO80211VirtualInterface.h in Headers */ = {isa = PBXBuildFile; fileRef = F8F7EA34252D834500520FD4 /* IO80211VirtualInterface.h */; };
@@ -1274,6 +1292,10 @@
 		F8D6CD542442E0D100D2A454 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		F8D6CD622442E8F200D2A454 /* ItlIwx.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = ItlIwx.hpp; sourceTree = "<group>"; };
 		F8D6CD642442E8F200D2A454 /* ItlIwx.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ItlIwx.cpp; sourceTree = "<group>"; };
+		2FCFFCACFACE2B6B898E0941 /* ItlIwxApi86.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ItlIwxApi86.cpp; sourceTree = "<group>"; };
+		6805B64BC9316BE1F210EADC /* ItlIwxMld.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ItlIwxMld.cpp; sourceTree = "<group>"; };
+		B128BCB3B843CA6787661F3E /* if_iwxapi86.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = if_iwxapi86.h; sourceTree = "<group>"; };
+		A41344A0A23466920502E728 /* if_iwxmld.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = if_iwxmld.h; sourceTree = "<group>"; };
 		F8D6CD6C2442F20C00D2A454 /* if_iwxreg.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = if_iwxreg.h; sourceTree = "<group>"; };
 		F8D6CD6D2442F20C00D2A454 /* if_iwxvar.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = if_iwxvar.h; sourceTree = "<group>"; };
 		F8D76361244F21BB00DEA040 /* pm.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = pm.cpp; sourceTree = "<group>"; };
@@ -1686,6 +1708,10 @@
 				F8D6CD6D2442F20C00D2A454 /* if_iwxvar.h */,
 				F8D6CD622442E8F200D2A454 /* ItlIwx.hpp */,
 				F8D6CD642442E8F200D2A454 /* ItlIwx.cpp */,
+				2FCFFCACFACE2B6B898E0941 /* ItlIwxApi86.cpp */,
+				6805B64BC9316BE1F210EADC /* ItlIwxMld.cpp */,
+				B128BCB3B843CA6787661F3E /* if_iwxapi86.h */,
+				A41344A0A23466920502E728 /* if_iwxmld.h */,
 			);
 			path = hal_iwx;
 			sourceTree = "<group>";
@@ -2635,6 +2661,8 @@
 				F8A4307325062CE300EA545E /* zutil.c in Sources */,
 				F8294FE424FCBF5100239253 /* FwBinary.cpp in Sources */,
 				F8ED134424FBB5B70068C831 /* ItlIwx.cpp in Sources */,
+				D572A7717906063013656EEE /* ItlIwxMld.cpp in Sources */,
+				C26F731CAE3E760DAA702821 /* ItlIwxApi86.cpp in Sources */,
 				F8C772922443439A00A1B8A0 /* compat.cpp in Sources */,
 				024A085223FCBC6C009FBA6C /* poly1305.c in Sources */,
 				024A083023FCBC6C009FBA6C /* sha2.c in Sources */,
@@ -2764,6 +2792,8 @@
 				35CBE6A0251CB89700435CBC /* zutil.c in Sources */,
 				35CBE6A1251CB89700435CBC /* ItlHalService.cpp in Sources */,
 				35CBE6A2251CB89700435CBC /* ItlIwx.cpp in Sources */,
+				A23591609721807BEB08060E /* ItlIwxMld.cpp in Sources */,
+				12ECDC36BDA11A6815179B8D /* ItlIwxApi86.cpp in Sources */,
 				35CBE6A3251CB89700435CBC /* utils.cpp in Sources */,
 				35CBE6A4251CB89700435CBC /* fw.cpp in Sources */,
 				35CBE6A5251CB89700435CBC /* io.cpp in Sources */,
@@ -2844,6 +2874,8 @@
 				35CBE70A251CB8BF00435CBC /* zutil.c in Sources */,
 				35CBE70B251CB8BF00435CBC /* ItlHalService.cpp in Sources */,
 				35CBE70C251CB8BF00435CBC /* ItlIwx.cpp in Sources */,
+				3C0BDC9B097B306A022AC0E2 /* ItlIwxMld.cpp in Sources */,
+				E54F8782330C9C1457C7DA3D /* ItlIwxApi86.cpp in Sources */,
 				35CBE70D251CB8BF00435CBC /* utils.cpp in Sources */,
 				35CBE70E251CB8BF00435CBC /* fw.cpp in Sources */,
 				35CBE70F251CB8BF00435CBC /* io.cpp in Sources */,
@@ -2924,6 +2956,8 @@
 				35CBE775251CB8CA00435CBC /* zutil.c in Sources */,
 				35CBE776251CB8CA00435CBC /* ItlHalService.cpp in Sources */,
 				35CBE777251CB8CA00435CBC /* ItlIwx.cpp in Sources */,
+				2BA96DCF9727C12B03821E3F /* ItlIwxMld.cpp in Sources */,
+				859DFE87DDBE5405604C3747 /* ItlIwxApi86.cpp in Sources */,
 				35CBE778251CB8CA00435CBC /* utils.cpp in Sources */,
 				35CBE779251CB8CA00435CBC /* fw.cpp in Sources */,
 				35CBE77A251CB8CA00435CBC /* io.cpp in Sources */,
@@ -3003,6 +3037,8 @@
 				F897ECFC266EFF93005EE8F7 /* zutil.c in Sources */,
 				F897ECFD266EFF93005EE8F7 /* ItlHalService.cpp in Sources */,
 				F897ECFE266EFF93005EE8F7 /* ItlIwx.cpp in Sources */,
+				E1FFB2245384D00D34A2C3EA /* ItlIwxMld.cpp in Sources */,
+				CC0EEDFD28CA17A736929173 /* ItlIwxApi86.cpp in Sources */,
 				F897ECFF266EFF93005EE8F7 /* utils.cpp in Sources */,
 				F897ED00266EFF93005EE8F7 /* fw.cpp in Sources */,
 				F897ED01266EFF93005EE8F7 /* io.cpp in Sources */,
@@ -3085,6 +3121,8 @@
 				F89B6C1F250231E4000F77FF /* zutil.c in Sources */,
 				F89B6BF12502316A000F77FF /* ItlHalService.cpp in Sources */,
 				F89B6BF025023162000F77FF /* ItlIwx.cpp in Sources */,
+				B9345A3CE8712AA37ABE46C9 /* ItlIwxMld.cpp in Sources */,
+				4C2A8256483DFF4572B0B6C8 /* ItlIwxApi86.cpp in Sources */,
 				F89B6BE22502315B000F77FF /* utils.cpp in Sources */,
 				F89B6BE32502315B000F77FF /* fw.cpp in Sources */,
 				F89B6BE42502315B000F77FF /* io.cpp in Sources */,
@@ -3164,6 +3202,8 @@
 				F8AE653B285471560085B4CF /* zutil.c in Sources */,
 				F8AE653C285471560085B4CF /* ItlHalService.cpp in Sources */,
 				F8AE653D285471560085B4CF /* ItlIwx.cpp in Sources */,
+				8E75689B1CDEB7A06A56A12B /* ItlIwxMld.cpp in Sources */,
+				5F7022FA9CA57DE560758E47 /* ItlIwxApi86.cpp in Sources */,
 				F8AE653E285471560085B4CF /* utils.cpp in Sources */,
 				F8AE653F285471560085B4CF /* fw.cpp in Sources */,
 				F8AE6540285471560085B4CF /* io.cpp in Sources */,
@@ -3248,6 +3288,8 @@
 				F8B210ED2A2EC2680043ECBD /* zutil.c in Sources */,
 				F8B210EE2A2EC2680043ECBD /* ItlHalService.cpp in Sources */,
 				F8B210EF2A2EC2680043ECBD /* ItlIwx.cpp in Sources */,
+				3A9DB8B460994F213E3BE28D /* ItlIwxMld.cpp in Sources */,
+				1BF6EBAC01596D2D096A673F /* ItlIwxApi86.cpp in Sources */,
 				F8B210F02A2EC2680043ECBD /* utils.cpp in Sources */,
 				F8B210F12A2EC2680043ECBD /* fw.cpp in Sources */,
 				F8B210F22A2EC2680043ECBD /* io.cpp in Sources */,
@@ -3330,6 +3372,8 @@
 				F8D94CDB2B9ABFE20081A3C4 /* zutil.c in Sources */,
 				F8D94CDC2B9ABFE20081A3C4 /* ItlHalService.cpp in Sources */,
 				F8D94CDD2B9ABFE20081A3C4 /* ItlIwx.cpp in Sources */,
+				14BA3EB9CA00385AEA097AC1 /* ItlIwxMld.cpp in Sources */,
+				05CE876E5DD1273BACA2257F /* ItlIwxApi86.cpp in Sources */,
 				F8D94CDE2B9ABFE20081A3C4 /* utils.cpp in Sources */,
 				F8D94CDF2B9ABFE20081A3C4 /* fw.cpp in Sources */,
 				F8D94CE02B9ABFE20081A3C4 /* io.cpp in Sources */,
@@ -3412,6 +3456,8 @@
 				F8D94CDB2B9ABFE20081A3C4 /* zutil.c in Sources */,
 				F8D94CDC2B9ABFE20081A3C4 /* ItlHalService.cpp in Sources */,
 				F8D94CDD2B9ABFE20081A3C4 /* ItlIwx.cpp in Sources */,
+				14BA3EB9CA00385AEA097AC1 /* ItlIwxMld.cpp in Sources */,
+				05CE876E5DD1273BACA2257F /* ItlIwxApi86.cpp in Sources */,
 				F8D94CDE2B9ABFE20081A3C4 /* utils.cpp in Sources */,
 				F8D94CDF2B9ABFE20081A3C4 /* fw.cpp in Sources */,
 				F8D94CE02B9ABFE20081A3C4 /* io.cpp in Sources */,

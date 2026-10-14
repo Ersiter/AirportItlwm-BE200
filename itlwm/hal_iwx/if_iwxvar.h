@@ -125,6 +125,7 @@
 #define IWL_CFG_MAC_TYPE_SOF        0x43
 #define IWL_CFG_MAC_TYPE_MA        0x44
 #define IWL_CFG_MAC_TYPE_BZ        0x46
+#define IWL_CFG_MAC_TYPE_GL        0x47
 
 #define IWL_CFG_RF_TYPE_TH        0x105
 #define IWL_CFG_RF_TYPE_TH1        0x108
@@ -652,6 +653,7 @@ struct iwx_softc {
 	int sc_device_family;
 #define IWX_DEVICE_FAMILY_22000	1
 #define IWX_DEVICE_FAMILY_AX210	2
+#define IWX_DEVICE_FAMILY_BZ	3
 
 	struct iwx_dma_info ctxt_info_dma;
 	struct iwx_self_init_dram init_dram;
@@ -660,6 +662,12 @@ struct iwx_softc {
     struct iwx_dma_info prph_info_dma;
     struct iwx_dma_info iml_dma;
     struct iwx_dma_info pnvm_dram;
+    struct iwx_dma_info pnvm_seg_dma[IWX_MAX_DRAM_ENTRY];
+    int pnvm_seg_count;
+    int sc_use_mld_api;
+    int sc_mld_link_active;
+    int sc_mld_phy_active;
+    uint16_t sc_mld_txq_tidmask;
 
 	int sc_fw_chunk_done;
 	int sc_init_complete;

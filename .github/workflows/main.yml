@@ -39,6 +39,8 @@ jobs:
           repository: acidanthera/MacKernelSDK
           ref: 3f750085caa17ec3a7880f11c11bf4f48cd6a164
           path: MacKernelSDK
+      - name: Expose public Tahoe MSI-X API
+        run: python3 scripts/prepare_tahoe_sdk.py
       - name: Build Tahoe x86_64 kext
         env:
           CONFIGURATION: ${{ inputs.configuration || 'Debug' }}
@@ -56,6 +58,7 @@ jobs:
           shasum -a 256 "$product/Contents/MacOS/AirportItlwm" > artifacts/SHA256.txt
           dwarfdump --uuid "$product/Contents/MacOS/AirportItlwm" > artifacts/UUID.txt
           cp logs/source-commit.txt artifacts/
+          cp LICENSE iwlwifi-firmware-license BE200.md artifacts/
           ditto -c -k --keepParent "$product" artifacts/AirportItlwm-Tahoe.zip
       - name: Upload compiler logs
         if: always()
