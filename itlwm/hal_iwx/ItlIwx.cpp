@@ -1895,6 +1895,8 @@ iwx_read_firmware(struct iwx_softc *sc)
     
 parse_out:
     if (err) {
+        sc->sc_pcitag->setProperty("AirportItlwm-FirmwareParseTLV", tlv_type, 32);
+        sc->sc_pcitag->setProperty("AirportItlwm-FirmwareParseError", (uint64_t)err, 32);
         XYLog("%s: firmware parse error %d, "
               "section type %d\n", DEVNAME(sc), err, tlv_type);
     }
@@ -5190,18 +5192,22 @@ iwx_load_ucode_wait_alive(struct iwx_softc *sc)
     XYLog("%s\n", __FUNCTION__);
     int err;
     
+    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareStage", "read-firmware");
     err = iwx_read_firmware(sc);
     if (err)
         return err;
     
+    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareStage", "start-firmware");
     err = iwx_start_fw(sc);
     if (err)
         return err;
     
+    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareStage", "load-pnvm");
     err = iwx_load_pnvm(sc);
     if (err)
         return err;
     
+    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareStage", "post-alive");
     iwx_post_alive(sc);
     
     return 0;
@@ -5245,6 +5251,7 @@ iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
      * Send init config command to mark that we are sending NVM
      * access commands
      */
+    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareStage", "init-commands");
     err = iwx_send_cmd_pdu(sc, IWX_WIDE_ID(IWX_SYSTEM_GROUP,
                                            IWX_INIT_EXTENDED_CFG_CMD), IWX_CMD_SEND_IN_RFKILL, sizeof(init_cfg), &init_cfg);
     if (err)
@@ -5261,6 +5268,7 @@ iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
         return err;
 
     if (readnvm) {
+        sc->sc_pcitag->setProperty("AirportItlwm-FirmwareStage", "read-nvm");
         err = iwx_nvm_get(sc);
         if (err) {
             XYLog("%s: failed to read nvm\n", DEVNAME(sc));
@@ -5271,6 +5279,7 @@ iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
                 sc->sc_nvm.hw_addr);
         
     }
+    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareStage", "init-ready");
     return 0;
 }
 

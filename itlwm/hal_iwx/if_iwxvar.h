@@ -226,7 +226,8 @@ struct iwx_tx_radiotap_header {
 	 (1 << IEEE80211_RADIOTAP_RATE) |				\
 	 (1 << IEEE80211_RADIOTAP_CHANNEL))
 
-#define IWX_UCODE_SECT_MAX 60
+/* GL-86 contains 70 sections, including the CPU and paging separators. */
+#define IWX_UCODE_SECT_MAX 70
 
 /*
  * fw_status is used to determine if we've already parsed the firmware file

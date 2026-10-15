@@ -41,6 +41,8 @@ jobs:
           path: MacKernelSDK
       - name: Expose public Tahoe MSI-X API
         run: python3 scripts/prepare_tahoe_sdk.py
+      - name: Check real firmware section storage
+        run: python3 scripts/check_firmware_sections.py
       - name: Build Tahoe x86_64 kext
         env:
           CONFIGURATION: ${{ inputs.configuration || 'Debug' }}
