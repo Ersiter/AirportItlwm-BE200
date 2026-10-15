@@ -90,13 +90,13 @@ static inline int fls64(UInt64 x)
 
 static inline const char *reverse_strchr(const char *s, int c)
 {
-    char *find = NULL;
-    const char *ss = s;
-    
-    while (*ss != '\0' && (find = strchr(ss, c))) {
-        ss = ++find;
-    }
-    return ss;
+    const char *find = NULL;
+
+    do {
+        if (*s == (char)c)
+            find = s;
+    } while (*s++ != '\0');
+    return find;
 }
 
 #ifndef strrchr

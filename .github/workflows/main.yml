@@ -43,6 +43,8 @@ jobs:
         run: python3 scripts/prepare_tahoe_sdk.py
       - name: Check real firmware section storage
         run: python3 scripts/check_firmware_sections.py
+      - name: Check PNVM resource names
+        run: python3 scripts/check_pnvm_names.py
       - name: Build Tahoe x86_64 kext
         env:
           CONFIGURATION: ${{ inputs.configuration || 'Debug' }}
