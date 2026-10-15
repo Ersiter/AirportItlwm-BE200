@@ -17,6 +17,7 @@ program = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef __APPLE__
 static size_t strlcpy(char *dest, const char *src, size_t capacity) {
     size_t length = strlen(src);
     if (capacity) {
@@ -26,6 +27,7 @@ static size_t strlcpy(char *dest, const char *src, size_t capacity) {
     }
     return length;
 }
+#endif
 FUNCTION
 #define strrchr(x, y) reverse_strchr((x), (y))
 static void require(int success, const char *message) {
