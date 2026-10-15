@@ -147,6 +147,7 @@ bool AirportItlwm::init(OSDictionary *properties)
 
 IOService* AirportItlwm::probe(IOService *provider, SInt32 *score)
 {
+    provider->setProperty("AirportItlwm-StartupStage", "controller-probe");
     XYLog("%s\n", __PRETTY_FUNCTION__);
     IOPCIEDeviceWrapper *wrapper = OSDynamicCast(IOPCIEDeviceWrapper, provider);
     if (!wrapper) {
@@ -168,6 +169,9 @@ IOService* AirportItlwm::probe(IOService *provider, SInt32 *score)
 bool AirportItlwm::
 initCCLogs()
 {
+#ifdef AIRPORT_WCL
+    getProvider()->setProperty("AirportItlwm-StartupStage", "cc-driver-pipe");
+#endif
     CCPipeOptions driverLogOptions = { 0 };
     driverLogOptions.pipe_type = 0;
     driverLogOptions.log_data_type = 1;
@@ -192,6 +196,7 @@ initCCLogs()
     if (!driverLogPipeStarted)
         return false;
     CCStreamOptions loggerOptions = {};
+    getProvider()->setProperty("AirportItlwm-StartupStage", "cc-driver-logger");
     CCStream *logger = CCStream::withPipeAndName(driverLogPipe, "AirportItlwm", &loggerOptions);
     driverLogger = OSDynamicCast(CCLogStream, logger);
     if (!driverLogger) {
@@ -201,6 +206,9 @@ initCCLogs()
 #endif
 
     memset(&driverLogOptions, 0, sizeof(driverLogOptions));
+#ifdef AIRPORT_WCL
+    getProvider()->setProperty("AirportItlwm-StartupStage", "cc-datapath-pipe");
+#endif
     driverLogOptions.pipe_type = 0;
     driverLogOptions.log_data_type = 0;
     driverLogOptions.pipe_size = 0x200000;
@@ -224,6 +232,9 @@ initCCLogs()
 
     memset(&driverLogOptions, 0, sizeof(driverLogOptions));
     driverLogOptions.pipe_type = 0x200000001;
+#ifdef AIRPORT_WCL
+    getProvider()->setProperty("AirportItlwm-StartupStage", "cc-snapshot-pipe");
+#endif
     driverLogOptions.log_data_type = 2;
     strlcpy(driverLogOptions.file_name, "StateSnapshots", sizeof(driverLogOptions.file_name));
     strlcpy(driverLogOptions.name, "0", sizeof(driverLogOptions.name));
@@ -243,6 +254,7 @@ initCCLogs()
     faultReportOptions.stream_type = 1;
     faultReportOptions.console_level = 0xFFFFFFFFFFFFFFFF;
 #ifdef AIRPORT_WCL
+    getProvider()->setProperty("AirportItlwm-StartupStage", "cc-fault-reporter");
     driverFaultStream = CCStream::withPipeAndName(driverSnapshotsPipe, "FaultReporter", &faultReportOptions);
     CCDataStream *dataStream = OSDynamicCast(CCDataStream, driverFaultStream);
     if (!dataStream || !_fWorkloop) {
@@ -265,6 +277,7 @@ initCCLogs()
 
 bool AirportItlwm::start(IOService *provider)
 {
+    provider->setProperty("AirportItlwm-StartupStage", "controller-start");
 #if __IO80211_TARGET == __MAC_15_2
     if (version_major != 24 || version_minor < 2)
         return false;
@@ -282,6 +295,7 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
 #endif
+    provider->setProperty("AirportItlwm-StartupStage", "controller-super-start");
     if (!super::start(provider)) {
 #ifdef AIRPORT_WCL
         releaseAll();
@@ -292,15 +306,18 @@ bool AirportItlwm::start(IOService *provider)
     pciNub->setIOEnable(true);
     pciNub->setMemoryEnable(true);
     pciNub->configWrite8(0x41, 0);
+    provider->setProperty("AirportItlwm-StartupStage", "pci-power-request");
     if (pciNub->requestPowerDomainState(kIOPMPowerOn,
                                         (IOPowerConnection *) getParentEntry(gIOPowerPlane), IOPMLowestState) != IOPMNoErr) {
         super::stop(provider);
         return false;
     }
+    provider->setProperty("AirportItlwm-StartupStage", "pci-power-init");
     if (initPCIPowerManagment(pciNub) == false) {
         super::stop(pciNub);
         return false;
     }
+    provider->setProperty("AirportItlwm-StartupStage", "controller-workloop");
     if (_fWorkloop == NULL) {
         XYLog("No _fWorkloop!!\n");
         super::stop(pciNub);
@@ -315,6 +332,7 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
     _fWorkloop->addEventSource(_fCommandGate);
+    provider->setProperty("AirportItlwm-StartupStage", "controller-medium");
     const IONetworkMedium *primaryMedium;
     if (!createMediumTables(&primaryMedium) ||
         !setCurrentMedium(primaryMedium) || !setSelectedMedium(primaryMedium)) {
@@ -336,12 +354,15 @@ bool AirportItlwm::start(IOService *provider)
         fHalService->get80211Controller()->ic_userflags |= IEEE80211_F_HEON;
 #endif
 
+    provider->setProperty("AirportItlwm-StartupStage", "hal-attach");
     if (!fHalService->attach(pciNub)) {
+        provider->setProperty("AirportItlwm-StartupStage", "hal-attach-failed");
         XYLog("attach fail\n");
         super::stop(pciNub);
         releaseAll();
         return false;
     }
+    provider->setProperty("AirportItlwm-StartupStage", "controller-timers");
     fWatchdogWorkLoop = IOWorkLoop::workLoop();
     if (fWatchdogWorkLoop == NULL) {
         XYLog("init watchdog workloop fail\n");
@@ -371,6 +392,7 @@ bool AirportItlwm::start(IOService *provider)
 #endif
     scanSource->enable();
 
+    provider->setProperty("AirportItlwm-StartupStage", "skywalk-init");
     fNetIf = new AirportItlwmSkywalkInterface;
 #ifdef AIRPORT_WCL
     if (!fNetIf || !static_cast<AirportItlwmSkywalkInterface *>(fNetIf)->init(this)) {
@@ -393,18 +415,21 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
 #endif
+    provider->setProperty("AirportItlwm-StartupStage", "skywalk-attach");
     if (!fNetIf->attach(this)) {
         XYLog("attach to service fail\n");
         super::stop(provider);
         releaseAll();
         return false;
     }
+    provider->setProperty("AirportItlwm-StartupStage", "skywalk-controller-attach");
     if (!attachInterface(fNetIf, this)) {
         XYLog("attach to interface fail\n");
         super::stop(provider);
         releaseAll();
         return false;
     }
+    provider->setProperty("AirportItlwm-StartupStage", "bsd-interface-attach");
     if (!IONetworkController::attachInterface((IONetworkInterface **)&bsdInterface,
 #ifdef AIRPORT_WCL
                                              false
@@ -417,6 +442,7 @@ bool AirportItlwm::start(IOService *provider)
         releaseAll();
         return false;
     }
+    provider->setProperty("AirportItlwm-StartupStage", "skywalk-registration");
     memset(&registInfo, 0, sizeof(registInfo));
     if (!fNetIf->initRegistrationInfo(&registInfo, 1, sizeof(registInfo))) {
         XYLog("initRegistrationInfo fail\n");
@@ -436,6 +462,7 @@ bool AirportItlwm::start(IOService *provider)
     memcpy(fNetIf->mExpansionData2->fRegistrationInfo, &registInfo, sizeof(registInfo));
     if (fNetIf->getInterfaceRole() == 1)
         fNetIf->deferBSDAttach(true);
+    provider->setProperty("AirportItlwm-StartupStage", "skywalk-start");
     if (!fNetIf->start(this)) {
         super::stop(provider);
         releaseAll();
@@ -464,6 +491,7 @@ bool AirportItlwm::start(IOService *provider)
 #ifdef AIRPORT_WCL
     bsdInterface->registerService();
 #endif
+    provider->setProperty("AirportItlwm-StartupStage", "controller-ready");
     registerService();
     return true;
 }

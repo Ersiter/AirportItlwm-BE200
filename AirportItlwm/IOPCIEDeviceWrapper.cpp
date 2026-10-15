@@ -127,6 +127,7 @@ start(IOService *provider)
     PMinit();
     registerPowerDriver(this, powerStateArray, 2);
     provider->joinPMtree(this);
+    setProperty("AirportItlwm-StartupStage", "wrapper-ready");
     registerService();
     return true;
 }

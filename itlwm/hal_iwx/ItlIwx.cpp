@@ -145,10 +145,12 @@ int iwx_debug = 1;
 
 bool ItlIwx::attach(IOPCIDevice *device)
 {
+    device->setProperty("AirportItlwm-HALStage", "attach-entry");
     com.qfullmsk.reset();
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
 #ifdef AIRPORT_VTD
+    device->setProperty("AirportItlwm-HALStage", "prepare-dma");
     if (!prepareDma(device, 36))
         return false;
     pci.pa_dmat = dmaArena;
@@ -13692,6 +13694,7 @@ intrFilter(OSObject *object, IOFilterInterruptEventSource *src)
 bool ItlIwx::
 iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
 {
+    pa->pa_tag->setProperty("AirportItlwm-HALStage", "pcie-capability");
     pcireg_t reg, memtype;
     struct ieee80211com *ic = &sc->sc_ic;
     struct _ifnet *ifp = &ic->ic_if;
@@ -13725,6 +13728,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     }
     pci_conf_write(sc->sc_pct, sc->sc_pcitag, PCI_COMMAND_STATUS_REG, reg);
     
+    pa->pa_tag->setProperty("AirportItlwm-HALStage", "map-bar");
     memtype = pci_mapreg_type(pa->pa_pc, pa->pa_tag, PCI_MAPREG_START);
     err = pci_mapreg_map(pa, PCI_MAPREG_START, memtype, 0,
                          &sc->sc_st, &sc->sc_sh, NULL, &sc->sc_sz, 0);
@@ -13753,6 +13757,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
             PCI_COMMAND_STATUS_REG, reg);
     }
     
+    pa->pa_tag->setProperty("AirportItlwm-HALStage", "interrupt-source");
     int msiIntrIndex = -1;
     for (int index = 0; ; index++)
     {
@@ -13798,7 +13803,9 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     IWX_WRITE(sc, IWX_CSR_INT, ~0);
     IWX_WRITE(sc, IWX_CSR_FH_INT_STATUS, ~0);
     
+    pa->pa_tag->setProperty("AirportItlwm-HALStage", "hardware-config");
     sc->sc_hw_rev = IWX_READ(sc, IWX_CSR_HW_REV);
+    pa->pa_tag->setProperty("AirportItlwm-HWRevisionRaw", sc->sc_hw_rev, 32);
 #ifdef AIRPORT_WCL
     if (sc->sc_msix)
         XYLog("BE200 raw HW_REV=0x%x HW_RF_ID=0x%x\n",
@@ -13813,6 +13820,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     sc->sc_hw_rev = (sc->sc_hw_rev & 0xfff0) |
     (IWX_CSR_HW_REV_STEP(sc->sc_hw_rev << 2) << 2);
     sc->sc_hw_rf_id = IWX_READ(sc, IWX_CSR_HW_RF_ID);
+    pa->pa_tag->setProperty("AirportItlwm-RFID", sc->sc_hw_rf_id, 32);
     uint16_t device = sc->sc_pcitag->configRead16(kIOPCIConfigDeviceID);
     uint16_t subsystem_device = sc->sc_pcitag->configRead16(kIOPCIConfigSubSystemID);
     uint16_t subsystem_vendor = sc->sc_pcitag->configRead16(kIOPCIConfigSubSystemVendorID);
@@ -13925,6 +13933,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     sc->sc_tx_with_siso_diversity = sc->sc_cfg->tx_with_siso_diversity;
     sc->sc_uhb_supported = sc->sc_cfg->uhb_supported;
     
+    pa->pa_tag->setProperty("AirportItlwm-HALStage", "allocate-dma-rings");
     /* Allocate DMA memory for loading firmware. */
     if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210)
         err = iwx_dma_contig_alloc(sc->sc_dmat, &sc->ctxt_info_dma,
@@ -14060,10 +14069,13 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
      * firmware from disk. Postpone until mountroot is done.
      */
     //    config_mountroot(self, iwx_attach_hook);
-    if (iwx_preinit(sc)) {
+    pa->pa_tag->setProperty("AirportItlwm-HALStage", "firmware-preinit");
+    err = iwx_preinit(sc);
+    pa->pa_tag->setProperty("AirportItlwm-PreinitError", (uint64_t)err, 32);
+    if (err) {
         goto fail5;
     }
-    
+    pa->pa_tag->setProperty("AirportItlwm-HALStage", "attach-ready");
     return true;
     
 fail5:
