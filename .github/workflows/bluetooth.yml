@@ -1,0 +1,69 @@
+name: BE200 Bluetooth key compatibility build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: be200-bluetooth-key-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: acidanthera/BrcmPatchRAM
+          ref: 65389020769837e92e9fb939bac34bd9a3e25bb2
+          path: bluetooth-upstream
+      - uses: actions/checkout@v4
+        with:
+          repository: acidanthera/MacKernelSDK
+          ref: 3f750085caa17ec3a7880f11c11bf4f48cd6a164
+          path: bluetooth-upstream/MacKernelSDK
+      - name: Install pinned Lilu build SDK
+        working-directory: bluetooth-upstream
+        run: |
+          set -euo pipefail
+          curl -LfsS --max-time 90 -o Lilu-1.7.2-DEBUG.zip https://github.com/acidanthera/Lilu/releases/download/1.7.2/Lilu-1.7.2-DEBUG.zip
+          echo 'e95df95d82e8b151047abf359ecd9c853755c59293e19dfcc3907da8fbd8cf89  Lilu-1.7.2-DEBUG.zip' | shasum -a 256 -c -
+          unzip -q Lilu-1.7.2-DEBUG.zip
+      - name: Apply and check the compatibility patch
+        run: |
+          python3 bluetooth/prepare.py bluetooth-upstream
+          python3 bluetooth/check.py bluetooth-upstream
+      - name: Build BlueToolFixup only
+        run: |
+          set -euo pipefail
+          mkdir -p bluetooth-logs bluetooth-artifacts
+          git rev-parse HEAD > bluetooth-artifacts/source-commit.txt
+          xcodebuild -version > bluetooth-logs/toolchain.txt
+          xcodebuild -project bluetooth-upstream/BrcmPatchRAM.xcodeproj -target BlueToolFixup \
+            -configuration Debug -jobs 2 ARCHS=x86_64 CODE_SIGNING_ALLOWED=NO \
+            SYMROOT="$PWD/bluetooth-build/products" OBJROOT="$PWD/bluetooth-build/obj" \
+            build > bluetooth-logs/build.txt 2>&1 || { tail -80 bluetooth-logs/build.txt; exit 1; }
+          product="$PWD/bluetooth-build/products/Debug/BlueToolFixup.kext"
+          shasum -a 256 "$product/Contents/MacOS/BlueToolFixup" > bluetooth-artifacts/SHA256.txt
+          dwarfdump --uuid "$product/Contents/MacOS/BlueToolFixup" > bluetooth-artifacts/UUID.txt
+          cp bluetooth/BT-KEY.md bluetooth/prepare.py bluetooth/check.py bluetooth-artifacts/
+          cp bluetooth-upstream/LICENSE bluetooth-artifacts/BrcmPatchRAM-LICENSE
+          ditto -c -k --keepParent "$product" bluetooth-artifacts/BlueToolFixup-BE200-Key.zip
+      - name: Upload compiler logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bluetooth-key-logs-${{ github.sha }}
+          path: bluetooth-logs/
+          retention-days: 7
+      - name: Upload experimental build
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlueToolFixup-BE200-Key-${{ github.sha }}
+          path: bluetooth-artifacts/
+          retention-days: 7
+          if-no-files-found: error
