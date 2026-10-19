@@ -34,14 +34,14 @@ int getKernelMinorVersion() { return minorVersion; }
 bool checkKernelArgument(const char *arg) { return argument && std::strcmp(arg,"-btlfxbe200key") == 0; }
 int main() {
     for (majorVersion = 24; majorVersion <= 26; ++majorVersion)
-        for (minorVersion = 3; minorVersion <= 5; ++minorVersion)
+        for (minorVersion = 0; minorVersion <= 9; ++minorVersion)
             for (int enabled = 0; enabled <= 1; ++enabled) {
                 argument = enabled;
                 bool actual = EXPRESSION;
-                bool expected = majorVersion == 25 && minorVersion == 4 && enabled;
+                bool expected = majorVersion == 25 && enabled;
                 if (actual != expected) return 1;
             }
-    std::puts("18 version/opt-in combinations passed; descriptor changes only two capability bytes");
+    std::puts("60 version/opt-in combinations passed; descriptor changes only two capability bytes");
 }
 '''.replace('EXPRESSION',expression)
 with tempfile.TemporaryDirectory(prefix='bt-key-test-') as directory:

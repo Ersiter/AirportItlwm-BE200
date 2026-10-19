@@ -16,7 +16,9 @@ contents, other command descriptors and controller error callbacks untouched.
 It does not change the system executable on disk or disable general validation;
 it extends BlueToolFixup's existing in-memory page patch mechanism.
 
-The patch requires the explicit boot argument `-btlfxbe200key` and Darwin25.4.
+The patch requires the explicit boot argument `-btlfxbe200key` and Darwin25.
+The minor-version restriction was removed on2026-10-16. The exact eight-byte
+descriptor match remains required; changed descriptors are left untouched.
 The byte signature was checked against the captured25E246 x86_64 executable.
 This is an experiment for this BE200 machine, not general Bluetooth compatibility.
 Other builds, hardware and runtime page application remain unverified. Removing
