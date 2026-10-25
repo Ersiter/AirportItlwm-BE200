@@ -41,6 +41,21 @@ public:
     void free() override;
     virtual bool attach(IOPCIDevice *device) override;
     virtual void detach(IOPCIDevice *device) override;
+#ifdef AIRPORT_VTD
+    bool inRateControlGate() {
+        return getMainWorkLoop()->inGate();
+    }
+
+    template <typename Action>
+    IOReturn runRateControlAction(Action action) {
+        if (inRateControlGate())
+            return action();
+        return getMainCommandGate()->runAction(
+            [](OSObject *, void *arg0, void *, void *, void *) -> IOReturn {
+                return (*static_cast<Action *>(arg0))();
+            }, &action);
+    }
+#endif
     IOReturn enable(IONetworkInterface *netif) override;
     IOReturn disable(IONetworkInterface *netif) override;
     virtual struct ieee80211com *get80211Controller() override;

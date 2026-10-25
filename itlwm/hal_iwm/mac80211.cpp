@@ -5205,12 +5205,11 @@ iwm_ba_task(void *arg)
             ba->ba_bitmap = 0;
             if (!that->iwm_sta_tx_agg(sc, ni, tid, 0, ssn, 1)) {
                 ieee80211_addba_resp_accept(ic, ni, tid);
-                sc->lq_sta.rs_drv.lq.agg_frame_cnt_limit = LINK_QUAL_AGG_FRAME_LIMIT_DEF;
 
                 XYLog("Tx aggregation enabled on ra = %s tid = %d\n",
                          ether_sprintf(ni->ni_macaddr), tid);
 
-                iwl_mvm_send_lq_cmd(sc, &sc->lq_sta.rs_drv.lq);
+                iwl_mvm_rs_set_agg_limit(sc, LINK_QUAL_AGG_FRAME_LIMIT_DEF);
             } else {
             out:
                 ieee80211_addba_resp_refuse(ic, ni, tid,
