@@ -392,6 +392,7 @@ struct iwx_rx_ring {
 #define IWX_FLAG_SHUTDOWN	0x100	/* shutting down; new tasks forbidden */
 #define IWX_FLAG_BGSCAN		0x200	/* background scan in progress */
 #define IWX_FLAG_TXFLUSH    0x400   /* Tx queue flushing in progress */
+#define IWX_FLAG_SCAN_ABORTING 0x800 /* scan completion is owned by abort */
 
 struct iwx_ucode_status {
 	uint32_t uc_lmac_error_event_table[2];
@@ -434,6 +435,9 @@ struct iwx_phy_ctxt {
 	uint16_t color;
 	uint32_t ref;
 	struct ieee80211_channel *channel;
+	uint16_t mld_center_freq;
+	uint8_t mld_width;
+	uint8_t mld_config_valid;
 };
 
 struct iwx_bf_data {
@@ -462,6 +466,7 @@ struct iwx_self_init_dram {
 
 #define IWX_MAX_TID_COUNT 8
 #define IWX_INVALID_QUEUE 0xFFFF
+#define IWX_MLD_MAX_LINKS 4
 
 struct iwx_tid_data {
     uint16_t seq_number;
@@ -560,7 +565,7 @@ struct iwx_reorder_buf_entry {
  * @reorder_buf_data: buffered frames, one entry per sequence number
  */
 struct iwx_rxba_data {
-    uint8_t sta_id;
+    uint32_t sta_mask;
     uint8_t tid;
     uint8_t baid;
     uint16_t timeout;
@@ -594,6 +599,19 @@ struct iwx_ba_task_data {
     uint32_t        stop_tidmask;
 };
 
+#ifdef AIRPORT_WCL
+struct iwx_diagnostic {
+    uint64_t uptime;
+    const char *event;
+    const char *function;
+    uint32_t command;
+    uint32_t response_length, response_word0, response_word1;
+    uint8_t response_flags;
+    int line, error, generation, flags, state, next_state, if_flags, mac_reconfig;
+    volatile uint32_t sequence;
+};
+#endif
+
 struct iwx_softc {
 	struct device sc_dev;
 	struct ieee80211com sc_ic;
@@ -604,6 +622,8 @@ struct iwx_softc {
 	struct task		init_task; /* NB: not reference-counted */
 //	struct refcnt		task_refs;
 	struct task newstate_task;
+	struct task start_task;
+	struct task mld_link_task;
 	enum ieee80211_state	ns_nstate;
 	int			ns_arg;
 
@@ -666,10 +686,24 @@ struct iwx_softc {
     struct iwx_dma_info pnvm_seg_dma[IWX_MAX_DRAM_ENTRY];
     int pnvm_seg_count;
     uint32_t sc_pnvm_status;
+    uint32_t sc_pnvm_payload_len;
     int sc_use_mld_api;
-    int sc_mld_link_active;
-    int sc_mld_phy_active;
+    uint8_t sc_mld_link_active;
+    uint8_t sc_mld_phy_active;
+	uint8_t sc_mld_active_links;
+	uint8_t sc_mld_primary_link;
+	uint8_t sc_mld_emlsr_active;
+	uint32_t sc_mld_tx_link_seq;
+	uint8_t sc_mld_pending_links;
+	uint8_t sc_mld_pending_primary_link;
+	uint8_t sc_mld_pending_emlsr;
+	uint8_t sc_mld_link_update_pending;
+	uint8_t sc_mld_disconnect_pending;
+	int sc_mld_pending_generation;
     uint16_t sc_mld_txq_tidmask;
+    uint8_t sc_mld_sta_ids[IWX_MLD_MAX_LINKS];
+    uint32_t sc_mld_sta_mask;
+	uint32_t sc_mld_active_sta_mask;
 
 	int sc_fw_chunk_done;
 	int sc_init_complete;
@@ -704,6 +738,10 @@ struct iwx_softc {
 	uint32_t sc_hw_mask;
 
 	int sc_generation;
+#ifdef AIRPORT_WCL
+    volatile uint32_t sc_diagnostic_sequence;
+    struct iwx_diagnostic sc_diagnostics[32];
+#endif
 
 //	struct rwlock ioctl_rwl;
 

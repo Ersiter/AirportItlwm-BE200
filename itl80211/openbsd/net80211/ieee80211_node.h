@@ -236,6 +236,7 @@ struct ieee80211_rxinfo {
 	u_int32_t		rxi_tstamp;
 	int             rxi_rssi;
     uint8_t         rxi_chan;
+    uint32_t        rxi_band;
 };
 #define IEEE80211_RXI_HWDEC		0x00000001
 #define IEEE80211_RXI_AMPDU_DONE	0x00000002
@@ -325,6 +326,13 @@ struct ieee80211_node {
 	/* header */
 	u_int8_t		ni_macaddr[IEEE80211_ADDR_LEN];
 	u_int8_t		ni_bssid[IEEE80211_ADDR_LEN];
+	u_int8_t		ni_mld_addr[IEEE80211_ADDR_LEN];
+	u_int8_t		ni_mld_link_id;
+	u_int8_t		ni_mld_valid;
+	uint16_t		ni_mld_eml_capa;
+	uint16_t		ni_mld_med_sync_delay;
+	uint16_t		ni_mld_capa_ops;
+	uint16_t		ni_he_6ghz_capa;
 
 	/* beacon, probe response */
 	u_int8_t		ni_tstamp[8];	/* from last rcv'd beacon */
@@ -432,6 +440,21 @@ struct ieee80211_node {
     uint32_t        ni_he_txrate_kbps; /* Last firmware HE SU rate, 0 if unknown */
     uint8_t         ni_he_tx_nss;
     uint8_t         ni_he_requested; /* HE capabilities sent in association request */
+
+    /* EHT capabilities, operation, and negotiated state */
+    struct ieee80211_eht_cap_elem_fixed ni_eht_cap_elem;
+    uint8_t         ni_eht_mcs_nss[9];
+    uint8_t         ni_eht_mcs_nss_len;
+    uint8_t         ni_eht_ppe_thres[IEEE80211_EHT_PPE_THRES_MAX_LEN];
+    uint8_t         ni_eht_ppe_len;
+    uint8_t         ni_eht_oper[10];
+    uint8_t         ni_eht_oper_len;
+    uint8_t         ni_eht_oper_width;
+    uint16_t        ni_eht_puncture;
+    uint8_t         ni_eht_ccfs0;
+    uint8_t         ni_eht_ccfs1;
+    uint16_t        ni_eht_center_freq1;
+    uint8_t         ni_eht_requested;
     
 	/* Timeout handlers which trigger Tx Block Ack negotiation. */
 	CTimeout*		ni_addba_req_to[IEEE80211_NUM_TID];
@@ -496,6 +519,11 @@ struct ieee80211_node {
 #define IEEE80211_NODE_HECAP    0x400000    /* validated HE capabilities */
 #define IEEE80211_NODE_HEOP     0x800000    /* validated HE operation */
 #define IEEE80211_NODE_HE_MU_EDCA 0x1000000 /* validated MU EDCA */
+#define IEEE80211_NODE_BEACON_PROT 0x2000000 /* AP advertises Beacon Protection */
+#define IEEE80211_NODE_EHTCAP    0x4000000 /* validated EHT capabilities */
+#define IEEE80211_NODE_HE6CAP    0x8000000 /* validated HE 6 GHz band capabilities */
+#define IEEE80211_NODE_EHTOP     0x8000000 /* validated EHT operation */
+#define IEEE80211_NODE_EHT       0x10000000 /* EHT negotiated */
 
 	/* If not NULL, this function gets called when ni_refcnt hits zero. */
 	void			(*ni_unref_cb)(struct ieee80211com *,
@@ -677,6 +705,15 @@ void ieee80211_node_cleanup(struct ieee80211com *, struct ieee80211_node *);
 void ieee80211_free_allnodes(struct ieee80211com *, int);
 void ieee80211_iterate_nodes(struct ieee80211com *,
 		ieee80211_iter_func *, void *);
+#ifdef AIRPORT_WCL
+int ieee80211_mld_discover_links(struct ieee80211com *, struct ieee80211_node *);
+int ieee80211_mld_set_active_link_by_bssid(struct ieee80211com *, const uint8_t *);
+struct ieee80211_node *ieee80211_mld_primary_node(struct ieee80211com *, struct ieee80211_node *);
+void ieee80211_mld_clear_links(struct ieee80211com *);
+int ieee80211_setup_he_6ghz_capa(struct ieee80211_node *, const uint8_t *, size_t);
+#else
+#define ieee80211_mld_primary_node(ic, ni) (ni)
+#endif
 void ieee80211_clean_cached(struct ieee80211com *);
 void ieee80211_clean_sta_bss_node(struct ieee80211com *);
 void ieee80211_clean_nodes(struct ieee80211com *, int);

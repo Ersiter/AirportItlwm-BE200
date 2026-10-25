@@ -126,6 +126,305 @@ void    ieee80211_recv_addba_resp(struct ieee80211com *, mbuf_t,
                                   struct ieee80211_node *);
 void    ieee80211_recv_delba(struct ieee80211com *, mbuf_t,
                              struct ieee80211_node *);
+static void ieee80211_update_he_params(struct ieee80211com *,
+    struct ieee80211_node *, const uint8_t *, const uint8_t *,
+    const uint8_t *);
+static void ieee80211_update_eht_params(struct ieee80211com *,
+    struct ieee80211_node *, const uint8_t *, const uint8_t *);
+
+static size_t
+ieee80211_mle_copy(const uint8_t *ie, const uint8_t *efrm, uint8_t *data,
+    size_t capacity)
+{
+    const uint8_t *next;
+    size_t len;
+
+    if (ie == NULL || ie + 2 > efrm ||
+        ie[0] != IEEE80211_ELEMID_EXTENSION || ie[1] < 1 ||
+        ie + 2 + ie[1] > efrm || ie[2] != IEEE80211_ELEMID_EXT_MULTI_LINK)
+        return 0;
+    len = ie[1];
+    if (len > capacity)
+        return 0;
+    memcpy(data, ie + 2, len);
+    next = ie + 2 + ie[1];
+    while (ie[1] == 255 && next + 2 <= efrm &&
+        next[0] == IEEE80211_ELEMID_FRAGMENT) {
+        if (next[1] > capacity - len || next + 2 + next[1] > efrm)
+            return 0;
+        memcpy(data + len, next + 2, next[1]);
+        len += next[1];
+        if (next[1] < 255)
+            break;
+        next += 2 + next[1];
+    }
+    return len;
+}
+
+static int
+ieee80211_parse_mld_basic(const uint8_t *data, size_t data_len,
+    uint8_t *mld_addr, uint8_t *link_id,
+    uint16_t *med_sync_delay, uint16_t *eml_capa,
+    uint16_t *mld_capa_ops)
+{
+    const uint8_t *mle;
+    size_t mle_len;
+    size_t offset, common_end;
+    uint16_t control;
+    uint8_t common_len;
+
+    if (data == NULL || data_len < 10 ||
+        data[0] != IEEE80211_ELEMID_EXT_MULTI_LINK)
+        return 0;
+
+    mle = data + 1;
+    mle_len = data_len - 1;
+    control = LE_READ_2(mle);
+    common_len = mle[2];
+    if ((control & IEEE80211_ML_CONTROL_TYPE_MASK) !=
+            IEEE80211_ML_CONTROL_TYPE_BASIC ||
+        common_len < 7 || common_len > mle_len - 2)
+        return 0;
+
+    memcpy(mld_addr, mle + 3, IEEE80211_ADDR_LEN);
+    *link_id = UINT8_MAX;
+    *med_sync_delay = 0;
+    *eml_capa = 0;
+    *mld_capa_ops = 0;
+    offset = 9;
+    common_end = 2 + common_len;
+#define IEEE80211_MLE_SKIP(_bit, _len) do { \
+    if (control & (_bit)) { \
+        if (offset + (_len) > common_end) \
+            return 0; \
+        offset += (_len); \
+    } \
+} while (0)
+    if (control & IEEE80211_MLC_BASIC_PRES_LINK_ID) {
+        if (offset + 1 > common_end)
+            return 0;
+        *link_id = mle[offset++];
+    }
+    IEEE80211_MLE_SKIP(IEEE80211_MLC_BASIC_PRES_BSS_PARAM_CH_CNT, 1);
+    if (control & IEEE80211_MLC_BASIC_PRES_MED_SYNC_DELAY) {
+        if (offset + 2 > common_end)
+            return 0;
+        *med_sync_delay = LE_READ_2(mle + offset);
+        offset += 2;
+    }
+    if (control & IEEE80211_MLC_BASIC_PRES_EML_CAPA) {
+        if (offset + 2 > common_end)
+            return 0;
+        *eml_capa = LE_READ_2(mle + offset);
+        offset += 2;
+    }
+    if (control & IEEE80211_MLC_BASIC_PRES_MLD_CAPA_OP) {
+        if (offset + 2 > common_end)
+            return 0;
+        *mld_capa_ops = LE_READ_2(mle + offset);
+        offset += 2;
+    }
+    IEEE80211_MLE_SKIP(IEEE80211_MLC_BASIC_PRES_MLD_ID, 1);
+    IEEE80211_MLE_SKIP(IEEE80211_MLC_BASIC_PRES_EXT_MLD_CAPA_OP, 2);
+    IEEE80211_MLE_SKIP(IEEE80211_MLC_BASIC_PRES_ENH_CRIT_UPD, 1);
+#undef IEEE80211_MLE_SKIP
+    return 1;
+}
+
+#ifdef AIRPORT_WCL
+static void
+ieee80211_mld_assoc_response_links(struct ieee80211com *ic,
+    const uint8_t *data, size_t data_len)
+{
+    uint8_t profile_data[MCLBYTES];
+    size_t offset, common_end;
+    uint8_t i;
+
+    for (i = 1; i < ic->ic_mld_link_count; i++) {
+        ic->ic_mld_links[i].assoc_accepted = 0;
+        ic->ic_mld_links[i].assoc_id = 0;
+        if (ic->ic_mld_links[i].ni != NULL)
+            ic->ic_mld_links[i].ni->ni_associd = 0;
+    }
+    if (data == NULL || data_len < 4 ||
+        data[0] != IEEE80211_ELEMID_EXT_MULTI_LINK)
+        return;
+    common_end = 4 + data[3];
+    if (common_end > data_len)
+        return;
+    offset = common_end;
+    while (offset + 2 <= data_len) {
+        const uint8_t *profile;
+        size_t profile_len, fixed_offset;
+        uint16_t control;
+        int link_addr_matches = 1;
+
+        profile_len = data[offset + 1];
+        if (offset + 2 + profile_len > data_len)
+            return;
+        if (data[offset] != IEEE80211_MLE_SUBELEM_PER_STA_PROFILE) {
+            offset += 2 + profile_len;
+            continue;
+        }
+        if (profile_len > sizeof(profile_data))
+            return;
+        memcpy(profile_data, data + offset + 2, profile_len);
+        offset += 2 + profile_len;
+        while (offset + 2 <= data_len &&
+            data[offset] == IEEE80211_MLE_SUBELEM_FRAGMENT) {
+            size_t fragment_len = data[offset + 1];
+            if (offset + 2 + fragment_len > data_len ||
+                fragment_len > sizeof(profile_data) - profile_len)
+                return;
+            memcpy(profile_data + profile_len, data + offset + 2,
+                fragment_len);
+            profile_len += fragment_len;
+            offset += 2 + fragment_len;
+            if (fragment_len < 255)
+                break;
+        }
+        profile = profile_data;
+        if (profile_len < 3) {
+            continue;
+        }
+        control = LE_READ_2(profile);
+        if (!(control & IEEE80211_MLE_STA_CONTROL_COMPLETE_PROFILE)) {
+            continue;
+        }
+        fixed_offset = 2 + profile[2];
+        if (profile[2] < 1 || fixed_offset + 6 > profile_len) {
+            continue;
+        }
+        if (control & IEEE80211_MLE_STA_CONTROL_STA_MAC_ADDR_PRESENT) {
+            if (profile[2] < 1 + IEEE80211_ADDR_LEN) {
+                continue;
+            }
+        }
+        uint8_t ap_link_id = control & IEEE80211_MLE_STA_CONTROL_LINK_ID;
+        uint16_t status = LE_READ_2(profile + fixed_offset + 2);
+        uint16_t assoc_id = LE_READ_2(profile + fixed_offset + 4);
+        for (i = 1; i < ic->ic_mld_link_count; i++) {
+            if (ic->ic_mld_links[i].ap_link_id == ap_link_id) {
+                struct ieee80211_mld_link_info *link =
+                    &ic->ic_mld_links[i];
+                struct ieee80211_node *link_ni = link->ni;
+                const uint8_t *rates = NULL, *xrates = NULL;
+                const uint8_t *htcaps = NULL, *htop = NULL;
+                const uint8_t *vhtcap = NULL, *vhtop = NULL;
+                const uint8_t *hecap = NULL, *heop = NULL;
+                const uint8_t *he6ghzcap = NULL, *he_mu_edca = NULL;
+                const uint8_t *ehtcap = NULL, *ehtop = NULL;
+                size_t ie_offset = fixed_offset + 6;
+                int profile_ies_valid = 1;
+
+                if (link_ni == NULL)
+                    break;
+                link->assoc_accepted = 0;
+                link->assoc_id = 0;
+                link_ni->ni_associd = 0;
+                if ((control & IEEE80211_MLE_STA_CONTROL_STA_MAC_ADDR_PRESENT) &&
+                    memcmp(profile + 3, link_ni->ni_bssid,
+                        IEEE80211_ADDR_LEN) != 0)
+                    link_addr_matches = 0;
+                if (status != IEEE80211_STATUS_SUCCESS || !link_addr_matches ||
+                    IEEE80211_AID(assoc_id) == 0)
+                    break;
+
+                while (ie_offset + 2 <= profile_len) {
+                    const uint8_t *ie = profile + ie_offset;
+                    if (ie_offset + 2 + ie[1] > profile_len) {
+                        profile_ies_valid = 0;
+                        break;
+                    }
+                    switch (ie[0]) {
+                    case IEEE80211_ELEMID_RATES:
+                        rates = ie;
+                        break;
+                    case IEEE80211_ELEMID_XRATES:
+                        xrates = ie;
+                        break;
+                    case IEEE80211_ELEMID_HTCAPS:
+                        htcaps = ie;
+                        break;
+                    case IEEE80211_ELEMID_HTOP:
+                        htop = ie;
+                        break;
+                    case IEEE80211_ELEMID_VHT_CAP:
+                        vhtcap = ie;
+                        break;
+                    case IEEE80211_ELEMID_VHT_OPMODE:
+                        vhtop = ie;
+                        break;
+                    case IEEE80211_ELEMID_EXTENSION:
+                        if (ie[1] < 1)
+                            break;
+                        switch (ie[2]) {
+                        case IEEE80211_ELEMID_EXT_HE_CAPABILITY:
+                            hecap = ie;
+                            break;
+                        case IEEE80211_ELEMID_EXT_HE_OPERATION:
+                            heop = ie;
+                            break;
+                        case IEEE80211_ELEMID_EXT_HE_6GHZ_CAPA:
+                            he6ghzcap = ie;
+                            break;
+                        case IEEE80211_ELEMID_EXT_HE_MU_EDCA:
+                            if (ie[1] == 14)
+                                he_mu_edca = ie + 3;
+                            break;
+                        case IEEE80211_ELEMID_EXT_EHT_CAPABILITY:
+                            ehtcap = ie;
+                            break;
+                        case IEEE80211_ELEMID_EXT_EHT_OPERATION:
+                            ehtop = ie;
+                            break;
+                        }
+                        break;
+                    }
+                    ie_offset += 2 + ie[1];
+                }
+                if (!profile_ies_valid)
+                    break;
+
+                if (rates != NULL &&
+                    (rates[1] > IEEE80211_RATE_MAXSIZE ||
+                     (ieee80211_setup_rates(ic, link_ni, rates, xrates,
+                        IEEE80211_F_DOSORT | IEEE80211_F_DOFRATE |
+                        IEEE80211_F_DONEGO | IEEE80211_F_DODEL) &
+                            IEEE80211_RATE_BASIC)))
+                    break;
+                link_ni->ni_capinfo = LE_READ_2(profile + fixed_offset);
+                link_ni->ni_associd = assoc_id;
+                link_ni->ni_he_requested = ic->ic_bss->ni_he_requested;
+                link_ni->ni_eht_requested = ic->ic_bss->ni_eht_requested;
+                ieee80211_setup_he_6ghz_capa(link_ni, he6ghzcap,
+                    he6ghzcap != NULL ? 2 + he6ghzcap[1] : 0);
+                if (htcaps != NULL)
+                    ieee80211_setup_htcaps(link_ni, htcaps + 2, htcaps[1]);
+                if (htop != NULL)
+                    ieee80211_setup_htop(link_ni, htop + 2, htop[1], 0);
+                if (vhtcap != NULL && vhtop != NULL) {
+                    ieee80211_setup_vhtcaps(ic, link_ni, vhtcap);
+                    ieee80211_setup_vhtopmode(link_ni, vhtop);
+                }
+                if (hecap != NULL || heop != NULL || he_mu_edca != NULL)
+                    ieee80211_update_he_params(ic, link_ni, hecap, heop,
+                        he_mu_edca);
+                if (ehtcap != NULL || ehtop != NULL)
+                    ieee80211_update_eht_params(ic, link_ni, ehtcap, ehtop);
+                link->assoc_id = assoc_id;
+                link->assoc_accepted = 1;
+                ieee80211_ht_negotiate(ic, link_ni);
+                ieee80211_vht_negotiate(ic, link_ni);
+                ieee80211_he_negotiate(ic, link_ni);
+                ieee80211_eht_negotiate(ic, link_ni);
+                ieee80211_sta_set_rx_nss(ic, link_ni);
+                break;
+            }
+        }
+    }
+}
+#endif
 void    ieee80211_recv_sa_query_req(struct ieee80211com *, mbuf_t,
                                     struct ieee80211_node *);
 #ifndef IEEE80211_STA_ONLY
@@ -281,12 +580,14 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
                  struct ieee80211_rxinfo *rxi, struct mbuf_list *ml)
 {
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
+    struct ieee80211_node *security_ni;
     struct ieee80211_frame *wh;
     u_int16_t *orxseq, nrxseq, qos;
     u_int8_t dir, type, subtype, tid;
     int hdrlen, hasqos;
     
     _KASSERT(ni != NULL);
+    security_ni = ieee80211_mld_primary_node(ic, ni);
     
     /* in monitor mode, send everything directly to bpf */
     if (ic->ic_opmode == IEEE80211_M_MONITOR)
@@ -339,7 +640,8 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
         && (ic->ic_opmode == IEEE80211_M_STA || ni != ic->ic_bss)
 #endif
         ) {
-        int ba_state = ni->ni_rx_ba[tid].ba_state;
+        struct ieee80211_node *ba_ni = security_ni;
+        int ba_state = ba_ni->ni_rx_ba[tid].ba_state;
         
 #ifndef IEEE80211_STA_ONLY
         if (ic->ic_opmode == IEEE80211_M_HOSTAP) {
@@ -380,7 +682,7 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
              (qos & IEEE80211_QOS_ACK_POLICY_MASK) ==
              IEEE80211_QOS_ACK_POLICY_NORMAL)) {
             /* go through A-MPDU reordering */
-            ieee80211_input_ba(ic, m, ni, tid, rxi, ml);
+            ieee80211_input_ba(ic, m, ba_ni, tid, rxi, ml);
             return;    /* don't free m! */
         } else if (ba_state == IEEE80211_BA_REQUESTED &&
             (qos & IEEE80211_QOS_ACK_POLICY_MASK) ==
@@ -391,7 +693,7 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
              * yet confirmed by us should still contribute
              * to the sequence number for this tid.
              */
-            ieee80211_input_ba(ic, m, ni, tid, rxi, ml);
+            ieee80211_input_ba(ic, m, ba_ni, tid, rxi, ml);
             return;    /* don't free m! */
         }
     }
@@ -586,7 +888,7 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
             
             if ((ic->ic_flags & IEEE80211_F_WEPON) ||
                 ((ic->ic_flags & IEEE80211_F_RSNON) &&
-                 (ni->ni_flags & IEEE80211_NODE_RXPROT))) {
+                 (security_ni->ni_flags & IEEE80211_NODE_RXPROT))) {
                 /* protection is on for Rx */
                 if (!(rxi->rxi_flags & IEEE80211_RXI_HWDEC)) {
                     if (!(wh->i_fc[1] & IEEE80211_FC1_PROTECTED)) {
@@ -594,8 +896,12 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
                         ic->ic_stats.is_rx_unencrypted++;
                         goto err;
                     }
-                    /* do software decryption */
-                    m = ieee80211_decrypt(ic, m, ni);
+                    if (rxi->rxi_flags & IEEE80211_RXI_HWDEC) {
+                        m = ieee80211_input_hwdecrypt(ic, ni, m, rxi);
+                    } else {
+                        /* do software decryption */
+                        m = ieee80211_decrypt(ic, m, ni);
+                    }
                     if (m == NULL) {
                         ic->ic_stats.is_rx_wepfail++;
                         goto err;
@@ -650,7 +956,7 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
                 }
             }
             
-            if (ni->ni_flags & IEEE80211_NODE_RXMGMTPROT) {
+            if (security_ni->ni_flags & IEEE80211_NODE_RXMGMTPROT) {
                 /* MMPDU protection is on for Rx */
                 if (subtype == IEEE80211_FC0_SUBTYPE_DISASSOC ||
                     subtype == IEEE80211_FC0_SUBTYPE_DEAUTH ||
@@ -673,6 +979,13 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
                 /* encrypted but MMPDU Rx protection off for TA */
                 goto out;
             }
+
+            if (subtype == IEEE80211_FC0_SUBTYPE_BEACON &&
+                (ni->ni_flags & IEEE80211_NODE_BEACON_PROT) &&
+                (((ic->ic_nw_keys[6].k_flags & IEEE80211_KEY_BIGTK) != 0) ||
+                 ((ic->ic_nw_keys[7].k_flags & IEEE80211_KEY_BIGTK) != 0)) &&
+                !(rxi->rxi_flags & IEEE80211_RXI_HWDEC))
+                goto out;
             
 #if NBPFILTER > 0
             if (bpf_mtap(ic->ic_rawbpf, m, BPF_DIRECTION_IN) != 0) {
@@ -1069,6 +1382,7 @@ void
 ieee80211_enqueue_data(struct ieee80211com *ic, mbuf_t m,
                        struct ieee80211_node *ni, int mcast, struct mbuf_list *ml)
 {
+    struct ieee80211_node *security_ni = ieee80211_mld_primary_node(ic, ni);
     struct _ifnet *ifp = &ic->ic_if;
     struct ether_header *eh;
     mbuf_t m1;
@@ -1076,7 +1390,7 @@ ieee80211_enqueue_data(struct ieee80211com *ic, mbuf_t m,
     
     eh = mtod(m, struct ether_header *);
     
-    if ((ic->ic_flags & IEEE80211_F_RSNON) && !ni->ni_port_valid &&
+    if ((ic->ic_flags & IEEE80211_F_RSNON) && !security_ni->ni_port_valid &&
         eh->ether_type != htons(ETHERTYPE_PAE)) {
         DPRINTF(("port not valid: %s\n",
                  ether_sprintf(eh->ether_dhost)));
@@ -1124,6 +1438,8 @@ ieee80211_enqueue_data(struct ieee80211com *ic, mbuf_t m,
     if (m != NULL) {
         if ((ic->ic_flags & IEEE80211_F_RSNON) &&
             eh->ether_type == htons(ETHERTYPE_PAE)) {
+            struct ieee80211_node *eapol_ni =
+                ieee80211_mld_primary_node(ic, ni);
             ifp->netStat->inputPackets++;
 #if NBPFILTER > 0
             /*
@@ -1136,22 +1452,31 @@ ieee80211_enqueue_data(struct ieee80211com *ic, mbuf_t m,
 #if defined(AIRPORT_WCL)
             if (ic->ic_wcl_enterprise) {
                 mbuf_t eapCopy = NULL;
-                if (mbuf_dup(m, MBUF_DONTWAIT, &eapCopy) == 0 && eapCopy)
+                if (mbuf_dup(m, MBUF_DONTWAIT, &eapCopy) == 0 && eapCopy &&
+                    !(ic->ic_wcl_defer_user_eapol &&
+                      (*ic->ic_wcl_defer_user_eapol)(ic, eapCopy,
+                          ic->ic_wcl_user_eapol_arg)))
                     ml_enqueue(ml, eapCopy);
             }
-            ieee80211_eapol_key_input(ic, m, ni);
+            if (ic->ic_defer_eapol_key_input != NULL)
+                (*ic->ic_defer_eapol_key_input)(ic, m, eapol_ni);
+            else
+                ieee80211_eapol_key_input(ic, m, eapol_ni);
 #elif defined(USE_APPLE_SUPPLICANT)
             ml_enqueue(ml, m);
 #else
 #ifdef IO80211FAMILY_V2
-            if (ieee80211_is_8021x_akm((enum ieee80211_akm)ni->ni_rsnakms)) {
+            if (ieee80211_is_8021x_akm((enum ieee80211_akm)eapol_ni->ni_rsnakms)) {
                 XYLog("%s Duplicate EAPOL packet to user space\n", __FUNCTION__);
                 mbuf_dup(m, MBUF_DONTWAIT, &m2);
                 if (m2 != NULL)
                     ifp->iface->inputPacket(m2, mbuf_len(m2));
             }
 #endif
-            ieee80211_eapol_key_input(ic, m, ni);
+            if (ic->ic_defer_eapol_key_input != NULL)
+                (*ic->ic_defer_eapol_key_input)(ic, m, eapol_ni);
+            else
+                ieee80211_eapol_key_input(ic, m, eapol_ni);
 #endif
         } else {
             ml_enqueue(ml, m);
@@ -1451,6 +1776,10 @@ ieee80211_parse_rsn_cipher(const u_int8_t selector[4])
                 return IEEE80211_CIPHER_WEP104;
             case 6:    /* BIP */
                 return IEEE80211_CIPHER_BIP;
+            case 11:   /* BIP-GMAC-128 */
+                return IEEE80211_CIPHER_BIP_GMAC_128;
+            case 12:   /* BIP-GMAC-256 */
+                return IEEE80211_CIPHER_BIP_GMAC_256;
         }
     }
     return IEEE80211_CIPHER_NONE;    /* ignore unknown ciphers */
@@ -1520,7 +1849,7 @@ ieee80211_parse_rsn_body(struct ieee80211com *ic, const u_int8_t *frm,
     rsn->rsn_groupcipher = ieee80211_parse_rsn_cipher(frm);
     if (rsn->rsn_groupcipher == IEEE80211_CIPHER_NONE ||
         rsn->rsn_groupcipher == IEEE80211_CIPHER_USEGROUP ||
-        rsn->rsn_groupcipher == IEEE80211_CIPHER_BIP)
+        ieee80211_is_bip_cipher(rsn->rsn_groupcipher))
         return IEEE80211_STATUS_BAD_GROUP_CIPHER;
     frm += 4;
     
@@ -1535,7 +1864,10 @@ ieee80211_parse_rsn_body(struct ieee80211com *ic, const u_int8_t *frm,
         return IEEE80211_STATUS_IE_INVALID;
     rsn->rsn_ciphers = IEEE80211_CIPHER_NONE;
     while (m-- > 0) {
-        rsn->rsn_ciphers |= ieee80211_parse_rsn_cipher(frm);
+        enum ieee80211_cipher cipher = ieee80211_parse_rsn_cipher(frm);
+        if (ieee80211_is_bip_cipher(cipher))
+            return IEEE80211_STATUS_BAD_PAIRWISE_CIPHER;
+        rsn->rsn_ciphers |= cipher;
         frm += 4;
     }
     if (rsn->rsn_ciphers & IEEE80211_CIPHER_USEGROUP) {
@@ -1584,7 +1916,10 @@ ieee80211_parse_rsn_body(struct ieee80211com *ic, const u_int8_t *frm,
     if (frm + 4 > efrm)
         return 0;
     rsn->rsn_groupmgmtcipher = ieee80211_parse_rsn_cipher(frm);
-    if (rsn->rsn_groupmgmtcipher != IEEE80211_CIPHER_BIP)
+    if (!ieee80211_is_bip_cipher(rsn->rsn_groupmgmtcipher) ||
+        ((rsn->rsn_groupmgmtcipher == IEEE80211_CIPHER_BIP_GMAC_128 ||
+          rsn->rsn_groupmgmtcipher == IEEE80211_CIPHER_BIP_GMAC_256) &&
+         !ic->ic_mld_gmac))
         return IEEE80211_STATUS_BAD_GROUP_CIPHER;
     
     return IEEE80211_STATUS_SUCCESS;
@@ -1688,6 +2023,97 @@ ieee80211_update_he_params(struct ieee80211com *ic, struct ieee80211_node *ni,
         ic->ic_updateprot(ic);
 }
 
+static void
+ieee80211_update_eht_params(struct ieee80211com *ic, struct ieee80211_node *ni,
+    const uint8_t *ehtcap, const uint8_t *ehtop)
+{
+    bool live_eht = ni == ic->ic_bss && ni->ni_eht_requested &&
+        (ic->ic_state == IEEE80211_S_ASSOC || ic->ic_state == IEEE80211_S_RUN);
+
+    if (!live_eht)
+        ni->ni_flags &= ~(IEEE80211_NODE_EHTCAP | IEEE80211_NODE_EHTOP);
+    ni->ni_eht_oper_len = 0;
+    ni->ni_eht_puncture = 0;
+    ni->ni_eht_oper_width = IEEE80211_EHT_OPER_CHAN_WIDTH_20MHZ;
+    ni->ni_eht_ccfs0 = 0;
+    ni->ni_eht_ccfs1 = 0;
+    ni->ni_eht_center_freq1 = 0;
+
+    if (ehtcap != NULL && (ni->ni_flags & IEEE80211_NODE_HECAP) &&
+        ehtcap[0] == IEEE80211_ELEMID_EXTENSION && ehtcap[1] >= 1 &&
+        ehtcap[2] == IEEE80211_ELEMID_EXT_EHT_CAPABILITY) {
+        const uint8_t *body = ehtcap + 3;
+        size_t body_len = ehtcap[1] - 1;
+        struct ieee80211_eht_cap_elem_fixed fixed;
+        size_t mcs_len, ppe_len = 0;
+
+        if (body_len < sizeof(fixed))
+            goto parse_eht_operation;
+        memcpy(&fixed, body, sizeof(fixed));
+        mcs_len = ieee80211_eht_mcs_nss_size(&ni->ni_he_cap_elem,
+            &fixed, 1);
+        if (mcs_len > sizeof(ni->ni_eht_mcs_nss) ||
+            body_len < sizeof(fixed) + mcs_len)
+            goto parse_eht_operation;
+        if (fixed.phy_cap_info[5] &
+            IEEE80211_EHT_PHY_CAP5_PPE_THRESHOLD_PRESENT) {
+            const uint8_t *ppe = body + sizeof(fixed) + mcs_len;
+
+            if (body_len < sizeof(fixed) + mcs_len + 2)
+                goto parse_eht_operation;
+            ppe_len = ieee80211_eht_ppe_size(LE_READ_2(ppe));
+            if (ppe_len > sizeof(ni->ni_eht_ppe_thres) ||
+                body_len < sizeof(fixed) + mcs_len + ppe_len)
+                goto parse_eht_operation;
+        }
+        ni->ni_eht_cap_elem = fixed;
+        memset(ni->ni_eht_mcs_nss, 0, sizeof(ni->ni_eht_mcs_nss));
+        memcpy(ni->ni_eht_mcs_nss, body + sizeof(fixed), mcs_len);
+        ni->ni_eht_mcs_nss_len = mcs_len;
+        memset(ni->ni_eht_ppe_thres, 0, sizeof(ni->ni_eht_ppe_thres));
+        if (ppe_len != 0)
+            memcpy(ni->ni_eht_ppe_thres,
+                body + sizeof(fixed) + mcs_len, ppe_len);
+        ni->ni_eht_ppe_len = ppe_len;
+        ni->ni_flags |= IEEE80211_NODE_EHTCAP;
+    }
+
+parse_eht_operation:
+    if (ehtop != NULL && (ni->ni_flags & IEEE80211_NODE_EHTCAP) &&
+        ehtop[0] == IEEE80211_ELEMID_EXTENSION &&
+        ehtop[1] >= 1 && ehtop[2] == IEEE80211_ELEMID_EXT_EHT_OPERATION) {
+        const uint8_t *body = ehtop + 3;
+        size_t body_len = ehtop[1] - 1;
+        size_t need = sizeof(struct ieee80211_eht_operation);
+
+        if (body_len < need)
+            return;
+        if (body[0] & IEEE80211_EHT_OPER_INFO_PRESENT)
+            need += sizeof(struct ieee80211_eht_operation_info);
+        if (body[0] & IEEE80211_EHT_OPER_DISABLED_SUBCHANNEL_BITMAP_PRESENT) {
+            if (!(body[0] & IEEE80211_EHT_OPER_INFO_PRESENT))
+                return;
+            need += 2;
+        }
+        if (body_len < need || need > sizeof(ni->ni_eht_oper))
+            return;
+        memcpy(ni->ni_eht_oper, body, need);
+        ni->ni_eht_oper_len = need;
+        if (body[0] & IEEE80211_EHT_OPER_INFO_PRESENT) {
+            const struct ieee80211_eht_operation_info *info =
+                (const struct ieee80211_eht_operation_info *)
+                    (body + sizeof(struct ieee80211_eht_operation));
+            ni->ni_eht_oper_width = info->control &
+                IEEE80211_EHT_OPER_CHAN_WIDTH_MASK;
+            ni->ni_eht_ccfs0 = info->ccfs0;
+            ni->ni_eht_ccfs1 = info->ccfs1;
+            if (body[0] & IEEE80211_EHT_OPER_DISABLED_SUBCHANNEL_BITMAP_PRESENT)
+                ni->ni_eht_puncture = LE_READ_2(body + need - 2);
+        }
+        ni->ni_flags |= IEEE80211_NODE_EHTOP;
+    }
+}
+
 /*-
  * Beacon/Probe response frame format:
  * [8]   Timestamp
@@ -1711,16 +2137,23 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     struct ieee80211_node *ni = NULL;
     const struct ieee80211_frame *wh;
     const u_int8_t *frm, *efrm;
-    const u_int8_t *tstamp, *ssid, *rates, *xrates, *edcaie, *wmmie;
+    const u_int8_t *tstamp, *ssid, *rates, *xrates, *edcaie, *wmmie, *extcap;
     const u_int8_t *rsnie, *wpaie, *htcaps, *htop;
     const uint8_t *csa;
     const uint8_t *vhtcap;
     const uint8_t *vhtopmode;
     const uint8_t *hecap;
     const uint8_t *heopmode;
+    const uint8_t *he6ghzcap;
     const uint8_t *he_mu_edca = NULL;
+    const uint8_t *mle = NULL;
+    const uint8_t *ehtcap = NULL;
+    const uint8_t *ehtop = NULL;
+    uint8_t mle_data[MCLBYTES];
+    size_t mle_len = 0;
     u_int16_t capinfo, bintval;
     u_int8_t chan, bchan, erp, dtim_count, dtim_period;
+    u_int chanidx, channel_band;
     int is_new;
     
     /*
@@ -1758,12 +2191,19 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     bintval = LE_READ_2(frm); frm += 2;
     capinfo = LE_READ_2(frm); frm += 2;
     
-    ssid = rates = xrates = edcaie = wmmie = rsnie = wpaie = csa = vhtcap = vhtopmode = hecap = heopmode = NULL;
+    ssid = rates = xrates = edcaie = wmmie = extcap = rsnie = wpaie = csa = vhtcap = vhtopmode = hecap = heopmode = he6ghzcap = NULL;
     htcaps = htop = NULL;
-    if (rxi->rxi_chan)
-         bchan = rxi->rxi_chan;
-     else
-         bchan = ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan);
+    if (rxi->rxi_chan) {
+        bchan = rxi->rxi_chan;
+        channel_band = rxi->rxi_band;
+        if ((channel_band & (IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_5GHZ |
+            IEEE80211_CHAN_6GHZ)) == 0)
+            channel_band = bchan > 14 ? IEEE80211_CHAN_5GHZ :
+                IEEE80211_CHAN_2GHZ;
+    } else {
+        bchan = ieee80211_chan2number(ic, ic->ic_bss->ni_chan);
+        channel_band = ic->ic_bss->ni_chan->ic_flags;
+    }
     chan = bchan;
     erp = 0;
     dtim_count = dtim_period = 0;
@@ -1807,6 +2247,9 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                 break;
             case IEEE80211_ELEMID_RSN:
                 rsnie = frm;
+                break;
+            case IEEE80211_ELEMID_XCAPS:
+                extcap = frm;
                 break;
             case IEEE80211_ELEMID_EDCAPARMS:
                 edcaie = frm;
@@ -1858,6 +2301,16 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                     case IEEE80211_ELEMID_EXT_HE_SPR:
                         break;
                     case IEEE80211_ELEMID_EXT_HE_6GHZ_CAPA:
+                        he6ghzcap = frm;
+                        break;
+                    case IEEE80211_ELEMID_EXT_MULTI_LINK:
+                        mle = frm;
+                        break;
+                    case IEEE80211_ELEMID_EXT_EHT_CAPABILITY:
+                        ehtcap = frm;
+                        break;
+                    case IEEE80211_ELEMID_EXT_EHT_OPERATION:
+                        ehtop = frm;
                         break;
                 }
                 break;
@@ -1886,11 +2339,9 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
         DPRINTF(("vhtopmode ie too short, got %d, expected %lu\n", vhtopmode[1], sizeof(struct ieee80211_ie_vht_operation) - 2));
         vhtopmode = NULL;
     }
-    if (
-#if IEEE80211_CHAN_MAX < 255
-        chan > IEEE80211_CHAN_MAX ||
-#endif
-        (isclr(ic->ic_chan_active, chan) &&
+    chanidx = ieee80211_ieee2chanidx(ic, chan, channel_band);
+    if (chanidx == 0 ||
+        (isclr(ic->ic_chan_active, chanidx) &&
          ((ic->ic_caps & IEEE80211_C_SCANALL) == 0 ||
           (ic->ic_flags & IEEE80211_F_BGSCAN) == 0))) {
         DPRINTF(("ignore %s with invalid channel %u\n",
@@ -1938,7 +2389,22 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     } else
         is_new = 0;
     
-    ni->ni_chan = &ic->ic_channels[chan];
+        ni->ni_chan = &ic->ic_channels[chanidx];
+    ieee80211_setup_he_6ghz_capa(ni, he6ghzcap,
+        he6ghzcap != NULL ? 2 + he6ghzcap[1] : 0);
+    ni->ni_mld_valid = 0;
+    ni->ni_mld_link_id = UINT8_MAX;
+    ni->ni_mld_eml_capa = 0;
+    ni->ni_mld_med_sync_delay = 0;
+    ni->ni_mld_capa_ops = 0;
+    memset(ni->ni_mld_addr, 0, sizeof(ni->ni_mld_addr));
+    if (mle != NULL)
+        mle_len = ieee80211_mle_copy(mle, efrm, mle_data, sizeof(mle_data));
+    if (ieee80211_parse_mld_basic(mle_len != 0 ? mle_data : NULL, mle_len,
+        ni->ni_mld_addr, &ni->ni_mld_link_id,
+        &ni->ni_mld_med_sync_delay, &ni->ni_mld_eml_capa,
+        &ni->ni_mld_capa_ops))
+        ni->ni_mld_valid = 1;
     
     if (htcaps)
         ieee80211_setup_htcaps(ni, htcaps + 2, htcaps[1]);
@@ -1950,6 +2416,7 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
         ieee80211_setup_vhtopmode(ni, vhtopmode);
     }
     ieee80211_update_he_params(ic, ni, hecap, heopmode, he_mu_edca);
+    ieee80211_update_eht_params(ic, ni, ehtcap, ehtop);
     
     ni->ni_dtimcount = dtim_count;
     ni->ni_dtimperiod = dtim_period;
@@ -2141,6 +2608,13 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
         }
     }
     
+    ni->ni_flags &= ~IEEE80211_NODE_BEACON_PROT;
+    if (ic->ic_beacon_prot && extcap != NULL && extcap[1] >= 11 &&
+        (extcap[2 + IEEE80211_EXTCAP_BEACON_PROTECTION_BIT / 8] &
+         (1U << (IEEE80211_EXTCAP_BEACON_PROTECTION_BIT % 8))) &&
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC))
+        ni->ni_flags |= IEEE80211_NODE_BEACON_PROT;
+
     /*
      * Set our SSID if we do not know it yet.
      * If we are doing a directed scan for an AP with a hidden SSID
@@ -2710,7 +3184,13 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
     const uint8_t *vhtopmode;
     const uint8_t *hecap;
     const uint8_t *heopmode;
+    const uint8_t *he6ghzcap;
     const uint8_t *he_mu_edca = NULL;
+    const uint8_t *mle = NULL;
+    const uint8_t *ehtcap = NULL;
+    const uint8_t *ehtop = NULL;
+    uint8_t mle_data[MCLBYTES];
+    size_t mle_len = 0;
     u_int16_t capinfo, status, associd;
     u_int8_t rate;
     
@@ -2755,7 +3235,7 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
     }
     associd = LE_READ_2(frm); frm += 2;
     
-    rates = xrates = edcaie = wmmie = htcaps = htop = vhtcap = vhtopmode = hecap = heopmode = NULL;
+    rates = xrates = edcaie = wmmie = htcaps = htop = vhtcap = vhtopmode = hecap = heopmode = he6ghzcap = NULL;
     while (frm + 2 <= efrm) {
         if (frm + 2 + frm[1] > efrm) {
             ic->ic_stats.is_rx_elem_toosmall++;
@@ -2815,6 +3295,16 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
                     case IEEE80211_ELEMID_EXT_HE_SPR:
                         break;
                     case IEEE80211_ELEMID_EXT_HE_6GHZ_CAPA:
+                        he6ghzcap = frm;
+                        break;
+                    case IEEE80211_ELEMID_EXT_MULTI_LINK:
+                        mle = frm;
+                        break;
+                    case IEEE80211_ELEMID_EXT_EHT_CAPABILITY:
+                        ehtcap = frm;
+                        break;
+                    case IEEE80211_ELEMID_EXT_EHT_OPERATION:
+                        ehtop = frm;
                         break;
                 }
                 break;
@@ -2825,6 +3315,51 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
     if (rates == NULL || rates[1] > IEEE80211_RATE_MAXSIZE) {
         DPRINTF(("invalid supported rates element\n"));
         return;
+    }
+    if (mle != NULL)
+        mle_len = ieee80211_mle_copy(mle, efrm, mle_data, sizeof(mle_data));
+    int mld_valid = ieee80211_parse_mld_basic(
+        mle_len != 0 ? mle_data : NULL, mle_len,
+        ni->ni_mld_addr, &ni->ni_mld_link_id,
+        &ni->ni_mld_med_sync_delay, &ni->ni_mld_eml_capa,
+        &ni->ni_mld_capa_ops);
+#ifdef AIRPORT_WCL
+    if (ic->ic_wcl_peer_is_mlo) {
+        uint8_t expected_link_id = ic->ic_mld_link_count != 0 ?
+            ic->ic_mld_links[0].ap_link_id : UINT8_MAX;
+        if (!mld_valid || expected_link_id == UINT8_MAX ||
+            memcmp(ni->ni_mld_addr, ic->ic_wcl_peer_mld_addr,
+                IEEE80211_ADDR_LEN) != 0 ||
+            (ni->ni_mld_link_id != UINT8_MAX &&
+             ni->ni_mld_link_id != expected_link_id)) {
+            mld_valid = 0;
+            ic->ic_wcl_peer_is_mlo = false;
+            bzero(ic->ic_wcl_peer_mld_addr,
+                sizeof(ic->ic_wcl_peer_mld_addr));
+            ieee80211_mld_clear_links(ic);
+        } else {
+            ni->ni_mld_link_id = expected_link_id;
+        }
+    } else {
+        mld_valid = 0;
+    }
+#endif
+    if (mld_valid) {
+        ni->ni_mld_valid = 1;
+#ifdef AIRPORT_WCL
+        ic->ic_mld_emlsr_peer_supported =
+            (ni->ni_mld_eml_capa & IEEE80211_EML_CAP_EMLSR_SUPP) != 0;
+        if (ic->ic_mld_link_count != 0) {
+            ic->ic_mld_links[0].assoc_accepted = 1;
+            ieee80211_mld_assoc_response_links(ic, mle_data, mle_len);
+        }
+#endif
+    } else {
+        ni->ni_mld_valid = 0;
+#ifdef AIRPORT_WCL
+        ic->ic_mld_emlsr_peer_supported = false;
+        ieee80211_mld_assoc_response_links(ic, NULL, 0);
+#endif
     }
     rate = ieee80211_setup_rates(ic, ni, rates, xrates,
                                  IEEE80211_F_DOSORT | IEEE80211_F_DOFRATE | IEEE80211_F_DONEGO |
@@ -2837,6 +3372,8 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
     }
     ni->ni_capinfo = capinfo;
     ni->ni_associd = associd;
+    ieee80211_setup_he_6ghz_capa(ni, he6ghzcap,
+        he6ghzcap != NULL ? 2 + he6ghzcap[1] : 0);
     if (edcaie != NULL || wmmie != NULL) {
         /* force update of EDCA parameters */
         ic->ic_edca_updtcount = -1;
@@ -2858,12 +3395,14 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
         ieee80211_setup_vhtopmode(ni, vhtopmode);
     }
     ieee80211_update_he_params(ic, ni, hecap, heopmode, he_mu_edca);
+    ieee80211_update_eht_params(ic, ni, ehtcap, ehtop);
 
     if (hecap == NULL || heopmode == NULL)
         ni->ni_flags &= ~(IEEE80211_NODE_HECAP | IEEE80211_NODE_HEOP);
     ieee80211_ht_negotiate(ic, ni);
     ieee80211_vht_negotiate(ic, ni);
     ieee80211_he_negotiate(ic, ni);
+    ieee80211_eht_negotiate(ic, ni);
     
     /* Hop into 11n/11ac/11ax mode after associating to an HT AP in a legacy mode. */
     if (ni->ni_flags & IEEE80211_NODE_HE)
@@ -3058,6 +3597,8 @@ ieee80211_recv_addba_req(struct ieee80211com *ic, mbuf_t m,
     u_int16_t params, ssn, bufsz, timeout;
     u_int8_t token, tid;
     int err = 0;
+
+    ni = ieee80211_mld_primary_node(ic, ni);
     
     /* Ignore if we are not ready to receive data frames. */
     if (ic->ic_state != IEEE80211_S_RUN ||
@@ -3184,6 +3725,7 @@ void
 ieee80211_addba_req_accept(struct ieee80211com *ic, struct ieee80211_node *ni,
                            uint8_t tid)
 {
+    ni = ieee80211_mld_primary_node(ic, ni);
     struct ieee80211_rx_ba *ba = &ni->ni_rx_ba[tid];
     
     ba->ba_state = IEEE80211_BA_AGREED;
@@ -3202,6 +3744,7 @@ void
 ieee80211_addba_req_refuse(struct ieee80211com *ic, struct ieee80211_node *ni,
                            uint8_t tid)
 {
+    ni = ieee80211_mld_primary_node(ic, ni);
     struct ieee80211_rx_ba *ba = &ni->ni_rx_ba[tid];
     
     free(ba->ba_buf);
@@ -3233,6 +3776,8 @@ ieee80211_recv_addba_resp(struct ieee80211com *ic, mbuf_t m,
     u_int16_t status, params, bufsz, timeout;
     u_int8_t token, tid;
     int err = 0;
+
+    ni = ieee80211_mld_primary_node(ic, ni);
     
     if (mbuf_len(m) < sizeof(*wh) + 9) {
         DPRINTF(("frame too short\n"));
@@ -3304,6 +3849,7 @@ void
 ieee80211_addba_resp_accept(struct ieee80211com *ic,
                             struct ieee80211_node *ni, uint8_t tid)
 {
+    ni = ieee80211_mld_primary_node(ic, ni);
     struct ieee80211_tx_ba *ba = &ni->ni_tx_ba[tid];
     
     /* MLME-ADDBA.confirm(Success) */
@@ -3324,6 +3870,7 @@ void
 ieee80211_addba_resp_refuse(struct ieee80211com *ic,
                             struct ieee80211_node *ni, uint8_t tid, uint16_t status)
 {
+    ni = ieee80211_mld_primary_node(ic, ni);
     struct ieee80211_tx_ba *ba = &ni->ni_tx_ba[tid];
     
     /* MLME-ADDBA.confirm(Failure) */
@@ -3346,6 +3893,8 @@ ieee80211_recv_delba(struct ieee80211com *ic, mbuf_t m,
     u_int16_t params, reason;
     u_int8_t tid;
     int i;
+
+    ni = ieee80211_mld_primary_node(ic, ni);
     
     if (mbuf_len(m) < sizeof(*wh) + 6) {
         DPRINTF(("frame too short\n"));

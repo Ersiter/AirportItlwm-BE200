@@ -32,12 +32,6 @@ public:
     
     virtual bool setLinkState(IO80211LinkState state);
     
-    static errno_t bpfOutputPacket(ifnet_t interface, u_int32_t data_link_type,
-                                  mbuf_t packet);
-    
-    static errno_t bpfTap(ifnet_t interface, u_int32_t data_link_type,
-                          bpf_tap_mode direction);
-    
     virtual UInt32   inputPacket(
                                  mbuf_t          packet,
                                  UInt32          length  = 0,

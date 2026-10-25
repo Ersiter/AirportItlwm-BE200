@@ -98,7 +98,7 @@ ieee80211_node2req(struct ieee80211com *ic, const struct ieee80211_node *ni,
 	bcopy(ni->ni_essid, nr->nr_nwid, IEEE80211_NWID_LEN);
 
 	/* Channel and rates */
-	nr->nr_channel = ieee80211_chan2ieee(ic, ni->ni_chan);
+	nr->nr_channel = ieee80211_chan2number(ic, ni->ni_chan);
 	if (ni->ni_chan != IEEE80211_CHAN_ANYC)
         nr->nr_chan_flags = ni->ni_chan->ic_flags;
 	if (ic->ic_curmode != IEEE80211_MODE_11N)
@@ -812,7 +812,7 @@ ieee80211_ioctl(struct _ifnet *ifp, u_long cmd, caddr_t data)
 			chan = ic->ic_bss->ni_chan;
 			break;
 		}
-		chanreq->i_channel = ieee80211_chan2ieee(ic, chan);
+			chanreq->i_channel = ieee80211_chan2number(ic, chan);
 		break;
 	case SIOCG80211ALLCHANS:
 		error = kernel_copyout(ic->ic_channels,

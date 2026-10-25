@@ -207,7 +207,8 @@ ieee80211_channel_init(struct _ifnet *ifp)
                 ic->ic_modecaps |= 1<<IEEE80211_MODE_11N;
             if (IEEE80211_IS_CHAN_AC(c))
                 ic->ic_modecaps |= 1<<IEEE80211_MODE_11AC;
-            if (IEEE80211_IS_CHAN_N(c) && (ic->ic_flags & IEEE80211_F_HEON)) {
+            if ((IEEE80211_IS_CHAN_N(c) || IEEE80211_IS_CHAN_6GHZ(c)) &&
+                (ic->ic_flags & IEEE80211_F_HEON)) {
                 ic->ic_modecaps |= 1<<IEEE80211_MODE_11AX;
                 ic->ic_caps |= IEEE80211_C_HE;
             }
@@ -299,7 +300,9 @@ ieee80211_ifdetach(struct _ifnet *ifp)
 u_int
 ieee80211_mhz2ieee(u_int freq, u_int flags)
 {
-    if (flags & IEEE80211_CHAN_2GHZ) {    /* 2GHz band */
+    if (flags & IEEE80211_CHAN_6GHZ) {
+        return (freq - 5950) / 5;
+    } else if (flags & IEEE80211_CHAN_2GHZ) {    /* 2GHz band */
         if (freq == 2484)
             return 14;
         if (freq < 2484)
@@ -335,13 +338,46 @@ ieee80211_chan2ieee(struct ieee80211com *ic, const struct ieee80211_channel *c)
     return 1;
 }
 
+u_int
+ieee80211_chan2number(struct ieee80211com *ic, const struct ieee80211_channel *c)
+{
+    if (c == IEEE80211_CHAN_ANYC)
+        return IEEE80211_CHAN_ANY;
+    if (ic->ic_channels <= c && c <= &ic->ic_channels[IEEE80211_CHAN_MAX])
+        return ieee80211_mhz2ieee(c->ic_freq, c->ic_flags);
+    return 0;
+}
+
+u_int
+ieee80211_ieee2chanidx(struct ieee80211com *ic, u_int chan, u_int flags)
+{
+    u_int idx;
+
+    if (flags & IEEE80211_CHAN_6GHZ) {
+        if (chan < 1 || chan > 233 || ((chan - 1) % 4) != 0)
+            return 0;
+        idx = 181 + (chan + 3) / 4;
+    } else {
+        idx = chan;
+    }
+    if (idx > IEEE80211_CHAN_MAX || ic->ic_channels[idx].ic_flags == 0 ||
+        ieee80211_chan2number(ic, &ic->ic_channels[idx]) != chan ||
+        (ic->ic_channels[idx].ic_flags &
+            (IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_5GHZ | IEEE80211_CHAN_6GHZ)) !=
+        (flags & (IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_5GHZ | IEEE80211_CHAN_6GHZ)))
+        return 0;
+    return idx;
+}
+
 /*
  * Convert IEEE channel number to MHz frequency.
  */
 u_int
 ieee80211_ieee2mhz(u_int chan, u_int flags)
 {
-    if (flags & IEEE80211_CHAN_2GHZ) {    /* 2GHz band */
+    if (flags & IEEE80211_CHAN_6GHZ) {    /* 6GHz band */
+        return 5950 + chan * 5;
+    } else if (flags & IEEE80211_CHAN_2GHZ) {    /* 2GHz band */
         if (chan == 14)
             return 2484;
         if (chan < 14)
@@ -1352,6 +1388,8 @@ ieee80211_chan2mode(struct ieee80211com *ic,
     }
     
     /* Deduce a legacy mode based on the channel characteristics. */
+    if (IEEE80211_IS_CHAN_6GHZ(chan))
+        return IEEE80211_MODE_11AX;
     if (IEEE80211_IS_CHAN_5GHZ(chan))
         return IEEE80211_MODE_11A;
     else if (chan->ic_flags & (IEEE80211_CHAN_OFDM|IEEE80211_CHAN_DYN))

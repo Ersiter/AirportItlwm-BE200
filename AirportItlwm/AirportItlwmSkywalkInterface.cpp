@@ -939,6 +939,56 @@ getLINK_CHANGED_EVENT_DATA(struct apple80211_link_changed_event_data *ed)
     return kIOReturnSuccess;
 }
 
+bool AirportItlwmSkywalkInterface::
+isChipInterfaceReady()
+{
+    instance->pciNub->setProperty("AirportItlwm-ChipInterfaceReadyCalls", ++wclChipReadyCalls, 32);
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    return (ic->ic_if.if_flags & IFF_RUNNING) != 0;
+}
+
+IO80211LinkState AirportItlwmSkywalkInterface::
+linkState()
+{
+    instance->pciNub->setProperty("AirportItlwm-LinkStateCalls", ++wclLinkStateCalls, 32);
+#if defined(AIRPORT_WCL) && __IO80211_TARGET != __MAC_15_2
+    // WCL owns the BSD link transition; S_RUN precedes that transition.
+    return IO80211InfraInterface::linkState();
+#else
+    struct ieee80211com *ic = fHalService->get80211Controller();
+    return ic->ic_state == IEEE80211_S_RUN ? kIO80211NetworkLinkUp : kIO80211NetworkLinkDown;
+#endif
+}
+
+void AirportItlwmSkywalkInterface::
+setScanningState(unsigned int channel, bool scanning, apple80211_scan_data *data, int reason)
+{
+    instance->pciNub->setProperty("AirportItlwm-SetScanningCalls", ++wclSetScanningCalls, 32);
+    instance->pciNub->setProperty("AirportItlwm-SetScanningChannel", (uint32_t)channel, 32);
+    instance->pciNub->setProperty("AirportItlwm-SetScanningActive", scanning ? 1 : 0, 32);
+    if (data)
+        instance->pciNub->setProperty("AirportItlwm-SetScanningType", data->scan_type, 32);
+}
+
+IOReturn AirportItlwmSkywalkInterface::
+processBSDCommand(struct __ifnet *ifp, unsigned int cmd, void *data)
+{
+    instance->pciNub->setProperty("AirportItlwm-BSDCommandCalls", ++wclBSDCommandCalls, 32);
+    instance->pciNub->setProperty("AirportItlwm-BSDCommand", (uint32_t)cmd, 32);
+    if (data && (cmd == (unsigned int)SIOCSA80211 || cmd == (unsigned int)SIOCGA80211)) {
+        auto req = static_cast<struct apple80211req *>(data);
+        instance->pciNub->setProperty("AirportItlwm-BSDReqType", (uint32_t)req->req_type, 32);
+        if (req->req_type == APPLE80211_IOC_SCAN_REQ && req->req_data)
+            return setSCAN_REQ(static_cast<struct apple80211_scan_data *>(req->req_data));
+        if (req->req_type == APPLE80211_IOC_SCAN_RESULT && req->req_data) {
+            IOReturn result = getSCAN_RESULT(static_cast<struct apple80211_scan_result *>(req->req_data));
+            instance->pciNub->setProperty("AirportItlwm-BSDScanResultCode", (uint32_t)result, 32);
+            return result;
+        }
+    }
+    return kIOReturnUnsupported;
+}
+
 IOReturn AirportItlwmSkywalkInterface::
 setSCAN_REQ(struct apple80211_scan_data *sd)
 {
@@ -1064,7 +1114,7 @@ IOReturn AirportItlwmSkywalkInterface::setMacAddress(ether_addr &address)
 #else
 IOReturn AirportItlwmSkywalkInterface::setMacAddress(mloAddrArray &addresses)
 {
-    return instance->setHardwareAddress(&addresses, IEEE80211_ADDR_LEN);
+    return instance->setMloHardwareAddresses(&addresses);
 }
 #endif
 

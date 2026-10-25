@@ -45,6 +45,14 @@ jobs:
         run: python3 scripts/check_firmware_sections.py
       - name: Check PNVM resource names
         run: python3 scripts/check_pnvm_names.py
+      - name: Check PNVM completion semantics
+        run: python3 scripts/check_pnvm_completion.py
+      - name: Check NVM MAC CSR handling
+        run: python3 scripts/check_nvm_mac.py
+      - name: Check MCC response ABI handling
+        run: python3 scripts/check_mcc_response.py
+      - name: Check startup power diagnostics
+        run: python3 scripts/check_startup_power.py
       - name: Build Tahoe x86_64 kext
         env:
           CONFIGURATION: ${{ inputs.configuration || 'Debug' }}

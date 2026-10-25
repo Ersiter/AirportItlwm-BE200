@@ -803,7 +803,7 @@ ieee80211_add_ds_params(u_int8_t *frm, struct ieee80211com *ic,
 {
 	*frm++ = IEEE80211_ELEMID_DSPARMS;
     *frm++ = 1;
-    *frm++ = ieee80211_chan2ieee(ic, ni->ni_chan);
+    *frm++ = ieee80211_chan2number(ic, ni->ni_chan);
     return frm;
 }
 
@@ -1079,7 +1079,10 @@ ieee80211_add_rsn_body(u_int8_t *frm, struct ieee80211com *ic,
     /* write RSN Capabilities field */
     rsncaps = (ni->ni_rsncaps & (IEEE80211_RSNCAP_PTKSA_RCNT_MASK |
         IEEE80211_RSNCAP_GTKSA_RCNT_MASK));
-    if (ic->ic_caps & IEEE80211_C_MFP) {
+    int mfp = (ic->ic_caps & IEEE80211_C_MFP) &&
+        (ic->ic_opmode != IEEE80211_M_STA ||
+         (ni->ni_flags & IEEE80211_NODE_MFP));
+    if (mfp) {
         rsncaps |= IEEE80211_RSNCAP_MFPC;
         if (ic->ic_flags & IEEE80211_F_MFPR)
             rsncaps |= IEEE80211_RSNCAP_MFPR;
@@ -1096,7 +1099,7 @@ ieee80211_add_rsn_body(u_int8_t *frm, struct ieee80211com *ic,
         frm += IEEE80211_PMKID_LEN;
     }
 
-    if (!(ic->ic_caps & IEEE80211_C_MFP))
+    if (!mfp)
         return frm;
 
     if ((ni->ni_flags & IEEE80211_NODE_PMKID) == 0) {
@@ -1106,9 +1109,19 @@ ieee80211_add_rsn_body(u_int8_t *frm, struct ieee80211com *ic,
 
     /* write Group Integrity Cipher Suite field */
     memcpy(frm, oui, 3); frm += 3;
-    switch (ic->ic_rsngroupmgmtcipher) {
+    enum ieee80211_cipher groupmgmtcipher = ic->ic_rsngroupmgmtcipher;
+    if (ic->ic_opmode == IEEE80211_M_STA &&
+        ni->ni_rsngroupmgmtcipher != IEEE80211_CIPHER_NONE)
+        groupmgmtcipher = ni->ni_rsngroupmgmtcipher;
+    switch (groupmgmtcipher) {
     case IEEE80211_CIPHER_BIP:
         *frm++ = 6;
+        break;
+    case IEEE80211_CIPHER_BIP_GMAC_128:
+        *frm++ = 11;
+        break;
+    case IEEE80211_CIPHER_BIP_GMAC_256:
+        *frm++ = 12;
         break;
     default:
         /* can't get there */
@@ -1258,31 +1271,358 @@ ieee80211_add_vhtcaps(uint8_t *frm, struct ieee80211com *ic)
 }
 
 uint8_t *
-ieee80211_add_hecaps(uint8_t *frm, struct ieee80211com *ic)
+ieee80211_add_hecaps(uint8_t *frm, struct ieee80211com *ic,
+    const struct ieee80211_node *ni)
 {
     uint8_t *start = frm;
+    struct ieee80211_he_cap_elem he_cap = ic->ic_he_cap_elem;
+    if (IEEE80211_IS_CHAN_2GHZ(ni->ni_chan))
+        he_cap.phy_cap_info[0] &=
+            ~(IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G |
+              IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_80PLUS80_MHZ_IN_5G);
     *frm++ = IEEE80211_ELEMID_EXTENSION;
     frm++;
     *frm++ = IEEE80211_ELEMID_EXT_HE_CAPABILITY;
-    memcpy(frm, &ic->ic_he_cap_elem, sizeof(ic->ic_he_cap_elem));
-    frm += sizeof(ic->ic_he_cap_elem);
+    memcpy(frm, &he_cap, sizeof(he_cap));
+    frm += sizeof(he_cap);
     memcpy(frm, &ic->ic_he_mcs_nss_supp.rx_mcs_80, 4);
     frm += 4;
-    if (ic->ic_he_cap_elem.phy_cap_info[0] & IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G) {
+    if (he_cap.phy_cap_info[0] & IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G) {
         memcpy(frm, &ic->ic_he_mcs_nss_supp.rx_mcs_160, 4);
         frm += 4;
     }
-    if (ic->ic_he_cap_elem.phy_cap_info[0] & IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_80PLUS80_MHZ_IN_5G) {
+    if (he_cap.phy_cap_info[0] & IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_80PLUS80_MHZ_IN_5G) {
         memcpy(frm, &ic->ic_he_mcs_nss_supp.rx_mcs_80p80, 4);
         frm += 4;
     }
     unsigned ppe = ieee80211_he_ppe_size(ic->ic_ppe_thres[0],
-        ic->ic_he_cap_elem.phy_cap_info);
+        he_cap.phy_cap_info);
     memcpy(frm, ic->ic_ppe_thres, ppe);
     frm += ppe;
     start[1] = frm - start - 2;
     return frm;
 }
+
+static uint8_t *
+ieee80211_add_he_6ghz_capa(uint8_t *frm, const struct ieee80211com *ic)
+{
+    uint16_t capa = (ic->ic_ampdu_params & IEEE80211_AMPDU_PARAM_SS) >> 2;
+    uint32_t exponent = (ic->ic_vhtcaps &
+        IEEE80211_VHTCAP_MAX_A_MPDU_LENGTH_EXPONENT_MASK) >>
+        IEEE80211_VHTCAP_MAX_A_MPDU_LENGTH_EXPONENT_SHIFT;
+
+    capa |= exponent << 3;
+    capa |= (ic->ic_vhtcaps & IEEE80211_VHTCAP_MAX_MPDU_MASK) << 6;
+    if (ic->ic_vhtcaps & IEEE80211_VHTCAP_TX_ANTENNA_PATTERN)
+        capa |= IEEE80211_HE_6GHZ_CAP_TX_ANTPAT_CONS;
+    if (ic->ic_vhtcaps & IEEE80211_VHTCAP_RX_ANTENNA_PATTERN)
+        capa |= IEEE80211_HE_6GHZ_CAP_RX_ANTPAT_CONS;
+
+    *frm++ = IEEE80211_ELEMID_EXTENSION;
+    *frm++ = 3;
+    *frm++ = IEEE80211_ELEMID_EXT_HE_6GHZ_CAPA;
+    LE_WRITE_2(frm, capa);
+    return frm + 2;
+}
+
+uint8_t *
+ieee80211_add_ehtcaps(uint8_t *frm, struct ieee80211com *ic,
+    const struct ieee80211_node *ni)
+{
+    uint8_t *start = frm;
+    struct ieee80211_he_cap_elem he_cap = ic->ic_he_cap_elem;
+    struct ieee80211_eht_cap_elem_fixed eht_cap = ic->ic_eht_cap_elem;
+    if (IEEE80211_IS_CHAN_2GHZ(ni->ni_chan))
+        he_cap.phy_cap_info[0] &=
+            ~(IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G |
+              IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_80PLUS80_MHZ_IN_5G);
+    if (!IEEE80211_IS_CHAN_6GHZ(ni->ni_chan))
+        eht_cap.phy_cap_info[0] &= ~IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ;
+    uint8_t mcs_len = ieee80211_eht_mcs_nss_size(&he_cap, &eht_cap, 0);
+
+    *frm++ = IEEE80211_ELEMID_EXTENSION;
+    frm++;
+    *frm++ = IEEE80211_ELEMID_EXT_EHT_CAPABILITY;
+    memcpy(frm, &eht_cap, sizeof(eht_cap));
+    frm += sizeof(eht_cap);
+    memcpy(frm, &ic->ic_eht_mcs_nss_supp, mcs_len);
+    frm += mcs_len;
+    start[1] = frm - start - 2;
+    return frm;
+}
+
+#ifdef AIRPORT_WCL
+static uint8_t *
+ieee80211_fragment_mle_data(uint8_t *len_field, uint8_t *end, uint8_t frag_id)
+{
+    size_t remaining = end - len_field - 1;
+    while (remaining > 255) {
+        *len_field = 255;
+        remaining -= 255;
+        memmove(len_field + 258, len_field + 256, remaining);
+        len_field += 256;
+        *len_field++ = frag_id;
+        len_field++;
+        end += 2;
+    }
+    *len_field = remaining;
+    return end;
+}
+
+static int
+ieee80211_assoc_has_rsn(const struct ieee80211com *ic,
+    const struct ieee80211_node *ni)
+{
+    return (ic->ic_flags & IEEE80211_F_RSNON) &&
+        (ni->ni_rsnprotos & IEEE80211_PROTO_RSN);
+}
+
+static int
+ieee80211_assoc_present_has(const uint16_t *elems, size_t count,
+    uint16_t elem)
+{
+    size_t i;
+    for (i = 0; i < count; i++)
+        if (elems[i] == elem)
+            return 1;
+    return 0;
+}
+
+static void
+ieee80211_assoc_present_add(uint16_t *elems, size_t *count, uint16_t elem)
+{
+    if (ieee80211_assoc_present_has(elems, *count, elem))
+        return;
+    elems[(*count)++] = elem;
+}
+
+static uint8_t *
+ieee80211_add_noninheritance(uint8_t *frm, const uint16_t *outer,
+    size_t outer_count, const uint16_t *inner, size_t inner_count)
+{
+    uint8_t ordinary[16], extensions[16];
+    size_t ordinary_count = 0, extension_count = 0, i;
+    uint8_t *start;
+
+    for (i = 0; i < outer_count; i++) {
+        uint16_t elem = outer[i];
+        if (ieee80211_assoc_present_has(inner, inner_count, elem))
+            continue;
+        if (elem & 0x100)
+            extensions[extension_count++] = elem & 0xff;
+        else
+            ordinary[ordinary_count++] = elem;
+    }
+    if (ordinary_count == 0 && extension_count == 0)
+        return frm;
+
+    start = frm;
+    *frm++ = IEEE80211_ELEMID_EXTENSION;
+    frm++;
+    *frm++ = IEEE80211_ELEMID_EXT_NON_INHERITANCE;
+    *frm++ = ordinary_count;
+    memcpy(frm, ordinary, ordinary_count);
+    frm += ordinary_count;
+    *frm++ = extension_count;
+    memcpy(frm, extensions, extension_count);
+    frm += extension_count;
+    start[1] = frm - start - 2;
+    return frm;
+}
+
+static size_t
+ieee80211_mld_assoc_req_size(struct ieee80211com *ic)
+{
+    size_t size;
+    uint8_t i;
+
+    if (!ic->ic_wcl_peer_is_mlo || ic->ic_mld_link_count == 0)
+        return 0;
+    size = 2 + 1 + 2 + 1 + IEEE80211_ADDR_LEN + 2;
+    if (ic->ic_mld_emlsr_supported && ic->ic_mld_link_count > 1)
+        size += 2;
+    for (i = 1; i < ic->ic_mld_link_count; i++) {
+        struct ieee80211_node *ni = ic->ic_mld_links[i].ni;
+        if (ni == NULL)
+            continue;
+        size += 2 + 2 + 1 + IEEE80211_ADDR_LEN + 2;
+        size += 2 + min(ni->ni_rates.rs_nrates, IEEE80211_RATE_SIZE);
+        if (ni->ni_rates.rs_nrates > IEEE80211_RATE_SIZE)
+            size += 2 + ni->ni_rates.rs_nrates - IEEE80211_RATE_SIZE;
+        if ((ic->ic_flags & IEEE80211_F_HTON) &&
+            !IEEE80211_IS_CHAN_6GHZ(ni->ni_chan))
+            size += sizeof(struct ieee80211_ie_htcap);
+        if ((ni->ni_flags & IEEE80211_NODE_QOS) &&
+            (ic->ic_flags & IEEE80211_F_HTON))
+            size += sizeof(struct ieee80211_wme_info);
+        if ((ic->ic_flags & IEEE80211_F_VHTON) &&
+            IEEE80211_IS_CHAN_5GHZ(ni->ni_chan) &&
+            IEEE80211_IS_CHAN_AC(ni->ni_chan))
+            size += sizeof(struct ieee80211_ie_vhtcap);
+        if (ieee80211_he_supported(ic, ni)) {
+            size += sizeof(struct ieee80211_he_cap_elem) + 2 + 1 +
+                sizeof(struct ieee80211_he_mcs_nss_supp) +
+                IEEE80211_HE_PPE_THRES_MAX_LEN;
+            if (IEEE80211_IS_CHAN_6GHZ(ni->ni_chan))
+                size += 5;
+            if (ic->ic_eht_cap_valid &&
+                (ni->ni_flags & IEEE80211_NODE_EHTCAP))
+                size += 2 + 1 + sizeof(struct ieee80211_eht_cap_elem_fixed) +
+                    sizeof(struct ieee80211_eht_mcs_nss_supp) +
+                    IEEE80211_EHT_PPE_THRES_MAX_LEN;
+        }
+        size += 2 + 1 + 1 + 12 + 1 + 8;
+    }
+    return size;
+}
+
+static uint8_t *
+ieee80211_add_mld_assoc_req(uint8_t *frm, struct ieee80211com *ic,
+    uint16_t capinfo)
+{
+    uint8_t *elem_len;
+    uint8_t i;
+    uint16_t outer[16], inner[16];
+    size_t outer_count = 0;
+
+    if (!ic->ic_wcl_peer_is_mlo || ic->ic_mld_link_count == 0)
+        return frm;
+
+    uint16_t mle_control = IEEE80211_ML_CONTROL_TYPE_BASIC |
+        IEEE80211_MLC_BASIC_PRES_MLD_CAPA_OP;
+    uint8_t common_info_len = IEEE80211_ADDR_LEN + 2;
+    if (ic->ic_mld_emlsr_supported && ic->ic_mld_link_count > 1) {
+        mle_control |= IEEE80211_MLC_BASIC_PRES_EML_CAPA;
+        common_info_len += 2;
+    }
+
+    *frm++ = IEEE80211_ELEMID_EXTENSION;
+    elem_len = frm++;
+    *frm++ = IEEE80211_ELEMID_EXT_MULTI_LINK;
+    LE_WRITE_2(frm, mle_control);
+    frm += 2;
+    *frm++ = common_info_len;
+    IEEE80211_ADDR_COPY(frm, ic->ic_wcl_local_mlo_addrs[0]);
+    frm += IEEE80211_ADDR_LEN;
+    if (mle_control & IEEE80211_MLC_BASIC_PRES_EML_CAPA) {
+        uint16_t eml_cap = IEEE80211_EML_CAP_EMLSR_SUPP |
+            (IEEE80211_EML_CAP_EML_PADDING_DELAY_32US << 1) |
+            (IEEE80211_EML_CAP_EMLSR_TRANSITION_DELAY_64US << 4);
+        LE_WRITE_2(frm, eml_cap);
+        frm += 2;
+    }
+    LE_WRITE_2(frm, 0);
+    frm += 2;
+
+    ieee80211_assoc_present_add(outer, &outer_count, IEEE80211_ELEMID_SSID);
+    ieee80211_assoc_present_add(outer, &outer_count, IEEE80211_ELEMID_RATES);
+    if (ic->ic_bss->ni_rates.rs_nrates > IEEE80211_RATE_SIZE)
+        ieee80211_assoc_present_add(outer, &outer_count, IEEE80211_ELEMID_XRATES);
+    if (ieee80211_assoc_has_rsn(ic, ic->ic_bss))
+        ieee80211_assoc_present_add(outer, &outer_count, IEEE80211_ELEMID_RSN);
+    if ((ic->ic_flags & IEEE80211_F_RSNON) &&
+        (ic->ic_bss->ni_rsnprotos & IEEE80211_PROTO_WPA))
+        ieee80211_assoc_present_add(outer, &outer_count, IEEE80211_ELEMID_VENDOR);
+    if ((ic->ic_bss->ni_flags & IEEE80211_NODE_QOS) &&
+        (ic->ic_flags & IEEE80211_F_HTON)) {
+        ieee80211_assoc_present_add(outer, &outer_count, IEEE80211_ELEMID_QOS_CAP);
+        ieee80211_assoc_present_add(outer, &outer_count, IEEE80211_ELEMID_VENDOR);
+    }
+    if ((ic->ic_flags & IEEE80211_F_HTON) &&
+        !IEEE80211_IS_CHAN_6GHZ(ic->ic_bss->ni_chan))
+        ieee80211_assoc_present_add(outer, &outer_count, IEEE80211_ELEMID_HTCAPS);
+    if ((ic->ic_flags & IEEE80211_F_VHTON) &&
+        IEEE80211_IS_CHAN_5GHZ(ic->ic_bss->ni_chan) &&
+        IEEE80211_IS_CHAN_AC(ic->ic_bss->ni_chan))
+        ieee80211_assoc_present_add(outer, &outer_count, IEEE80211_ELEMID_VHT_CAP);
+    if (ieee80211_he_supported(ic, ic->ic_bss)) {
+        ieee80211_assoc_present_add(outer, &outer_count,
+            0x100 | IEEE80211_ELEMID_EXT_HE_CAPABILITY);
+        if (IEEE80211_IS_CHAN_6GHZ(ic->ic_bss->ni_chan))
+            ieee80211_assoc_present_add(outer, &outer_count,
+                0x100 | IEEE80211_ELEMID_EXT_HE_6GHZ_CAPA);
+        if (ic->ic_eht_cap_valid &&
+            (ic->ic_bss->ni_flags & IEEE80211_NODE_EHTCAP))
+            ieee80211_assoc_present_add(outer, &outer_count,
+                0x100 | IEEE80211_ELEMID_EXT_EHT_CAPABILITY);
+    }
+
+    for (i = 1; i < ic->ic_mld_link_count; i++) {
+        struct ieee80211_mld_link_info *link = &ic->ic_mld_links[i];
+        struct ieee80211_node *ni = link->ni;
+        uint8_t *profile_len;
+        uint16_t sta_control, link_capinfo = capinfo;
+        size_t inner_count = 0;
+        uint8_t *profile_end;
+
+        if (ni == NULL)
+            continue;
+        *frm++ = IEEE80211_MLE_SUBELEM_PER_STA_PROFILE;
+        profile_len = frm++;
+        sta_control = link->ap_link_id |
+            IEEE80211_MLE_STA_CONTROL_COMPLETE_PROFILE |
+            IEEE80211_MLE_STA_CONTROL_STA_MAC_ADDR_PRESENT;
+        LE_WRITE_2(frm, sta_control);
+        frm += 2;
+        *frm++ = 1 + IEEE80211_ADDR_LEN;
+        IEEE80211_ADDR_COPY(frm, link->local_addr);
+        frm += IEEE80211_ADDR_LEN;
+        if (IEEE80211_IS_CHAN_2GHZ(ni->ni_chan))
+            link_capinfo |= IEEE80211_CAPINFO_SHORT_PREAMBLE;
+        else
+            link_capinfo &= ~IEEE80211_CAPINFO_SHORT_PREAMBLE;
+        LE_WRITE_2(frm, link_capinfo);
+        frm += 2;
+        frm = ieee80211_add_rates(frm, &ni->ni_rates);
+        ieee80211_assoc_present_add(inner, &inner_count, IEEE80211_ELEMID_RATES);
+        if (ni->ni_rates.rs_nrates > IEEE80211_RATE_SIZE) {
+            frm = ieee80211_add_xrates(frm, &ni->ni_rates);
+            ieee80211_assoc_present_add(inner, &inner_count, IEEE80211_ELEMID_XRATES);
+        }
+        if ((ic->ic_flags & IEEE80211_F_HTON) &&
+            !IEEE80211_IS_CHAN_6GHZ(ni->ni_chan)) {
+            frm = ieee80211_add_htcaps(frm, ic);
+            ieee80211_assoc_present_add(inner, &inner_count, IEEE80211_ELEMID_HTCAPS);
+        }
+        if ((ni->ni_flags & IEEE80211_NODE_QOS) &&
+            (ic->ic_flags & IEEE80211_F_HTON)) {
+            frm = ieee80211_add_wme_info(frm, ic);
+            ieee80211_assoc_present_add(inner, &inner_count, IEEE80211_ELEMID_VENDOR);
+        }
+        if ((ic->ic_flags & IEEE80211_F_VHTON) &&
+            IEEE80211_IS_CHAN_5GHZ(ni->ni_chan) &&
+            IEEE80211_IS_CHAN_AC(ni->ni_chan)) {
+            frm = ieee80211_add_vhtcaps(frm, ic);
+            ieee80211_assoc_present_add(inner, &inner_count, IEEE80211_ELEMID_VHT_CAP);
+        }
+        int link_he = ieee80211_he_supported(ic, ni);
+        if (link_he) {
+            frm = ieee80211_add_hecaps(frm, ic, ni);
+            ieee80211_assoc_present_add(inner, &inner_count,
+                0x100 | IEEE80211_ELEMID_EXT_HE_CAPABILITY);
+            if (IEEE80211_IS_CHAN_6GHZ(ni->ni_chan)) {
+                frm = ieee80211_add_he_6ghz_capa(frm, ic);
+                ieee80211_assoc_present_add(inner, &inner_count,
+                    0x100 | IEEE80211_ELEMID_EXT_HE_6GHZ_CAPA);
+            }
+            if (ic->ic_eht_cap_valid &&
+                (ni->ni_flags & IEEE80211_NODE_EHTCAP)) {
+                frm = ieee80211_add_ehtcaps(frm, ic, ni);
+                ieee80211_assoc_present_add(inner, &inner_count,
+                    0x100 | IEEE80211_ELEMID_EXT_EHT_CAPABILITY);
+            }
+        }
+        frm = ieee80211_add_noninheritance(frm, outer, outer_count,
+            inner, inner_count);
+        profile_end = ieee80211_fragment_mle_data(profile_len, frm,
+            IEEE80211_MLE_SUBELEM_FRAGMENT);
+        frm = profile_end;
+    }
+
+    frm = ieee80211_fragment_mle_data(elem_len, frm, IEEE80211_ELEMID_FRAGMENT);
+    return frm;
+}
+#endif
 
 #ifndef IEEE80211_STA_ONLY
 /*
@@ -1293,7 +1633,7 @@ ieee80211_add_htop(u_int8_t *frm, struct ieee80211com *ic)
 {
 	*frm++ = IEEE80211_ELEMID_HTOP;
     *frm++ = 22;
-    *frm++ = ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan);
+    *frm++ = ieee80211_chan2number(ic, ic->ic_bss->ni_chan);
     *frm++ = ic->ic_bss->ni_htop0;
     LE_WRITE_2(frm, ic->ic_bss->ni_htop1); frm += 2;
     LE_WRITE_2(frm, ic->ic_bss->ni_htop2); frm += 2;
@@ -1531,6 +1871,16 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
 	mbuf_t m;
 	u_int8_t *frm;
 	u_int16_t capinfo;
+	int addvht = (ic->ic_flags & IEEE80211_F_VHTON) &&
+	    IEEE80211_IS_CHAN_5GHZ(ni->ni_chan) &&
+	    IEEE80211_IS_CHAN_AC(ni->ni_chan);
+	int addht = (ic->ic_flags & IEEE80211_F_HTON) &&
+	    !IEEE80211_IS_CHAN_6GHZ(ni->ni_chan);
+	int addwme = (ni->ni_flags & IEEE80211_NODE_QOS) &&
+	    (ic->ic_flags & IEEE80211_F_HTON);
+	int addhe = ieee80211_he_supported(ic, ni);
+	int addeht = ic->ic_eht_cap_valid && addhe &&
+	    (ni->ni_flags & IEEE80211_NODE_EHTCAP);
 
 	m = ieee80211_getmgmt(MBUF_DONTWAIT, MT_DATA,
 	    2 + 2 +
@@ -1543,13 +1893,22 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
 	    (((ic->ic_flags & IEEE80211_F_RSNON) &&
 	      (ni->ni_rsnprotos & IEEE80211_PROTO_RSN)) ?
 		2 + IEEE80211_RSNIE_MAXLEN : 0) +
-	    ((ni->ni_flags & IEEE80211_NODE_QOS) ? 2 + 1 : 0) +
+	    (addwme ? 2 + 1 : 0) +
 	    (((ic->ic_flags & IEEE80211_F_RSNON) &&
 	      (ni->ni_rsnprotos & IEEE80211_PROTO_WPA)) ?
 		2 + IEEE80211_WPAIE_MAXLEN : 0) +
-	    ((ic->ic_flags & IEEE80211_F_HTON) ? sizeof(struct ieee80211_ie_htcap) + sizeof(struct ieee80211_wme_info) : 0) +
-        ((ic->ic_flags & IEEE80211_F_VHTON) ? sizeof(struct ieee80211_ie_vhtcap) + 2 : 0) +
-        ((ic->ic_flags & IEEE80211_F_HEON) ? (sizeof(struct ieee80211_he_cap_elem) + 2 + 1 + sizeof(struct ieee80211_he_mcs_nss_supp) + IEEE80211_HE_PPE_THRES_MAX_LEN) : 0));
+	    (addht ? sizeof(struct ieee80211_ie_htcap) : 0) +
+	    (addwme ? sizeof(struct ieee80211_wme_info) : 0) +
+        (addvht ? sizeof(struct ieee80211_ie_vhtcap) + 2 : 0) +
+        (addhe ? (sizeof(struct ieee80211_he_cap_elem) + 2 + 1 + sizeof(struct ieee80211_he_mcs_nss_supp) + IEEE80211_HE_PPE_THRES_MAX_LEN +
+            (IEEE80211_IS_CHAN_6GHZ(ni->ni_chan) ? 5 : 0)) : 0) +
+        (addeht ? 2 + 1 + sizeof(struct ieee80211_eht_cap_elem_fixed) +
+            ieee80211_eht_mcs_nss_size(&ic->ic_he_cap_elem,
+                &ic->ic_eht_cap_elem, 0) : 0)
+#ifdef AIRPORT_WCL
+        + ieee80211_mld_assoc_req_size(ic)
+#endif
+        );
 	if (m == NULL)
 		return NULL;
 
@@ -1583,7 +1942,7 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
 #endif
 		frm = ieee80211_add_rsn(frm, ic, ni);
 	}
-	if (ni->ni_flags & IEEE80211_NODE_QOS)
+	if (addwme)
 		frm = ieee80211_add_qos_capability(frm, ic);
 	if ((ic->ic_flags & IEEE80211_F_RSNON) &&
 		(ni->ni_rsnprotos & IEEE80211_PROTO_WPA)) {
@@ -1596,17 +1955,27 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
 #endif
 		frm = ieee80211_add_wpa(frm, ic, ni);
 	}
-	if (ic->ic_flags & IEEE80211_F_HTON) {
+	if (addht)
 		frm = ieee80211_add_htcaps(frm, ic);
+	if (addwme)
 		frm = ieee80211_add_wme_info(frm, ic);
-	}
     
-    if (ic->ic_flags & IEEE80211_F_VHTON)
+    if (addvht)
         frm = ieee80211_add_vhtcaps(frm, ic);
     
-    ni->ni_he_requested = ieee80211_he_supported(ic, ni);
+    ni->ni_he_requested = addhe;
     if (ni->ni_he_requested)
-        frm = ieee80211_add_hecaps(frm, ic);
+        frm = ieee80211_add_hecaps(frm, ic, ni);
+    if (ni->ni_he_requested && IEEE80211_IS_CHAN_6GHZ(ni->ni_chan))
+        frm = ieee80211_add_he_6ghz_capa(frm, ic);
+    ni->ni_eht_requested = addeht;
+    if (ni->ni_eht_requested)
+        frm = ieee80211_add_ehtcaps(frm, ic, ni);
+#ifdef AIRPORT_WCL
+    if (ni->ni_eht_requested && ic->ic_wcl_peer_is_mlo &&
+        ic->ic_mld_link_count != 0)
+        frm = ieee80211_add_mld_assoc_req(frm, ic, capinfo);
+#endif
 
     size_t l = frm - mtod(m, u_int8_t *);
     mbuf_pkthdr_setlen(m, l);

@@ -130,7 +130,7 @@ sSTA_INFO(OSObject* target, void* data, bool isSet)
     st->op_mode = ic->ic_curmode > 0 ? (enum itl_phy_mode)(ic->ic_curmode - 1) : ITL80211_MODE_11A;
     st->max_mcs = ic_bss->ni_txmcs;
     st->cur_mcs = ic_bss->ni_txmcs;
-    st->channel = ieee80211_chan2ieee(ic, ic_bss->ni_chan);
+    st->channel = ieee80211_chan2number(ic, ic_bss->ni_chan);
     switch (ic->ic_bss->ni_chw) {
         case IEEE80211_CHAN_WIDTH_40:
             st->band_width = 40;
@@ -381,7 +381,7 @@ sSCAN_RESULT(OSObject* target, void* data, bool isSet)
     bzero(ni, sizeof(*ni));
     
     ni->ni_rsncaps = that->fNextNodeToSend->ni_capinfo;;
-    ni->channel = ieee80211_chan2ieee(ic, that->fNextNodeToSend->ni_chan);
+    ni->channel = ieee80211_chan2number(ic, that->fNextNodeToSend->ni_chan);
     ni->ni_rsncipher = (enum itl80211_cipher)that->fNextNodeToSend->ni_rsncipher;
     ni->rsn_akms = that->fNextNodeToSend->ni_rsnakms;
     ni->rsn_ciphers = that->fNextNodeToSend->ni_rsnciphers;

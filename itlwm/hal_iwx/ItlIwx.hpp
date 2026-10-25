@@ -155,7 +155,11 @@ public:
     int iwx_mld_run_stop(iwx_softc *);
     int iwx_mld_deauth(iwx_softc *);
     int iwx_mld_set_key(iwx_softc *, ieee80211_node *, ieee80211_key *, int);
-    int iwx_mld_queue_cmd(iwx_softc *, int, int, int, uint32_t, uint64_t, uint64_t, uint16_t *, uint16_t *);
+    int iwx_mld_queue_cmd(iwx_softc *, uint32_t, int, int, uint32_t, uint64_t, uint64_t, uint16_t *, uint16_t *);
+    int iwx_mld_update_active_links(iwx_softc *, uint8_t, uint8_t, bool);
+#ifdef AIRPORT_WCL
+    uint8_t iwx_mld_select_emlsr_links(iwx_softc *, uint8_t *);
+#endif
     int iwx_umac_scan_v17(struct iwx_softc *, int);
     
     //kext
@@ -174,6 +178,7 @@ public:
     
     static bool intrFilter(OSObject *object, IOFilterInterruptEventSource *src);
     static IOReturn _iwx_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3);
+    static void iwx_start_deferred(void *arg);
     
     virtual ItlDriverInfo *getDriverInfo() override;
     
@@ -375,6 +380,7 @@ public:
     int    iwx_phy_ctxt_cmd(struct iwx_softc *, struct iwx_phy_ctxt *, uint8_t,
             uint8_t, uint32_t, uint32_t);
     int    iwx_send_cmd(struct iwx_softc *, struct iwx_host_cmd *);
+    int    iwx_send_cmd_impl(struct iwx_softc *, struct iwx_host_cmd *);
     int    iwx_wait_notification(struct iwx_softc *, int *, int, uint32_t);
     int    iwx_send_cmd_pdu(struct iwx_softc *, uint32_t, uint32_t, uint16_t,
             const void *);
@@ -452,10 +458,12 @@ public:
     static struct ieee80211_node *iwx_node_alloc(struct ieee80211com *);
     static int    iwx_set_key(struct ieee80211com *, struct ieee80211_node *,
            struct ieee80211_key *);
+    static void    iwx_deferred_eapol_task(void *);
     static void    iwx_delete_key(struct ieee80211com *,
            struct ieee80211_node *, struct ieee80211_key *);
     int    iwx_media_change(struct _ifnet *);
     static void    iwx_newstate_task(void *);
+    static void    iwx_mld_active_link_task(void *);
     static int    iwx_newstate(struct ieee80211com *, enum ieee80211_state, int);
     void    iwx_endscan(struct iwx_softc *);
     void    iwx_fill_sf_command(struct iwx_softc *, struct iwx_sf_cfg_cmd *,

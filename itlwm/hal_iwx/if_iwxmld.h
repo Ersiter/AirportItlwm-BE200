@@ -98,8 +98,34 @@
 #define IF_IWX_MLD_H
 
 #define IWX_UCODE_TLV_CAPA_MLD_API_SUPPORT 110
+#define IWX_EMLSR_MODE_NOTIF 0xf3
+#define IWX_EMLSR_TRANS_FAIL_NOTIF 0xf7
 #define IWX_MLD_RX_BAID_CONFIG_CMD 0x16
+#define IWX_MLD_RX_BAID_ADD 0
+#define IWX_MLD_RX_BAID_MODIFY 1
+#define IWX_MLD_RX_BAID_REMOVE 2
 #define IWX_MLD_RLC_CONFIG_CMD 0x08
+
+enum iwx_esr_mode_action {
+    IWX_ESR_RECOMMEND_LEAVE = 0,
+    IWX_ESR_FORCE_LEAVE = 1,
+    IWX_ESR_RECOMMEND_ENTER = 2,
+};
+
+struct iwx_esr_mode_notif_v1 {
+    uint32_t action;
+} __packed;
+
+struct iwx_esr_mode_notif {
+    uint32_t action;
+    uint32_t leave_reason_mask;
+} __packed;
+
+struct iwx_esr_trans_fail_notif {
+    uint32_t link_id;
+    uint32_t activation;
+    uint32_t err_code;
+} __packed;
 
 struct iwx_mld_rx_baid_cfg_cmd {
     uint32_t action;
@@ -116,6 +142,11 @@ struct iwx_mld_rx_baid_cfg_cmd {
             uint32_t tid;
             uint32_t reserved;
         } __packed remove;
+        struct {
+            uint32_t old_sta_id_mask;
+            uint32_t new_sta_id_mask;
+            uint32_t tid;
+        } __packed modify;
     };
 } __packed;
 static_assert(sizeof(iwx_mld_rx_baid_cfg_cmd) == 16, "MLD BAID v2 command ABI");
@@ -157,6 +188,13 @@ enum iwx_mld_link_ctx_protection_flags {
 	IWX_MLD_LINK_PROT_FLG_FAT_PROT	= (1 << 2),
 	IWX_MLD_LINK_PROT_FLG_SELF_CTS_EN	= (1 << 3),
 }; /* LINK_PROTECT_FLAGS_E_VER_1 */
+
+enum iwx_mld_link_ctx_flags {
+	IWX_MLD_LINK_FLG_BSS_COLOR_DIS		= (1 << 0),
+	IWX_MLD_LINK_FLG_MU_EDCA_CW		= (1 << 1),
+	IWX_MLD_LINK_FLG_RU_2MHZ_BLOCK		= (1 << 2),
+	IWX_MLD_LINK_FLG_NDP_FEEDBACK_ENABLED	= (1 << 3),
+}; /* LINK_CONTEXT_FLAG_E_VER_1 */
 
 enum iwx_mld_sec_key_flags {
 	IWX_MLD_SEC_KEY_FLAG_CIPHER_MASK	= 0x07,

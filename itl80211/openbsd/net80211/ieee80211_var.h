@@ -310,6 +310,7 @@ struct ieee80211_channel {
 #define IEEE80211_CHAN_VHT80    0x08000000 /* VHT80 channel */
 #define IEEE80211_CHAN_VHT160    0x10000000 /* VHT160 channel */
 #define IEEE80211_CHAN_VHT80_80    0x20000000 /* VHT80+80 channel */
+#define IEEE80211_CHAN_6GHZ    0x40000000 /* 6 GHz spectrum channel */
 
 #define IEEE80211_CHAN_HT40    (IEEE80211_CHAN_HT40U | IEEE80211_CHAN_HT40D)
 #define IEEE80211_CHAN_HT    (IEEE80211_CHAN_HT20 | IEEE80211_CHAN_HT40)
@@ -320,7 +321,7 @@ struct ieee80211_channel {
                 | IEEE80211_CHAN_VHT160)
 
 #define IEEE80211_CHAN_ALL  \
-    (IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_5GHZ | \
+    (IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_5GHZ | IEEE80211_CHAN_6GHZ | \
     IEEE80211_CHAN_CCK | IEEE80211_CHAN_OFDM | IEEE80211_CHAN_PASSIVE | IEEE80211_CHAN_DYN | IEEE80211_CHAN_XR | \
     IEEE80211_CHAN_HT | IEEE80211_CHAN_VHT)
 
@@ -353,6 +354,8 @@ struct ieee80211_channel {
 	(((_c)->ic_flags & IEEE80211_CHAN_2GHZ) != 0)
 #define	IEEE80211_IS_CHAN_5GHZ(_c) \
 	(((_c)->ic_flags & IEEE80211_CHAN_5GHZ) != 0)
+#define	IEEE80211_IS_CHAN_6GHZ(_c) \
+	(((_c)->ic_flags & IEEE80211_CHAN_6GHZ) != 0)
 #define	IEEE80211_IS_CHAN_OFDM(_c) \
 	(((_c)->ic_flags & IEEE80211_CHAN_OFDM) != 0)
 #define	IEEE80211_IS_CHAN_CCK(_c) \
@@ -398,7 +401,19 @@ struct ieee80211_defrag {
 #define	IEEE80211_SCAN_REQUEST	0x2
 #define	IEEE80211_SCAN_RESUME	0x4
 
-#define IEEE80211_GROUP_NKID	6
+#define IEEE80211_GROUP_NKID	8
+
+#ifdef AIRPORT_WCL
+#define IEEE80211_MLD_MAX_LINKS 4
+struct ieee80211_mld_link_info {
+	struct ieee80211_node *ni;
+	uint8_t local_link_id;
+	uint8_t ap_link_id;
+	uint8_t assoc_accepted;
+	uint16_t assoc_id;
+	uint8_t local_addr[IEEE80211_ADDR_LEN];
+};
+#endif
 
 struct ieee80211com {
 	struct arpcom		ic_ac;
@@ -423,6 +438,12 @@ struct ieee80211com {
 	int			(*ic_set_key)(struct ieee80211com *,
 				    struct ieee80211_node *,
 				    struct ieee80211_key *);
+	void			(*ic_defer_eapol_key_input)(struct ieee80211com *,
+				    mbuf_t, struct ieee80211_node *);
+#ifdef AIRPORT_WCL
+	bool			(*ic_wcl_defer_user_eapol)(struct ieee80211com *, mbuf_t, void *);
+	void			*ic_wcl_user_eapol_arg;
+#endif
 	void			(*ic_delete_key)(struct ieee80211com *,
 				    struct ieee80211_node *,
 				    struct ieee80211_key *);
@@ -442,6 +463,15 @@ struct ieee80211com {
     bool ic_wcl_mac_reconfig;
     bool ic_wcl_enterprise;
     bool ic_wcl_join_requested;
+    bool ic_wcl_peer_is_mlo;
+    uint8_t ic_wcl_peer_mld_addr[IEEE80211_ADDR_LEN];
+    uint8_t ic_wcl_local_mlo_addrs[4][IEEE80211_ADDR_LEN];
+    bool ic_wcl_local_mlo_addrs_valid;
+    void (*ic_wcl_update_mld_active_link)(struct ieee80211com *, uint8_t);
+    struct ieee80211_mld_link_info ic_mld_links[IEEE80211_MLD_MAX_LINKS];
+    uint8_t ic_mld_link_count;
+    uint8_t ic_wcl_active_mld_link;
+    bool ic_mld_emlsr_peer_supported;
     bool ic_wcl_scan_requested;
     bool ic_wcl_scan_active;
     uint8_t ic_wcl_scan_ssid_length;
@@ -452,6 +482,7 @@ struct ieee80211com {
     uint64_t ic_wcl_tx_packets[4];
     uint64_t ic_wcl_rx_packets[4];
 #endif
+    bool ic_mld_emlsr_supported;
     void            (*ic_event_handler)(struct ieee80211com *, int, void *);
 	CTimeout*		ic_bgscan_timeout;
 	uint32_t		ic_bgscan_fail;
@@ -469,6 +500,8 @@ struct ieee80211com {
     
 	u_int32_t		ic_userflags;	/* yet more flags */
 	u_int32_t		ic_caps;	/* capabilities */
+	int			ic_beacon_prot;	/* hardware Beacon Protection receive support */
+	int			ic_mld_gmac;	/* MLD SEC_KEY supports BIP-GMAC */
 	u_int16_t		ic_modecaps;	/* set of mode capabilities */
 	u_int16_t		ic_curmode;	/* current mode */
 	enum ieee80211_phytype	ic_phytype;	/* XXX wrong for multi-mode */
@@ -579,6 +612,10 @@ struct ieee80211com {
     struct ieee80211_he_cap_elem ic_he_cap_elem;   /* Fixed portion of the HE capabilities element. */
     struct ieee80211_he_mcs_nss_supp ic_he_mcs_nss_supp;   /* The supported NSS/MCS combinations. */
     uint8_t ic_ppe_thres[IEEE80211_HE_PPE_THRES_MAX_LEN]; /* Holds the PPE Thresholds data. */
+
+    int ic_eht_cap_valid;
+    struct ieee80211_eht_cap_elem_fixed ic_eht_cap_elem;
+    struct ieee80211_eht_mcs_nss_supp ic_eht_mcs_nss_supp;
     
 	TAILQ_HEAD(, ieee80211_ess)	 ic_ess;
 };
@@ -724,6 +761,9 @@ u_int8_t ieee80211_plcp2rate(u_int8_t, enum ieee80211_phymode);
 u_int	ieee80211_mhz2ieee(u_int, u_int);
 u_int	ieee80211_chan2ieee(struct ieee80211com *,
 		const struct ieee80211_channel *);
+u_int	ieee80211_chan2number(struct ieee80211com *,
+		const struct ieee80211_channel *);
+u_int	ieee80211_ieee2chanidx(struct ieee80211com *, u_int, u_int);
 u_int	ieee80211_ieee2mhz(u_int, u_int);
 int	ieee80211_min_basic_rate(struct ieee80211com *);
 int	ieee80211_max_basic_rate(struct ieee80211com *);

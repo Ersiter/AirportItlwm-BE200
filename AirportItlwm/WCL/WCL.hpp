@@ -214,7 +214,8 @@ static_assert(sizeof(DeauthEvent) == 0x14, "DeauthEvent size");
 static_assert(sizeof(ChannelInfo) == 0xc86, "ChannelInfo size");
 
 struct NativeChannelInfo {
-    uint8_t reserved0[8];
+    uint32_t version;
+    uint32_t reserved0;
     uint8_t country[4];
     uint16_t count;
     uint16_t channelSpec[400];
@@ -412,6 +413,24 @@ struct ScanRequest {
     uint8_t channels[32];
 };
 
+// RX buffers may carry trailing FCS or DMA padding after the IE chain.
+// Return the length of the strictly parsed IE prefix so callers can forward
+// the valid elements without rejecting the whole frame.
+inline size_t validIEPrefix(const uint8_t *data, size_t length, size_t tailAllowance = 8) {
+    if (!data || length > 2048)
+        return 0;
+    size_t offset = 0;
+    while (offset < length) {
+        size_t remaining = length - offset;
+        if (remaining <= tailAllowance)
+            break;
+        if (size_t(data[offset + 1]) + 2 > remaining)
+            return 0;
+        offset += size_t(data[offset + 1]) + 2;
+    }
+    return offset;
+}
+
 inline bool scanChannelSelected(const uint8_t *channels, bool restricted, unsigned channel) {
     return !restricted || (channel < 256 && (channels[channel / 8] & (1U << (channel % 8))));
 }
@@ -456,6 +475,8 @@ struct JoinRequest {
     uint16_t keyIndex;
     uint8_t key[32];
     uint8_t bssid[6];
+    uint8_t peerIsMlo;
+    uint8_t peerMldAddress[6];
     uint16_t channelSpec;
     uint16_t rsnLength;
     uint8_t rsn[257];
@@ -530,6 +551,15 @@ inline bool decodeJoin(const void *buffer, size_t length, JoinRequest &out) {
     out.keyIndex = read16(p + 0x4e);
     memcpy(out.key, p + 0x50, keyLength);
     memcpy(out.bssid, p + 0x21c, 6);
+    out.peerIsMlo = (p[0x1e0] & 0x80) != 0;
+    if (out.peerIsMlo) {
+        uint8_t mldAddressBits = 0;
+        for (unsigned i = 0; i < 6; ++i)
+            mldAddressBits |= p[0x1d7 + i];
+        if (!mldAddressBits || (p[0x1d7] & 1))
+            return false;
+        memcpy(out.peerMldAddress, p + 0x1d7, 6);
+    }
     out.channelSpec = read16(p + 0x228);
     out.rsnLength = rsnLength;
     memcpy(out.rsn, p + 0xd6, rsnLength);

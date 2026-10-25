@@ -48,8 +48,20 @@ enum ieee80211_cipher {
 	IEEE80211_CIPHER_TKIP		= 0x00000004,
 	IEEE80211_CIPHER_CCMP		= 0x00000008,
 	IEEE80211_CIPHER_WEP104		= 0x00000010,
-	IEEE80211_CIPHER_BIP		= 0x00000020	/* 11w */
+	IEEE80211_CIPHER_BIP		= 0x00000020,	/* BIP-CMAC-128 */
+	IEEE80211_CIPHER_BIP_GMAC_128	= 0x00000040,
+	IEEE80211_CIPHER_BIP_GMAC_256	= 0x00000080
 };
+
+static __inline int
+ieee80211_is_bip_cipher(enum ieee80211_cipher cipher)
+{
+	return cipher == IEEE80211_CIPHER_BIP ||
+	    cipher == IEEE80211_CIPHER_BIP_GMAC_128 ||
+	    cipher == IEEE80211_CIPHER_BIP_GMAC_256;
+}
+
+int ieee80211_cipher_mmie_len(enum ieee80211_cipher);
 
 /*
  * 802.11 Authentication and Key Management Protocols.
@@ -99,12 +111,13 @@ ieee80211_is_sha256_akm(enum ieee80211_akm akm)
 }
 
 struct ieee80211_key {
-	u_int8_t		k_id;		/* identifier (0-5) */
+	u_int8_t		k_id;		/* identifier (0-7) */
 	enum ieee80211_cipher	k_cipher;
 	u_int			k_flags;
 #define IEEE80211_KEY_GROUP	0x00000001	/* group data key */
 #define IEEE80211_KEY_TX	0x00000002	/* Tx+Rx */
 #define IEEE80211_KEY_IGTK	0x00000004	/* integrity group key */
+#define IEEE80211_KEY_BIGTK	0x00000008	/* beacon integrity group key */
 #define IEEE80211_KEY_SWCRYPTO	0x00000080	/* loaded for software crypto */
 
 	u_int			k_len;

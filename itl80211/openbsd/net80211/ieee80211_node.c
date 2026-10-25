@@ -1027,7 +1027,7 @@ ieee80211_create_ibss(struct ieee80211com* ic, struct ieee80211_channel *chan)
             k->k_id = ic->ic_igtk_kid;
             k->k_cipher = ni->ni_rsngroupmgmtcipher;
             k->k_flags = IEEE80211_KEY_IGTK | IEEE80211_KEY_TX;
-            k->k_len = 16;
+            k->k_len = ieee80211_cipher_keylen(k->k_cipher);
             arc4random_buf(k->k_key, k->k_len);
             (*ic->ic_set_key)(ic, ni, k);	/* XXX */
         }
@@ -1122,9 +1122,12 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
         if ((ni->ni_rsnciphers & ic->ic_rsnciphers) == 0)
             fail |= IEEE80211_NODE_ASSOCFAIL_WPA_PROTO;
         
-        /* we only support BIP as the IGTK cipher */
+        /* Management ciphers must be supported by the selected firmware path. */
         if ((ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC) &&
-            ni->ni_rsngroupmgmtcipher != IEEE80211_CIPHER_BIP)
+            (!ieee80211_is_bip_cipher(ni->ni_rsngroupmgmtcipher) ||
+             ((ni->ni_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP_GMAC_128 ||
+               ni->ni_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP_GMAC_256) &&
+              !ic->ic_mld_gmac)))
             fail |= IEEE80211_NODE_ASSOCFAIL_WPA_PROTO;
         
         /* we do not support MFP but AP requires it */
@@ -1992,6 +1995,24 @@ ieee80211_find_rxnode(struct ieee80211com *ic,
     const u_int8_t *bssid;
     int s;
     
+#ifdef AIRPORT_WCL
+    if (ic->ic_opmode == IEEE80211_M_STA &&
+        ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_DATA ||
+         (wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_MGT)) {
+        s = splnet();
+        for (int i = 1; i < ic->ic_mld_link_count; i++) {
+            struct ieee80211_mld_link_info *link = &ic->ic_mld_links[i];
+            if (!link->assoc_accepted || link->ni == NULL ||
+                !IEEE80211_ADDR_EQ(wh->i_addr2, link->ni->ni_bssid))
+                continue;
+            ni = ieee80211_ref_node(link->ni);
+            splx(s);
+            return ni;
+        }
+        splx(s);
+    }
+#endif
+
     if (!ieee80211_needs_rxnode(ic, wh, &bssid))
         return ieee80211_ref_node(ic->ic_bss);
     
@@ -2371,6 +2392,145 @@ ieee80211_iterate_nodes(struct ieee80211com *ic, ieee80211_iter_func *f,
     (*f)(arg, ni);
     splx(s);
 }
+
+#ifdef AIRPORT_WCL
+struct ieee80211_mld_discovery {
+	struct ieee80211com *ic;
+	struct ieee80211_node *primary;
+	uint8_t count;
+};
+
+static void
+ieee80211_mld_discovery_iter(void *arg, struct ieee80211_node *ni)
+{
+	struct ieee80211_mld_discovery *discovery =
+	    (struct ieee80211_mld_discovery *)arg;
+	struct ieee80211_node *primary = discovery->primary;
+	struct ieee80211_mld_link_info *link;
+	uint8_t i, j;
+
+	if (discovery->count >= IEEE80211_MLD_MAX_LINKS || ni == primary ||
+	    !ni->ni_mld_valid || ni->ni_mld_link_id >= 16 || ni->ni_chan == NULL ||
+	    (ni->ni_flags & (IEEE80211_NODE_HECAP | IEEE80211_NODE_EHTCAP)) !=
+	        (IEEE80211_NODE_HECAP | IEEE80211_NODE_EHTCAP) ||
+	    memcmp(ni->ni_mld_addr, primary->ni_mld_addr,
+	        IEEE80211_ADDR_LEN) != 0 ||
+	    ni->ni_esslen != primary->ni_esslen ||
+	    memcmp(ni->ni_essid, primary->ni_essid, ni->ni_esslen) != 0 ||
+	    ni->ni_rsnprotos != primary->ni_rsnprotos ||
+	    ni->ni_supported_rsnakms != primary->ni_supported_rsnakms ||
+	    ni->ni_rsnciphers != primary->ni_rsnciphers ||
+	    ni->ni_rsngroupcipher != primary->ni_rsngroupcipher ||
+	    ni->ni_rsngroupmgmtcipher != primary->ni_rsngroupmgmtcipher)
+		return;
+
+	for (i = 0; i < discovery->count; i++) {
+		link = &discovery->ic->ic_mld_links[i];
+		if (link->ap_link_id == ni->ni_mld_link_id ||
+		    IEEE80211_ADDR_EQ(link->ni->ni_bssid, ni->ni_bssid))
+			return;
+	}
+
+	link = &discovery->ic->ic_mld_links[discovery->count++];
+	link->ni = ieee80211_ref_node(ni);
+	link->ap_link_id = ni->ni_mld_link_id;
+
+	for (i = discovery->count - 1; i > 1; i--) {
+		struct ieee80211_mld_link_info *prev =
+			&discovery->ic->ic_mld_links[i - 1];
+		if (prev->ap_link_id < link->ap_link_id)
+			break;
+		struct ieee80211_mld_link_info tmp = *prev;
+		*prev = *link;
+		*link = tmp;
+		link = prev;
+	}
+	for (j = 1; j < discovery->count; j++) {
+		struct ieee80211_mld_link_info *ordered =
+			&discovery->ic->ic_mld_links[j];
+		ordered->local_link_id = j;
+		IEEE80211_ADDR_COPY(ordered->local_addr,
+		    discovery->ic->ic_wcl_local_mlo_addrs[j]);
+	}
+}
+
+void
+ieee80211_mld_clear_links(struct ieee80211com *ic)
+{
+	uint8_t i;
+
+	for (i = 1; i < ic->ic_mld_link_count; i++) {
+		if (ic->ic_mld_links[i].ni != NULL)
+			ieee80211_release_node(ic, ic->ic_mld_links[i].ni);
+	}
+	memset(ic->ic_mld_links, 0, sizeof(ic->ic_mld_links));
+	ic->ic_mld_link_count = 0;
+	ic->ic_wcl_active_mld_link = 0;
+	ic->ic_mld_emlsr_peer_supported = false;
+}
+
+int
+ieee80211_mld_set_active_link_by_bssid(struct ieee80211com *ic,
+	const uint8_t *bssid)
+{
+	uint8_t i;
+
+	if (bssid == NULL)
+		return EINVAL;
+	for (i = 0; i < ic->ic_mld_link_count; i++) {
+		struct ieee80211_mld_link_info *link = &ic->ic_mld_links[i];
+		if (!link->assoc_accepted || link->ni == NULL)
+			continue;
+		if (IEEE80211_ADDR_EQ(link->ni->ni_bssid, bssid)) {
+			ic->ic_wcl_active_mld_link = i;
+			return 0;
+		}
+	}
+	return ENOENT;
+}
+
+struct ieee80211_node *
+ieee80211_mld_primary_node(struct ieee80211com *ic, struct ieee80211_node *ni)
+{
+	uint8_t i;
+
+	if (ic->ic_opmode != IEEE80211_M_STA || ni == ic->ic_bss)
+		return ni;
+	for (i = 1; i < ic->ic_mld_link_count; i++)
+		if (ic->ic_mld_links[i].assoc_accepted &&
+		    ic->ic_mld_links[i].ni == ni)
+			return ic->ic_bss;
+	return ni;
+}
+
+int
+ieee80211_mld_discover_links(struct ieee80211com *ic,
+	struct ieee80211_node *primary)
+{
+	struct ieee80211_mld_discovery discovery;
+	struct ieee80211_mld_link_info *link;
+
+	ieee80211_mld_clear_links(ic);
+	if (!ic->ic_wcl_peer_is_mlo || !ic->ic_wcl_local_mlo_addrs_valid ||
+	    !primary->ni_mld_valid || primary->ni_mld_link_id >= 16 ||
+	    (primary->ni_flags & (IEEE80211_NODE_HECAP | IEEE80211_NODE_EHTCAP)) !=
+	        (IEEE80211_NODE_HECAP | IEEE80211_NODE_EHTCAP))
+		return 0;
+
+	link = &ic->ic_mld_links[0];
+	link->ni = primary;
+	link->local_link_id = 0;
+	link->ap_link_id = primary->ni_mld_link_id;
+	IEEE80211_ADDR_COPY(link->local_addr, ic->ic_wcl_local_mlo_addrs[0]);
+
+	discovery.ic = ic;
+	discovery.primary = primary;
+	discovery.count = 1;
+	ieee80211_iterate_nodes(ic, ieee80211_mld_discovery_iter, &discovery);
+	ic->ic_mld_link_count = discovery.count;
+	return discovery.count;
+}
+#endif
 
 
 /*
@@ -2848,6 +3008,23 @@ ieee80211_setup_heop(struct ieee80211_node *ni, const uint8_t *data, uint8_t len
     ni->ni_he_oper_nss_set = le16toh(op->he_mcs_nss_set);
     memcpy(ni->ni_he_optional, op->optional, size - sizeof(*op));
     ni->ni_flags |= IEEE80211_NODE_HEOP;
+    return 1;
+}
+
+int
+ieee80211_setup_he_6ghz_capa(struct ieee80211_node *ni, const uint8_t *ie,
+    size_t len)
+{
+    if (ie == NULL && ni->ni_ic != NULL && ni == ni->ni_ic->ic_bss &&
+        ni->ni_ic->ic_state == IEEE80211_S_RUN)
+        return (ni->ni_flags & IEEE80211_NODE_HE6CAP) != 0;
+    ni->ni_flags &= ~IEEE80211_NODE_HE6CAP;
+    ni->ni_he_6ghz_capa = 0;
+    if (ie == NULL || len != 5 || ie[0] != IEEE80211_ELEMID_EXTENSION ||
+        ie[1] != 3 || ie[2] != IEEE80211_ELEMID_EXT_HE_6GHZ_CAPA)
+        return 0;
+    ni->ni_he_6ghz_capa = LE_READ_2(ie + 3);
+    ni->ni_flags |= IEEE80211_NODE_HE6CAP;
     return 1;
 }
 

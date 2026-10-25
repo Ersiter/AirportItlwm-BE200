@@ -132,6 +132,8 @@ struct ieee80211_htframe_addr4 {	/* 11n */
  *    and %NL80211_ATTR_CENTER_FREQ2 attributes must be provided as well
  * @IEEE80211_CHAN_WIDTH_160: 160 MHz channel, the %NL80211_ATTR_CENTER_FREQ1
  *    attribute must be provided as well
+ * @IEEE80211_CHAN_WIDTH_320: 320 MHz EHT channel, the
+ *    %NL80211_ATTR_CENTER_FREQ1 attribute must be provided as well
  * @IEEE80211_CHAN_WIDTH_5: 5 MHz OFDM channel
  * @IEEE80211_CHAN_WIDTH_10: 10 MHz OFDM channel
  * @IEEE80211_CHAN_WIDTH_1: 1 MHz OFDM channel
@@ -147,6 +149,7 @@ enum ieee80211_chan_width {
     IEEE80211_CHAN_WIDTH_80,
     IEEE80211_CHAN_WIDTH_80P80,
     IEEE80211_CHAN_WIDTH_160,
+    IEEE80211_CHAN_WIDTH_320,
     IEEE80211_CHAN_WIDTH_5,
     IEEE80211_CHAN_WIDTH_10,
     IEEE80211_CHAN_WIDTH_1,
@@ -163,6 +166,7 @@ const char * const ieee80211_chan_width_name[] = {
     "80",
     "80P80",
     "160",
+    "320",
     "5",
     "10",
     "1",
@@ -652,6 +656,9 @@ enum ieee80211_eid_ext {
     IEEE80211_ELEMID_EXT_SHORT_SSID_LIST = 58,
     IEEE80211_ELEMID_EXT_HE_6GHZ_CAPA = 59,
     IEEE80211_ELEMID_EXT_UL_MU_POWER_CAPA = 60,
+    IEEE80211_ELEMID_EXT_MULTI_LINK = 107,
+    IEEE80211_ELEMID_EXT_EHT_CAPABILITY = 108,
+    IEEE80211_ELEMID_EXT_EHT_OPERATION = 109,
 };
 
 /*
@@ -1247,7 +1254,8 @@ enum {
 	IEEE80211_KDE_NONCE	= 6,
 	IEEE80211_KDE_LIFETIME	= 7,
 	IEEE80211_KDE_ERROR	= 8,
-	IEEE80211_KDE_IGTK	= 9	/* 11w */
+	IEEE80211_KDE_IGTK	= 9,	/* 11w */
+	IEEE80211_KDE_BIGTK	= 14	/* 11bi */
 };
 
 /*
@@ -1497,6 +1505,7 @@ struct ieee80211_ie_vht_txpwrenv {
 #define IEEE80211_EXTCAP_WNM_NOTIFICATION    (1ULL << 46)
 #define IEEE80211_EXTCAP_RSVD_47        (1ULL << 47)
 #define IEEE80211_EXTCAP_SSID            (1ULL << 48) /* UTF-8 SSID */
+#define IEEE80211_EXTCAP_BEACON_PROTECTION_BIT 84
 /* bits 49-n are reserved */
 
 struct ieee80211_extcap_ie {
@@ -1607,6 +1616,93 @@ struct ieee80211_he_mcs_nss_supp {
     uint16_t rx_mcs_80p80;
     uint16_t tx_mcs_80p80;
 } __packed;
+
+#define IEEE80211_EHT_PPE_THRES_MAX_LEN 32
+
+struct ieee80211_eht_cap_elem_fixed {
+    uint8_t mac_cap_info[2];
+    uint8_t phy_cap_info[9];
+} __packed;
+
+struct ieee80211_eht_mcs_nss_supp_bw {
+    uint8_t rx_tx_mcs9_max_nss;
+    uint8_t rx_tx_mcs11_max_nss;
+    uint8_t rx_tx_mcs13_max_nss;
+} __packed;
+
+struct ieee80211_eht_mcs_nss_supp_20mhz_only {
+    uint8_t rx_tx_max_nss[4];
+} __packed;
+
+struct ieee80211_eht_mcs_nss_supp {
+    union {
+        struct ieee80211_eht_mcs_nss_supp_20mhz_only only_20mhz;
+        struct {
+            struct ieee80211_eht_mcs_nss_supp_bw _80;
+            struct ieee80211_eht_mcs_nss_supp_bw _160;
+            struct ieee80211_eht_mcs_nss_supp_bw _320;
+        } __packed bw;
+    } __packed;
+} __packed;
+
+struct ieee80211_eht_operation_info {
+    uint8_t control;
+    uint8_t ccfs0;
+    uint8_t ccfs1;
+    uint8_t optional[];
+} __packed;
+
+struct ieee80211_eht_operation {
+    uint8_t params;
+    uint8_t basic_mcs_nss[4];
+    uint8_t optional[];
+} __packed;
+
+#define IEEE80211_EHT_MAC_CAP0_OM_CONTROL 0x02
+#define IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ 0x02
+#define IEEE80211_EHT_PHY_CAP0_242_TONE_RU_GT20MHZ 0x04
+#define IEEE80211_EHT_PHY_CAP0_NDP_4_EHT_LFT_32_GI 0x08
+#define IEEE80211_EHT_PHY_CAP5_PPE_THRESHOLD_PRESENT 0x08
+#define IEEE80211_EHT_PHY_CAP5_COMMON_NOMINAL_PKT_PAD_MASK 0x30
+#define IEEE80211_EHT_PHY_CAP5_COMMON_NOMINAL_PKT_PAD_16US 2
+#define IEEE80211_EHT_OPER_INFO_PRESENT 0x01
+#define IEEE80211_EHT_OPER_DISABLED_SUBCHANNEL_BITMAP_PRESENT 0x02
+#define IEEE80211_EHT_OPER_CHAN_WIDTH_MASK 0x07
+#define IEEE80211_EHT_OPER_CHAN_WIDTH_20MHZ 0
+#define IEEE80211_EHT_OPER_CHAN_WIDTH_40MHZ 1
+#define IEEE80211_EHT_OPER_CHAN_WIDTH_80MHZ 2
+#define IEEE80211_EHT_OPER_CHAN_WIDTH_160MHZ 3
+#define IEEE80211_EHT_OPER_CHAN_WIDTH_320MHZ 4
+
+#define IEEE80211_ML_CONTROL_TYPE_MASK 0x0007
+#define IEEE80211_ML_CONTROL_TYPE_BASIC 0
+#define IEEE80211_MLC_BASIC_PRES_LINK_ID 0x0010
+#define IEEE80211_MLC_BASIC_PRES_BSS_PARAM_CH_CNT 0x0020
+#define IEEE80211_MLC_BASIC_PRES_MED_SYNC_DELAY 0x0040
+#define IEEE80211_MLC_BASIC_PRES_EML_CAPA 0x0080
+#define IEEE80211_MLC_BASIC_PRES_MLD_CAPA_OP 0x0100
+#define IEEE80211_MLC_BASIC_PRES_MLD_ID 0x0200
+#define IEEE80211_MLC_BASIC_PRES_EXT_MLD_CAPA_OP 0x0400
+#define IEEE80211_MLC_BASIC_PRES_ENH_CRIT_UPD 0x0800
+#define IEEE80211_EML_CAP_EMLSR_SUPP 0x0001
+#define IEEE80211_EML_CAP_EML_PADDING_DELAY 0x000e
+#define IEEE80211_EML_CAP_EMLSR_TRANSITION_DELAY 0x0070
+#define IEEE80211_EML_CAP_EML_PADDING_DELAY_32US 1
+#define IEEE80211_EML_CAP_EMLSR_TRANSITION_DELAY_64US 3
+#define IEEE80211_EML_CAP_TRANSITION_TIMEOUT 0x7800
+#define IEEE80211_EML_CAP_TRANSITION_TIMEOUT_SHIFT 11
+#define IEEE80211_EML_CAP_TRANSITION_TIMEOUT_64TU 10
+#define IEEE80211_MLD_CAP_OP_LINK_RECONF_SUPPORT 0x2000
+#define IEEE80211_MLE_SUBELEM_PER_STA_PROFILE 0
+#define IEEE80211_MLE_STA_CONTROL_LINK_ID 0x000f
+#define IEEE80211_MLE_STA_CONTROL_COMPLETE_PROFILE 0x0010
+#define IEEE80211_MLE_STA_CONTROL_STA_MAC_ADDR_PRESENT 0x0020
+#define IEEE80211_MLE_SUBELEM_FRAGMENT 254
+#define IEEE80211_HE_6GHZ_CAP_MIN_MPDU_START 0x0007
+#define IEEE80211_HE_6GHZ_CAP_MAX_AMPDU_LEN_EXP 0x0038
+#define IEEE80211_HE_6GHZ_CAP_MAX_MPDU_LEN 0x00c0
+#define IEEE80211_HE_6GHZ_CAP_TX_ANTPAT_CONS 0x1000
+#define IEEE80211_HE_6GHZ_CAP_RX_ANTPAT_CONS 0x2000
 
 /**
  * struct ieee80211_he_operation - HE capabilities element
@@ -1992,6 +2088,42 @@ ieee80211_he_ppe_size(uint8_t ppe_thres_hdr, const uint8_t *phy_cap_info)
     n = DIV_ROUND_UP(n, 8);
 
     return n;
+}
+
+static inline uint8_t
+ieee80211_eht_mcs_nss_size(const struct ieee80211_he_cap_elem *he_cap,
+    const struct ieee80211_eht_cap_elem_fixed *eht_cap, int from_ap)
+{
+    uint8_t count = 0;
+
+    if (he_cap->phy_cap_info[0] &
+        IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G)
+        return 3;
+    if (he_cap->phy_cap_info[0] &
+        IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G)
+        count += 3;
+    if (he_cap->phy_cap_info[0] &
+        IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G)
+        count += 3;
+    if (eht_cap->phy_cap_info[0] & IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ)
+        count += 3;
+    if (count)
+        return count;
+    return from_ap ? 3 : 4;
+}
+
+static inline uint8_t
+ieee80211_eht_ppe_size(uint16_t ppe_hdr)
+{
+    uint8_t ru_count = 0;
+    uint8_t ru_mask = (ppe_hdr >> 4) & 0x1f;
+    uint8_t i;
+    uint16_t bits;
+
+    for (i = 0; i < 5; i++)
+        ru_count += (ru_mask >> i) & 1;
+    bits = 9 + ru_count * ((ppe_hdr & 0x0f) + 1) * 6;
+    return (bits + 7) / 8;
 }
 
 /**

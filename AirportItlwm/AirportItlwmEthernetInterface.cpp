@@ -76,7 +76,6 @@ attachToDataLinkLayer( IOOptionBits options, void *parameter )
         interface->registerService();
         interface->prepareBSDInterface(getIfnet(), 0);
 #endif
-//        ret = bpf_attach(getIfnet(), DLT_RAW, 0x48, &AirportItlwmEthernetInterface::bpfOutputPacket, &AirportItlwmEthernetInterface::bpfTap);
     }
 #ifdef AIRPORT_WCL
     isAttach = ret == kIOReturnSuccess;
@@ -100,21 +99,6 @@ IOService *AirportItlwmEthernetInterface::
 getProvider() const
 {
     return isAttach ? this->interface : super::getProvider();
-}
-
-errno_t AirportItlwmEthernetInterface::
-bpfOutputPacket(ifnet_t interface, u_int32_t data_link_type, mbuf_t packet)
-{
-    XYLog("%s data_link_type: %d\n", __FUNCTION__, data_link_type);
-    AirportItlwmEthernetInterface *networkInterface = (AirportItlwmEthernetInterface *)ifnet_softc(interface);
-    return networkInterface->enqueueOutputPacket(packet);
-}
-
-errno_t AirportItlwmEthernetInterface::
-bpfTap(ifnet_t interface, u_int32_t data_link_type, bpf_tap_mode direction)
-{
-    XYLog("%s data_link_type: %d direction: %d\n", __FUNCTION__, data_link_type, direction);
-    return 0;
 }
 
 bool AirportItlwmEthernetInterface::

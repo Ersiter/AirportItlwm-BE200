@@ -1208,11 +1208,12 @@ enum iwx_msix_ivar_for_cause {
  *                     HW address related registers                          *
  *****************************************************************************/
 
-#define IWX_CSR_ADDR_BASE            (0x380)
-#define IWX_CSR_MAC_ADDR0_OTP        (IWX_CSR_ADDR_BASE)
-#define IWX_CSR_MAC_ADDR1_OTP        (IWX_CSR_ADDR_BASE + 4)
-#define IWX_CSR_MAC_ADDR0_STRAP        (IWX_CSR_ADDR_BASE + 8)
-#define IWX_CSR_MAC_ADDR1_STRAP        (IWX_CSR_ADDR_BASE + 0xC)
+#define IWX_CSR_ADDR_BASE(sc) \
+    ((sc)->sc_device_family >= IWX_DEVICE_FAMILY_BZ ? 0x30 : 0x380)
+#define IWX_CSR_MAC_ADDR0_OTP(sc)        (IWX_CSR_ADDR_BASE(sc))
+#define IWX_CSR_MAC_ADDR1_OTP(sc)        (IWX_CSR_ADDR_BASE(sc) + 4)
+#define IWX_CSR_MAC_ADDR0_STRAP(sc)      (IWX_CSR_ADDR_BASE(sc) + 8)
+#define IWX_CSR_MAC_ADDR1_STRAP(sc)      (IWX_CSR_ADDR_BASE(sc) + 0xC)
 
 /**
  * uCode API flags
@@ -1430,6 +1431,9 @@ enum iwx_msix_ivar_for_cause {
 #define IWX_UCODE_TLV_CAPA_EXTEND_SHARED_MEM_CFG    80
 #define IWX_UCODE_TLV_CAPA_LQM_SUPPORT            81
 #define IWX_UCODE_TLV_CAPA_LED_CMD_SUPPORT        88
+#define IWX_UCODE_TLV_CAPA_MCC_UPDATE_11AX_SUPPORT    89
+#define IWX_UCODE_TLV_CAPA_BIGTK_SUPPORT             100
+#define IWX_UCODE_TLV_CAPA_BIGTK_TX_SUPPORT          109
 
 #define IWX_NUM_UCODE_TLV_CAPA 128
 
@@ -3345,12 +3349,17 @@ struct iwx_time_quota_cmd {
 /* Supported bands */
 #define IWX_PHY_BAND_5  (0)
 #define IWX_PHY_BAND_24 (1)
+#define IWX_PHY_BAND_6  (2)
+
+#define IWX_RX_MPDU_BAND_POS  6
+#define IWX_RX_MPDU_BAND_MASK 0xc0
 
 /* Supported channel width, vary if there is VHT support */
 #define IWX_PHY_VHT_CHANNEL_MODE20    (0x0)
 #define IWX_PHY_VHT_CHANNEL_MODE40    (0x1)
 #define IWX_PHY_VHT_CHANNEL_MODE80    (0x2)
 #define IWX_PHY_VHT_CHANNEL_MODE160    (0x3)
+#define IWX_PHY_VHT_CHANNEL_MODE320    (0x4)
 
 /*
  * Control channel position:
@@ -3372,6 +3381,7 @@ struct iwx_time_quota_cmd {
 #define IWX_PHY_VHT_CTRL_POS_2_ABOVE  (0x5)
 #define IWX_PHY_VHT_CTRL_POS_3_ABOVE  (0x6)
 #define IWX_PHY_VHT_CTRL_POS_4_ABOVE  (0x7)
+#define IWX_PHY_VHT_CTRL_POS_OFFS_EXT (0x8)
 
 /*
  * @band: IWX_PHY_BAND_*
@@ -5615,6 +5625,7 @@ enum {
 #define IWX_TLC_MNG_CFG_FLAGS_HE_STBC_160MHZ_MSK    (1 << 2)
 #define IWX_TLC_MNG_CFG_FLAGS_HE_DCM_NSS_1_MSK        (1 << 3)
 #define IWX_TLC_MNG_CFG_FLAGS_HE_DCM_NSS_2_MSK        (1 << 4)
+#define IWX_TLC_MNG_CFG_FLAGS_EHT_EXTRA_LTF_MSK       (1 << 6)
 
 /**
  * enum iwx_tlc_mng_cfg_cw - channel width options
@@ -5629,7 +5640,8 @@ enum iwx_tlc_mng_cfg_cw {
     IWX_TLC_MNG_CH_WIDTH_40MHZ,
     IWX_TLC_MNG_CH_WIDTH_80MHZ,
     IWX_TLC_MNG_CH_WIDTH_160MHZ,
-    IWX_TLC_MNG_CH_WIDTH_LAST = IWX_TLC_MNG_CH_WIDTH_160MHZ,
+    IWX_TLC_MNG_CH_WIDTH_320MHZ,
+    IWX_TLC_MNG_CH_WIDTH_LAST = IWX_TLC_MNG_CH_WIDTH_320MHZ,
 };
 
 /**
@@ -5657,6 +5669,7 @@ enum iwx_tlc_mng_cfg_mode {
     IWX_TLC_MNG_MODE_HT,
     IWX_TLC_MNG_MODE_VHT,
     IWX_TLC_MNG_MODE_HE,
+    IWX_TLC_MNG_MODE_EHT,
     IWX_TLC_MNG_MODE_INVALID,
     IWX_TLC_MNG_MODE_NUM = IWX_TLC_MNG_MODE_INVALID,
 };
@@ -5767,6 +5780,21 @@ struct iwx_tlc_config_cmd_v4 {
     uint16_t max_mpdu_len;
     uint16_t max_tx_op;
 } __packed; /* TLC_MNG_CONFIG_CMD_API_S_VER_4 */
+
+struct iwx_tlc_config_cmd_v6 {
+    uint32_t sta_mask;
+    uint32_t phy_id;
+    uint8_t max_ch_width;
+    uint8_t mode;
+    uint8_t chains;
+    uint8_t sgi_ch_width_supp;
+    uint16_t flags;
+    uint16_t non_ht_rates;
+    uint32_t ht_rates[IWX_TLC_NSS_MAX][IWX_TLC_MCS_PER_BW_NUM_V4];
+    uint16_t max_mpdu_len;
+    uint16_t max_tx_op;
+} __packed; /* TLC_MNG_CONFIG_CMD_API_S_VER_6 */
+static_assert(sizeof(iwx_tlc_config_cmd_v6) == 44, "TLC v6 command ABI");
 
 /**
  * @IWX_TLC_NOTIF_FLAG_RATE: last initial rate update
@@ -7350,6 +7378,12 @@ struct iwx_umac_scan_abort {
     uint32_t flags;
 } __packed; /* SCAN_ABORT_CMD_UMAC_API_S_VER_1 */
 
+enum iwx_umac_scan_abort_status {
+    IWX_UMAC_SCAN_ABORT_STATUS_SUCCESS = 0,
+    IWX_UMAC_SCAN_ABORT_STATUS_IN_PROGRESS,
+    IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND,
+};
+
 /**
  * struct iwx_umac_scan_complete
  * @uid: scan id, &enum iwx_umac_scan_uid_offsets
@@ -7949,6 +7983,23 @@ struct iwx_mcc_update_resp {
     uint32_t n_channels;
     uint32_t channels[0];
 } __packed; /* LAR_UPDATE_MCC_CMD_RESP_S_VER_4 */
+
+/**
+ * MCC_UPDATE_CMD response version 8 changes cap to 32 bits and adds
+ * two-byte padding after mcc.
+ */
+struct iwx_mcc_update_resp_v8 {
+    uint32_t status;
+    uint16_t mcc;
+    uint8_t padding[2];
+    uint32_t cap;
+    uint16_t time;
+    uint16_t geo_info;
+    uint8_t source_id;
+    uint8_t reserved[3];
+    uint32_t n_channels;
+    uint32_t channels[0];
+} __packed; /* LAR_UPDATE_MCC_CMD_RESP_S_VER_8 */
 
 /**
  * struct iwx_mcc_chub_notif - chub notifies of mcc change

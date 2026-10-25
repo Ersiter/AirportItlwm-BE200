@@ -471,7 +471,7 @@ ieee80211_setkeys(struct ieee80211com *ic)
 		k->k_id = kid;
 		k->k_cipher = ic->ic_bss->ni_rsngroupmgmtcipher;
 		k->k_flags = IEEE80211_KEY_IGTK | IEEE80211_KEY_TX;
-		k->k_len = 16;
+		k->k_len = ieee80211_cipher_keylen(k->k_cipher);
 		arc4random_buf(k->k_key, k->k_len);
 	}
 
@@ -829,8 +829,9 @@ ieee80211_he_supported(struct ieee80211com *ic, struct ieee80211_node *ni)
         (ni->ni_flags & (IEEE80211_NODE_HECAP | IEEE80211_NODE_HEOP)) !=
             (IEEE80211_NODE_HECAP | IEEE80211_NODE_HEOP))
         return 0;
-    if (ni->ni_he_oper_params & (IEEE80211_HE_OPERATION_TWT_REQUIRED |
-        IEEE80211_HE_OPERATION_6GHZ_OP_INFO))
+    if ((ni->ni_he_oper_params & IEEE80211_HE_OPERATION_TWT_REQUIRED) ||
+        (ni->ni_chan != NULL && IEEE80211_IS_CHAN_6GHZ(ni->ni_chan) &&
+         !(ni->ni_flags & IEEE80211_NODE_HE6CAP)))
         return 0;
     uint16_t tx = ieee80211_he_mcs_intersection(
         le16toh(ic->ic_he_mcs_nss_supp.tx_mcs_80),
@@ -862,7 +863,9 @@ ieee80211_he_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
     ni->ni_he_txrate_kbps = 0;
     ni->ni_he_tx_nss = 0;
     if (!ni->ni_he_requested || !ieee80211_he_supported(ic, ni) ||
-        !(ni->ni_flags & IEEE80211_NODE_HT) || !(ni->ni_flags & IEEE80211_NODE_QOS))
+        (!IEEE80211_IS_CHAN_6GHZ(ni->ni_chan) &&
+         !(ni->ni_flags & IEEE80211_NODE_HT)) ||
+        !(ni->ni_flags & IEEE80211_NODE_QOS))
         return;
     uint16_t tx = ieee80211_he_mcs_intersection(le16toh(ic->ic_he_mcs_nss_supp.tx_mcs_80),
         le16toh(ni->ni_he_mcs_nss_supp.rx_mcs_80));
@@ -894,6 +897,94 @@ ieee80211_he_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
     XYLog("HE negotiated: width=%s tx80=%04x rx80=%04x color=%u\n",
         ieee80211_chan_width_name[ni->ni_chw], tx, rx,
         (ni->ni_he_oper_params >> 24) & 0x3f);
+}
+
+void
+ieee80211_eht_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
+{
+    uint8_t center_channel;
+    uint8_t local_widths, peer_widths;
+    int supported = 0;
+
+    ni->ni_flags &= ~IEEE80211_NODE_EHT;
+    ni->ni_eht_center_freq1 = 0;
+    if (!ni->ni_eht_requested || !ic->ic_eht_cap_valid ||
+        !(ni->ni_flags & IEEE80211_NODE_HE) ||
+        (ni->ni_flags & (IEEE80211_NODE_EHTCAP | IEEE80211_NODE_EHTOP)) !=
+            (IEEE80211_NODE_EHTCAP | IEEE80211_NODE_EHTOP))
+        return;
+
+    local_widths = ic->ic_he_cap_elem.phy_cap_info[0] &
+        ni->ni_he_cap_elem.phy_cap_info[0];
+    peer_widths = ni->ni_eht_oper_width;
+    switch (peer_widths) {
+    case IEEE80211_EHT_OPER_CHAN_WIDTH_20MHZ:
+        ni->ni_chw = IEEE80211_CHAN_WIDTH_20;
+        supported = 1;
+        break;
+    case IEEE80211_EHT_OPER_CHAN_WIDTH_40MHZ:
+        supported = (local_widths &
+            (IEEE80211_IS_CHAN_2GHZ(ni->ni_chan) ?
+             IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G :
+             IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G)) != 0;
+        if (supported)
+            ni->ni_chw = IEEE80211_CHAN_WIDTH_40;
+        break;
+    case IEEE80211_EHT_OPER_CHAN_WIDTH_80MHZ:
+        supported = (local_widths &
+            IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G) != 0;
+        if (supported)
+            ni->ni_chw = IEEE80211_CHAN_WIDTH_80;
+        break;
+    case IEEE80211_EHT_OPER_CHAN_WIDTH_160MHZ: {
+        uint16_t tx160 = ieee80211_he_mcs_intersection(
+            le16toh(ic->ic_he_mcs_nss_supp.tx_mcs_160),
+            le16toh(ni->ni_he_mcs_nss_supp.rx_mcs_160));
+        uint16_t rx160 = ieee80211_he_mcs_intersection(
+            le16toh(ic->ic_he_mcs_nss_supp.rx_mcs_160),
+            le16toh(ni->ni_he_mcs_nss_supp.tx_mcs_160));
+        supported = (local_widths &
+            IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G) &&
+            (tx160 & 3) != 3 && (rx160 & 3) != 3;
+        if (supported)
+            ni->ni_chw = IEEE80211_CHAN_WIDTH_160;
+        break;
+    }
+    case IEEE80211_EHT_OPER_CHAN_WIDTH_320MHZ:
+        supported = IEEE80211_IS_CHAN_6GHZ(ni->ni_chan) &&
+            (ic->ic_eht_cap_elem.phy_cap_info[0] &
+                IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ) &&
+            (ni->ni_eht_cap_elem.phy_cap_info[0] &
+                IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ) &&
+            ((ic->ic_eht_mcs_nss_supp.bw._320.rx_tx_mcs9_max_nss >> 4) & 0x0f) &&
+            (ni->ni_eht_mcs_nss[6] & 0x0f);
+        if (supported)
+            ni->ni_chw = IEEE80211_CHAN_WIDTH_320;
+        break;
+    default:
+        break;
+    }
+    if (!supported)
+        return;
+
+    if (ni->ni_chw == IEEE80211_CHAN_WIDTH_160 ||
+        ni->ni_chw == IEEE80211_CHAN_WIDTH_320) {
+        center_channel = ni->ni_eht_ccfs1;
+        if (center_channel == 0)
+            return;
+    } else {
+        center_channel = ni->ni_eht_ccfs0;
+    }
+    if (center_channel != 0) {
+        u_int flags = ni->ni_chan->ic_flags &
+            (IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_5GHZ |
+             IEEE80211_CHAN_6GHZ);
+        ni->ni_eht_center_freq1 = ieee80211_ieee2mhz(
+            center_channel, flags);
+    }
+    ni->ni_flags |= IEEE80211_NODE_EHT;
+    XYLog("EHT negotiated: width=%s center1=%u\n",
+        ieee80211_chan_width_name[ni->ni_chw], ni->ni_eht_center_freq1);
 }
 
 void
@@ -1057,6 +1148,7 @@ void
 ieee80211_delba_request(struct ieee80211com *ic, struct ieee80211_node *ni,
     u_int16_t reason, u_int8_t dir, u_int8_t tid)
 {
+	ni = ieee80211_mld_primary_node(ic, ni);
 	/* MLME-DELBA.request */
 
 	if (reason) {
@@ -1343,7 +1435,10 @@ ieee80211_newstate(struct ieee80211com *ic, enum ieee80211_state nstate,
 		    ieee80211_state_name[ostate], ieee80211_state_name[nstate]);
 	ic->ic_state = nstate;			/* state transition */
 	ni = ic->ic_bss;			/* NB: no reference held */
-	ieee80211_set_link_state(ic, LINK_STATE_DOWN);
+	if (!(ic->ic_opmode == IEEE80211_M_STA &&
+	    ostate == IEEE80211_S_ASSOC && nstate == IEEE80211_S_RUN &&
+	    ni->ni_port_valid))
+		ieee80211_set_link_state(ic, LINK_STATE_DOWN);
 	ic->ic_xflags &= ~IEEE80211_F_TX_MGMT_ONLY;
 	switch (nstate) {
 	case IEEE80211_S_INIT:
@@ -1607,7 +1702,7 @@ justcleanup:
                     " HE enabled" : "");
 			}
 #if defined(AIRPORT_WCL)
-            if (!(ic->ic_flags & IEEE80211_F_RSNON)) {
+            if (!(ic->ic_flags & IEEE80211_F_RSNON) || ni->ni_port_valid) {
 #elif defined(USE_APPLE_SUPPLICANT)
             {
 #elif (defined IO80211FAMILY_V2)
@@ -1642,6 +1737,13 @@ ieee80211_set_link_state(struct ieee80211com *ic, int nstate)
 {
 	struct _ifnet *ifp = &ic->ic_if;
     int link_state;
+
+#ifdef AIRPORT_WCL
+    if (ic->ic_opmode == IEEE80211_M_STA &&
+        (ic->ic_flags & IEEE80211_F_RSNON) &&
+        nstate == LINK_STATE_UP && ic->ic_state != IEEE80211_S_RUN)
+        return;
+#endif
     
 	switch (ic->ic_opmode) {
 #ifndef IEEE80211_STA_ONLY

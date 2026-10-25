@@ -383,7 +383,7 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
     struct ieee80211_ptk tptk;
     struct ieee80211_key *k;
     const u_int8_t *frm, *efrm;
-    const u_int8_t *rsnie1, *rsnie2, *gtk, *igtk;
+    const u_int8_t *rsnie1, *rsnie2, *gtk, *igtk, *bigtk;
     u_int16_t info, reason = 0;
     int keylen, deferlink = 0;
     
@@ -446,7 +446,7 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
      * RSN IEs in message 3/4.  We only take into account the IE of the
      * version of the protocol we negotiated at association time.
      */
-    rsnie1 = rsnie2 = gtk = igtk = NULL;
+    rsnie1 = rsnie2 = gtk = igtk = bigtk = NULL;
     while (frm + 2 <= efrm) {
         if (frm + 2 + frm[1] > efrm)
             break;
@@ -471,6 +471,11 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
                         case IEEE80211_KDE_IGTK:
                             if (ni->ni_flags & IEEE80211_NODE_MFP)
                                 igtk = frm;
+                            break;
+                        case IEEE80211_KDE_BIGTK:
+                            if (ic->ic_beacon_prot &&
+                                (ni->ni_flags & IEEE80211_NODE_BEACON_PROT))
+                                bigtk = frm;
                             break;
                     }
                 } else if (memcmp(&frm[2], MICROSOFT_OUI, 3) == 0) {
@@ -640,9 +645,11 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
     }
     if (igtk != NULL) {    /* implies MFP && gtk != NULL */
         u_int16_t kid;
+        keylen = ieee80211_cipher_keylen(ni->ni_rsngroupmgmtcipher);
         
         /* check that the IGTK KDE is valid */
-        if (igtk[1] != 4 + 24) {
+        if ((keylen != 16 && keylen != 32) ||
+            igtk[1] != 4 + 8 + keylen) {
             reason = IEEE80211_REASON_AUTH_LEAVE;
             goto deauth;
         }
@@ -654,15 +661,51 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         }
         /* map IGTK to 802.11 key */
         k = &ic->ic_nw_keys[kid];
-        if (ieee80211_must_update_group_key(k, &igtk[14], 16)) {
+        if (ieee80211_must_update_group_key(k, &igtk[14], keylen)) {
             memset(k, 0, sizeof(*k));
             k->k_id = kid;    /* either 4 or 5 */
             k->k_cipher = ni->ni_rsngroupmgmtcipher;
             k->k_flags = IEEE80211_KEY_IGTK;
             k->k_mgmt_rsc = LE_READ_6(&igtk[8]);    /* IPN */
-            k->k_len = 16;
+            k->k_len = keylen;
             memcpy(k->k_key, &igtk[14], k->k_len);
             /* install the IGTK */
+            switch ((*ic->ic_set_key)(ic, ni, k)) {
+                case 0:
+                    break;
+                case EBUSY:
+                    deferlink = 1;
+                    break;
+                default:
+                    reason = IEEE80211_REASON_AUTH_LEAVE;
+                    goto deauth;
+            }
+        }
+    }
+    if (bigtk != NULL) {
+        u_int16_t kid;
+
+        keylen = ieee80211_cipher_keylen(ni->ni_rsngroupmgmtcipher);
+        if ((keylen != 16 && keylen != 32) ||
+            bigtk[1] != 4 + 8 + keylen) {
+            reason = IEEE80211_REASON_AUTH_LEAVE;
+            goto deauth;
+        }
+        kid = LE_READ_2(&bigtk[6]);
+        if (kid != 6 && kid != 7) {
+            DPRINTF(("unsupported BIGTK id %u\n", kid));
+            reason = IEEE80211_REASON_AUTH_LEAVE;
+            goto deauth;
+        }
+        k = &ic->ic_nw_keys[kid];
+        if (ieee80211_must_update_group_key(k, &bigtk[14], keylen)) {
+            memset(k, 0, sizeof(*k));
+            k->k_id = kid;
+            k->k_cipher = ni->ni_rsngroupmgmtcipher;
+            k->k_flags = IEEE80211_KEY_BIGTK;
+            k->k_mgmt_rsc = LE_READ_6(&bigtk[8]);
+            k->k_len = keylen;
+            memcpy(k->k_key, &bigtk[14], k->k_len);
             switch ((*ic->ic_set_key)(ic, ni, k)) {
                 case 0:
                     break;
@@ -836,7 +879,7 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
     XYLog("%s\n", __FUNCTION__);
     struct ieee80211_key *k;
     const u_int8_t *frm, *efrm;
-    const u_int8_t *gtk, *igtk;
+    const u_int8_t *gtk, *igtk, *bigtk;
     u_int16_t info, kid, reason = 0;
     int keylen;
     
@@ -874,7 +917,7 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
     frm = (const u_int8_t *)&key[1];
     efrm = frm + BE_READ_2(key->paylen);
     
-    gtk = igtk = NULL;
+    gtk = igtk = bigtk = NULL;
     while (frm + 2 <= efrm) {
         if (frm + 2 + frm[1] > efrm)
             break;
@@ -890,6 +933,11 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
                         case IEEE80211_KDE_IGTK:
                             if (ni->ni_flags & IEEE80211_NODE_MFP)
                                 igtk = frm;
+                            break;
+                        case IEEE80211_KDE_BIGTK:
+                            if (ic->ic_beacon_prot &&
+                                (ni->ni_flags & IEEE80211_NODE_BEACON_PROT))
+                                bigtk = frm;
                             break;
                     }
                 }
@@ -932,8 +980,10 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
         }
     }
     if (igtk != NULL) {    /* implies MFP */
+        keylen = ieee80211_cipher_keylen(ni->ni_rsngroupmgmtcipher);
         /* check that the IGTK KDE is valid */
-        if (igtk[1] != 4 + 24) {
+        if ((keylen != 16 && keylen != 32) ||
+            igtk[1] != 4 + 8 + keylen) {
             reason = IEEE80211_REASON_AUTH_LEAVE;
             goto deauth;
         }
@@ -945,15 +995,43 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
         }
         /* map IGTK to 802.11 key */
         k = &ic->ic_nw_keys[kid];
-        if (ieee80211_must_update_group_key(k, &igtk[14], 16)) {
+        if (ieee80211_must_update_group_key(k, &igtk[14], keylen)) {
             memset(k, 0, sizeof(*k));
             k->k_id = kid;    /* either 4 or 5 */
             k->k_cipher = ni->ni_rsngroupmgmtcipher;
             k->k_flags = IEEE80211_KEY_IGTK;
             k->k_mgmt_rsc = LE_READ_6(&igtk[8]);    /* IPN */
-            k->k_len = 16;
+            k->k_len = keylen;
             memcpy(k->k_key, &igtk[14], k->k_len);
             /* install the IGTK */
+            switch ((*ic->ic_set_key)(ic, ni, k)) {
+                case 0:
+                case EBUSY:
+                    break;
+                default:
+                    reason = IEEE80211_REASON_AUTH_LEAVE;
+                    goto deauth;
+            }
+        }
+    }
+    if (bigtk != NULL) {
+        kid = LE_READ_2(&bigtk[6]);
+        keylen = ieee80211_cipher_keylen(ni->ni_rsngroupmgmtcipher);
+        if ((keylen != 16 && keylen != 32) ||
+            bigtk[1] != 4 + 8 + keylen ||
+            (kid != 6 && kid != 7)) {
+            reason = IEEE80211_REASON_AUTH_LEAVE;
+            goto deauth;
+        }
+        k = &ic->ic_nw_keys[kid];
+        if (ieee80211_must_update_group_key(k, &bigtk[14], keylen)) {
+            memset(k, 0, sizeof(*k));
+            k->k_id = kid;
+            k->k_cipher = ni->ni_rsngroupmgmtcipher;
+            k->k_flags = IEEE80211_KEY_BIGTK;
+            k->k_mgmt_rsc = LE_READ_6(&bigtk[8]);
+            k->k_len = keylen;
+            memcpy(k->k_key, &bigtk[14], k->k_len);
             switch ((*ic->ic_set_key)(ic, ni, k)) {
                 case 0:
                 case EBUSY:

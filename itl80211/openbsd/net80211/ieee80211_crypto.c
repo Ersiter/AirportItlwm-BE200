@@ -143,7 +143,25 @@ ieee80211_cipher_keylen(enum ieee80211_cipher cipher)
 		return 13;
 	case IEEE80211_CIPHER_BIP:
 		return 16;
+	case IEEE80211_CIPHER_BIP_GMAC_128:
+		return 16;
+	case IEEE80211_CIPHER_BIP_GMAC_256:
+		return 32;
 	default:	/* unknown cipher */
+		return 0;
+	}
+}
+
+int
+ieee80211_cipher_mmie_len(enum ieee80211_cipher cipher)
+{
+	switch (cipher) {
+	case IEEE80211_CIPHER_BIP:
+		return IEEE80211_MMIE_LEN;
+	case IEEE80211_CIPHER_BIP_GMAC_128:
+	case IEEE80211_CIPHER_BIP_GMAC_256:
+		return 26;
+	default:
 		return 0;
 	}
 }
@@ -211,6 +229,7 @@ ieee80211_get_txkey(struct ieee80211com *ic, const struct ieee80211_frame *wh,
     struct ieee80211_node *ni)
 {
 	int kid;
+	ni = ieee80211_mld_primary_node(ic, ni);
 
 	if ((ic->ic_flags & IEEE80211_F_RSNON) &&
         !IEEE80211_IS_MULTICAST(wh->i_addr1) &&
@@ -234,7 +253,9 @@ ieee80211_get_rxkey(struct ieee80211com *ic, mbuf_t m,
    struct ieee80211_frame *wh;
    u_int16_t kid;
    u_int8_t *ivp, *mmie;
-   int hdrlen;
+   int hdrlen, firstkid, lastkid, mmie_len;
+
+   ni = ieee80211_mld_primary_node(ic, ni);
 
    wh = mtod(m, struct ieee80211_frame *);
    if ((ic->ic_flags & IEEE80211_F_RSNON) &&
@@ -253,18 +274,31 @@ ieee80211_get_rxkey(struct ieee80211com *ic, mbuf_t m,
        kid = ivp[3] >> 6;
        k = &ic->ic_nw_keys[kid];
    } else {
-       /* retrieve integrity group key id from MMIE */
-       if (mbuf_len(m) < sizeof(*wh) + IEEE80211_MMIE_LEN)
-           return NULL;
-       /* it is assumed management frames are contiguous */
-       mmie = (u_int8_t *)wh + mbuf_len(m) - IEEE80211_MMIE_LEN;
-       /* check that MMIE is valid */
-       if (mmie[0] != IEEE80211_ELEMID_MMIE || mmie[1] != 16)
-           return NULL;
-       kid = LE_READ_2(&mmie[2]);
-       if (kid != 4 && kid != 5)
-           return NULL;
-       k = &ic->ic_nw_keys[kid];
+       /* retrieve the IGTK or BIGTK id using its cipher-specific MMIE */
+       if ((wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
+           IEEE80211_FC0_SUBTYPE_BEACON) {
+           firstkid = 6;
+           lastkid = 7;
+       } else {
+           firstkid = 4;
+           lastkid = 5;
+       }
+       for (kid = firstkid; kid <= lastkid; kid++) {
+           k = &ic->ic_nw_keys[kid];
+           if ((firstkid == 6 && !(k->k_flags & IEEE80211_KEY_BIGTK)) ||
+               (firstkid == 4 && !(k->k_flags & IEEE80211_KEY_IGTK)))
+               continue;
+           mmie_len = ieee80211_cipher_mmie_len(k->k_cipher);
+           if (mmie_len == 0 || mbuf_len(m) < sizeof(*wh) + mmie_len)
+               continue;
+           /* management frames are contiguous in the receive path */
+           mmie = (u_int8_t *)wh + mbuf_len(m) - mmie_len;
+           if (mmie[0] != IEEE80211_ELEMID_MMIE ||
+               mmie[1] != mmie_len - 2 || LE_READ_2(&mmie[2]) != kid)
+               continue;
+           return k;
+       }
+       return NULL;
    }
 
    return k;

@@ -85,6 +85,9 @@ public:
     virtual IOReturn enable(IO80211SkywalkInterface *netif) AIRPORT_LEGACY_OVERRIDE;
     virtual IOReturn disable(IO80211SkywalkInterface *netif) AIRPORT_LEGACY_OVERRIDE;
     virtual IOReturn setHardwareAddress(const void *addr, UInt32 addrBytes) override;
+#ifdef AIRPORT_WCL
+    IOReturn setMloHardwareAddresses(const void *addresses);
+#endif
     virtual IOReturn getHardwareAddress(IOEthernetAddress* addrP) override;
     virtual IOReturn getPacketFilters(const OSSymbol *group, UInt32 *filters) const override;
     virtual IOReturn setPromiscuousMode(IOEnetPromiscuousMode mode) override;
@@ -99,8 +102,8 @@ public:
     virtual bool configureInterface(IONetworkInterface *netif) override;
     virtual UInt32 outputPacket(mbuf_t, void * param) override;
 #ifdef AIRPORT_WCL
+    virtual int bpfOutputPacket(OSObject *, UInt, mbuf_t) AIRPORT_LEGACY_OVERRIDE;
     UInt32 enqueuePacket(mbuf_t);
-    static IOReturn outputPacketGated(OSObject *, void *, void *, void *, void *);
 #endif
 #ifdef __PRIVATE_SPI__
     virtual IOReturn outputStart(IONetworkInterface *interface, IOOptionBits options) override;
@@ -241,6 +244,7 @@ public:
     //IO80211
     uint8_t power_state;
     struct ieee80211_node *fNextNodeToSend;
+    uint32_t wclAppleIoctlCalls = 0;
     bool fScanResultWrapping;
     IOTimerEventSource *scanSource;
     

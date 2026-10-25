@@ -14,6 +14,8 @@
 #endif
 
 #include <Airport/Apple80211.h>
+#include <sys/kernel_types.h>
+struct ieee80211com;
 
 #ifdef AIRPORT_WCL
 #define AIRPORT_SKYWALK_OVERRIDE
@@ -280,6 +282,10 @@ public:
     virtual IOReturn setPOWERSAVE(apple80211_powersave_data *) AIRPORT_SKYWALK_OVERRIDE { return kIOReturnUnsupported; }
     virtual IOReturn setTXPOWER(apple80211_txpower_data *) AIRPORT_SKYWALK_OVERRIDE { return kIOReturnUnsupported; }
     virtual IOReturn setRATE(apple80211_rate_data *) AIRPORT_SKYWALK_OVERRIDE { return kIOReturnUnsupported; }
+    virtual bool isChipInterfaceReady() AIRPORT_SKYWALK_OVERRIDE;
+    virtual IO80211LinkState linkState() AIRPORT_SKYWALK_OVERRIDE;
+    virtual void setScanningState(unsigned int, bool, apple80211_scan_data *, int) AIRPORT_SKYWALK_OVERRIDE;
+    virtual IOReturn processBSDCommand(struct __ifnet *, unsigned int, void *) AIRPORT_SKYWALK_OVERRIDE;
     virtual IOReturn setSCAN_REQ(apple80211_scan_data *) AIRPORT_SKYWALK_OVERRIDE;
     virtual IOReturn setASSOCIATE(apple80211_assoc_data *) AIRPORT_SKYWALK_OVERRIDE;
     virtual IOReturn setDISASSOCIATE(apple80211_disassoc_data *) AIRPORT_SKYWALK_OVERRIDE;
@@ -429,6 +435,13 @@ private:
     static IOReturn wclCountryUpdateGated(OSObject *, void *, void *, void *, void *);
     static IOReturn stopWCLGated(OSObject *, void *, void *, void *, void *);
     static IOReturn updateWCLLinkQualityGated(OSObject *, void *, void *, void *, void *);
+    static bool deferWCLUserEapol(ieee80211com *, mbuf_t, void *);
+    static IOReturn wclUserEapolGated(OSObject *, void *, void *, void *, void *);
+    static void wclUserEapolAction(OSObject *, IOTimerEventSource *);
+    void setWCLNativeLinkReady(bool);
+    void releaseWCLUserEapol();
+    void purgeWCLUserEapol();
+    void publishWCLAuthDiagnostic(const char *, mbuf_t = nullptr);
     void deferWCLCountryUpdate();
     void updateWCLLinkQuality(bool = false);
     static void wclJoinTimeout(OSObject *, IOTimerEventSource *);
@@ -445,10 +458,10 @@ private:
     void finishWCLJoin(uint16_t, uint16_t, IOReturn);
     void publishWCLBeacon(const ieee80211_node *, const uint8_t *, size_t);
     IOTimerEventSource *joinTimer;
+    IOTimerEventSource *wclEapolSource = nullptr;
     uint8_t joinBSSID[6];
     bool scanPending;
     bool scanCompleted;
-    bool scanSkipCompletion;
     bool wclBssValid;
     bool wclLinkIndicated;
     uint8_t wclBssInfo[sizeof(AirportWCL::BeaconMetadata) + 0x800];
@@ -456,6 +469,24 @@ private:
     uint32_t wclAssociatedBeacons = 0;
     uint32_t wclLqmBeacons = 0;
     uint32_t wclLqmReportedBeacons = 0;
+    uint32_t wclScanRequests = 0;
+    uint32_t wclScanResults = 0;
+    uint32_t wclScanDoneCount = 0;
+    uint32_t wclScanDoneStatus = UINT32_MAX;
+    uint32_t wclBeaconEvents = 0;
+    uint32_t wclBeaconDrops = 0;
+    uint32_t wclJoinRequests = 0;
+    uint32_t wclChipReadyCalls = 0;
+    uint32_t wclLinkStateCalls = 0;
+    uint32_t wclSetScanningCalls = 0;
+    uint32_t wclBSDCommandCalls = 0;
+    uint8_t wclResultRingNext = 0;
+    struct WCLResultDiagnostic {
+        uint8_t ssid[32];
+        uint8_t ssidLength;
+        uint8_t channel;
+        int32_t rssi;
+    } wclResultRing[4] = {};
     int wclReportedLinkQuality = -2;
     ifnet_t wclLinkQualityInterface = nullptr;
     bool joinPending;
@@ -464,6 +495,22 @@ private:
     bool assocNotified;
     bool firstBeaconNotified;
     bool portAuthorized;
+    mbuf_t wclUserEapolHead = nullptr;
+    mbuf_t wclUserEapolTail = nullptr;
+    uint32_t wclUserEapolCount = 0;
+    bool wclNativeLinkReady = false;
+    bool wclUserEapolReady = false;
+    uint32_t wclAuthDiagnosticSequence = 0;
+    uint32_t wclAssociationEvents = 0;
+    uint32_t wclFirstBeaconEvents = 0;
+    uint32_t wclLinkEvents = 0;
+    uint32_t wclJoinTimeoutEvents = 0;
+    uint32_t wclJoinTimeoutMS = 0;
+    uint32_t wclEapolRxDeferred = 0;
+    uint32_t wclEapolRxDelivered = 0;
+    uint32_t wclEapolRxDropped = 0;
+    uint32_t wclEapolRxDirect = 0;
+    uint32_t wclEapolRxGateDrops = 0;
     uint8_t wclPermanentMAC[6] = {};
     bool wclStopping;
 #endif
