@@ -948,6 +948,13 @@ void AirportItlwmSkywalkInterface::wclJoinTimeout(OSObject *owner, IOTimerEventS
 IOReturn AirportItlwmSkywalkInterface::leaveWCLNetwork()
 {
     ieee80211com *ic = fHalService->get80211Controller();
+#ifdef __PRIVATE_SPI__
+    if (instance->bsdInterface) {
+        instance->bsdInterface->stopOutputThread();
+        instance->bsdInterface->flushOutputQueue();
+    }
+#endif
+    ifq_flush(&ic->ic_if.if_snd);
     purgeWCLUserEapol();
     portAuthorized = false;
     updateWCLLinkQuality(true);
@@ -1252,14 +1259,17 @@ IOReturn AirportItlwmSkywalkInterface::setWCL_LINK_STATE_UPDATE(apple80211_wcl_u
     IOReturn status = IO80211InfraInterface::setWCL_LINK_STATE_UPDATE(data);
 #ifdef __PRIVATE_SPI__
     if (status == kIOReturnSuccess) {
-        const bool isLinkUp = linkState() == kIO80211NetworkLinkUp;
+        // Native byte 6 is association; byte 7/linkState waits for authorization.
+        const bool isAssociated = reinterpret_cast<const uint8_t *>(data)[6] != 0;
         if (instance->bsdInterface) {
-            if (isLinkUp)
+            if (isAssociated)
                 instance->bsdInterface->startOutputThread();
-            else
+            else {
                 instance->bsdInterface->stopOutputThread();
+                instance->bsdInterface->flushOutputQueue();
+            }
         }
-        if (!isLinkUp) {
+        if (!isAssociated) {
             setWCLNativeLinkReady(false);
         } else if (instance->bsdInterface) {
             auto ic = fHalService->get80211Controller();
