@@ -996,6 +996,16 @@ void AirportItlwmSkywalkInterface::handleWCLLink(bool up)
     portAuthorized = up;
     ++wclLinkEvents;
     publishWCLAuthDiagnostic(up ? "controlled-port-link-up" : "controlled-port-link-down");
+#if __IO80211_TARGET == __MAC_26_0
+    if (up && (fHalService->get80211Controller()->ic_flags & IEEE80211_F_RSNON)) {
+        AirportWCL::SupplicantEvent event = {};
+        event.version = 1;
+        // PostOffice clears WCL's handshake deadline and notifies IO80211RSNDone.
+        IOReturn status = instance->postMessage(this, AirportWCL::Supplicant,
+            &event, sizeof(event), true);
+        instance->pciNub->setProperty("AirportItlwm-WCLRSNDonePostResult", status, 32);
+    }
+#endif
     if (!up && wclLinkIndicated) {
         AirportWCL::LinkStatusEvent event = {};
         memcpy(event.bssid, joinBSSID, sizeof(event.bssid));

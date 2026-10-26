@@ -57,6 +57,7 @@ enum BeaconFlags : uint32_t {
 enum Message : uint32_t {
     ResetInterface = 49,
     DriverAvailable = 55,
+    Supplicant = 76,
     ScanResult = 201,
     Deauth = 203,
     AssocComplete = 211,
@@ -67,6 +68,16 @@ enum Message : uint32_t {
     LqmUpdate = 39,
     ScanDone = 237
 };
+
+struct SupplicantEvent {
+    uint32_t version;
+    uint32_t event;
+    uint32_t status;
+    uint32_t flags;
+    uint8_t reserved[24];
+};
+static_assert(sizeof(SupplicantEvent) == 0x28, "Native supplicant event size");
+static_assert(offsetof(SupplicantEvent, status) == 8, "Native supplicant result");
 
 struct SequoiaLqmUpdate {
     uint8_t rssiValid;
