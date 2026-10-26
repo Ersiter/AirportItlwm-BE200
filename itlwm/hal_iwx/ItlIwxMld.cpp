@@ -1113,10 +1113,11 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
                 err, IWX_TXPATH_FLUSH, -1);
             return err;
         }
-        for (int i = 1; i < ic->ic_mld_link_count; i++) {
-            if (!(sc->sc_mld_sta_mask & (1U << sc->sc_mld_sta_ids[i])))
+        for (int i = 1; i < IWX_MLD_MAX_LINKS; i++) {
+            uint8_t sta_id = sc->sc_mld_sta_ids[i];
+            if (sta_id == 0xff || !(sc->sc_mld_sta_mask & (1U << sta_id)))
                 continue;
-            err = iwx_flush_sta_tids(sc, sc->sc_mld_sta_ids[i], 0xffff);
+            err = iwx_flush_sta_tids(sc, sta_id, 0xffff);
             if (err) {
                 iwx_mld_record_state_failure(sc, "deauth", "link-tx-flush",
                     err, IWX_TXPATH_FLUSH, i);
@@ -1184,7 +1185,7 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
             }
             explicit_bzero(key, sizeof(*key));
         }
-        for (int i = 0; i < ic->ic_mld_link_count; i++) {
+        for (int i = 0; i < IWX_MLD_MAX_LINKS; i++) {
             uint8_t sta_id = sc->sc_mld_sta_ids[i];
             if (sta_id == 0xff || !(sc->sc_mld_sta_mask & (1U << sta_id)))
                 continue;
@@ -1202,11 +1203,14 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
         }
         sc->sc_flags &= ~IWX_FLAG_STA_ACTIVE;
     }
-    for (int i = ic->ic_mld_link_count - 1; i >= 0; i--) {
-        struct ieee80211_node *ni = i == 0 ? &in->in_ni : ic->ic_mld_links[i].ni;
+    // The primary firmware slot exists even when non-MLO discovery reports zero links.
+    for (int i = IWX_MLD_MAX_LINKS - 1; i >= 0; i--) {
+        struct ieee80211_node *ni;
         struct iwx_node *linkin;
         if (!(sc->sc_mld_link_active & (1U << i)))
             continue;
+        ni = i == 0 ? &in->in_ni :
+            (i < ic->ic_mld_link_count ? ic->ic_mld_links[i].ni : NULL);
         if (ni == NULL)
             return EINVAL;
         linkin = (struct iwx_node *)ni;
