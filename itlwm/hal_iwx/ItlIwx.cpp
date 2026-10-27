@@ -125,6 +125,8 @@
 #include <sys/pcireg.h>
 #include <net80211/ieee80211_priv.h>
 
+static bool iwx_valid_mcc(const char *mcc);
+
 #define super ItlHalService
 OSDefineMetaClassAndStructors(ItlIwx, ItlHalService)
 
@@ -479,6 +481,9 @@ detach(IOPCIDevice *device)
 #endif
     struct _ifnet *ifp = &com.sc_ic.ic_ac.ac_if;
     struct iwx_softc *sc = &com;
+    sc->sc_flags |= IWX_FLAG_SHUTDOWN;
+    sc->sc_generation++;
+    task_del(systq, &sc->mcc_task);
 #ifdef AIRPORT_VTD
     releaseAll();
     taskq_destroy(systq);
@@ -594,6 +599,22 @@ clearScanningFlags()
                       IWX_FLAG_SCAN_ABORTING);
 }
 
+bool ItlIwx::
+setCountryCode(const char *countryCode)
+{
+    if (!iwx_valid_mcc(countryCode))
+        return false;
+
+    int s = splnet();
+    memcpy(com.sc_mcc_request, countryCode, 2);
+    com.sc_mcc_request[2] = '\0';
+    com.sc_mcc_source = IWX_MCC_SOURCE_ME;
+    com.sc_mcc_request_pending = 1;
+    splx(s);
+    iwx_add_task(&com, systq, &com.mcc_task);
+    return true;
+}
+
 IOReturn ItlIwx::
 setMulticastList(IOEthernetAddress *addr, int count)
 {
@@ -626,6 +647,14 @@ setMulticastList(IOEthernetAddress *addr, int count)
                      cmd);
     ::free(cmd);
     return err ? kIOReturnError : kIOReturnSuccess;
+}
+
+static bool
+iwx_valid_mcc(const char *mcc)
+{
+    return mcc && ((mcc[0] == '0' && mcc[1] == '0') ||
+        (mcc[0] >= 'A' && mcc[0] <= 'Z' &&
+         mcc[1] >= 'A' && mcc[1] <= 'Z'));
 }
 
 const char *ItlIwx::
@@ -1796,7 +1825,7 @@ iwx_read_firmware(struct iwx_softc *sc)
     memset(sc->sc_ucode_api, 0, sizeof(sc->sc_ucode_api));
     sc->n_cmd_versions = 0;
     memcpy(sc->sc_fw_mcc, "ZZ", sizeof(sc->sc_fw_mcc));
-    sc->sc_fw_mcc_int = 0x3030;
+    sc->sc_fw_mcc_int = htole16(0x5a5a);
     
     uhdr = (struct iwx_tlv_ucode_header *)fw->fw_rawdata;
     if (*(uint32_t *)fw->fw_rawdata != 0
@@ -4377,8 +4406,11 @@ uint32_t *channel_profile_v4, int nchan_profile)
         nvm_channels = iwx_nvm_channels_8000;
     }
 
-    for (ch_idx = 0; ch_idx < nchan && ch_idx < nchan_profile; ch_idx++) {
-        if (channel_profile_v4)
+    data->vht160_supported = false;
+    for (ch_idx = 0; ch_idx < nchan; ch_idx++) {
+        if (ch_idx >= nchan_profile) {
+            ch_flags = 0;
+        } else if (channel_profile_v4)
             ch_flags = le32_to_cpup(channel_profile_v4 + ch_idx);
         else
             ch_flags = le16_to_cpup(channel_profile_v3 + ch_idx);
@@ -5853,36 +5885,15 @@ iwx_ccmp_decap(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni,
 {
    struct ieee80211com *ic = &sc->sc_ic;
    struct ieee80211_key *k;
-   struct ieee80211_frame *wh;
    uint64_t pn, *prsc;
-   uint8_t *ivp;
-   uint8_t tid;
-   int hdrlen, hasqos;
 
-   wh = mtod(m, struct ieee80211_frame *);
-   hdrlen = ieee80211_get_hdrlen(wh);
-   ivp = (uint8_t *)wh + hdrlen;
-    
    /* find key for decryption */
    k = ieee80211_get_rxkey(ic, m, ni);
    if (k == NULL || k->k_cipher != IEEE80211_CIPHER_CCMP)
        return 1;
 
-   /* Check that ExtIV bit is be set. */
-   if (!(ivp[3] & IEEE80211_WEP_EXTIV))
+   if (ieee80211_ccmp_get_pn(&pn, &prsc, m, k) != 0)
        return 1;
-
-   hasqos = ieee80211_has_qos(wh);
-   tid = hasqos ? ieee80211_get_qos(wh) & IEEE80211_QOS_TID : 0;
-   prsc = &k->k_rsc[tid];
-
-   /* Extract the 48-bit PN from the CCMP header. */
-   pn = (uint64_t)ivp[0]       |
-        (uint64_t)ivp[1] <<  8 |
-        (uint64_t)ivp[4] << 16 |
-        (uint64_t)ivp[5] << 24 |
-        (uint64_t)ivp[6] << 32 |
-        (uint64_t)ivp[7] << 40;
     if (rxi->rxi_flags & IEEE80211_RXI_HWDEC_SAME_PN) {
         if (pn < *prsc) {
             ic->ic_stats.is_ccmp_replays++;
@@ -11492,6 +11503,165 @@ iwx_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
 }
 
 void ItlIwx::
+iwx_sae_join_task(void *psc)
+{
+    struct iwx_softc *sc = static_cast<struct iwx_softc *>(psc);
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+    struct SaeJoinWork {
+        struct ieee80211_node *node;
+        uint8_t bssid[IEEE80211_ADDR_LEN];
+        uint8_t password[63];
+        uint8_t pt[64];
+        uint8_t ownaddr[IEEE80211_ADDR_LEN];
+        uint8_t pwe[64];
+        size_t password_len;
+        uint32_t request_generation;
+        uint32_t device_generation;
+        uint32_t scan_generation;
+        uint32_t password_generation;
+        int expected_state;
+        int force_reauth;
+        int error;
+        bool h2e;
+        bool pt_valid;
+        bool current;
+    } work = {};
+    work.error = -1;
+
+    IOReturn result = that->getMainCommandGate()->runAction(
+        [](OSObject *, void *arg0, void *arg1, void *, void *) -> IOReturn {
+            ItlIwx *self = static_cast<ItlIwx *>(arg0);
+            struct iwx_softc *softc = &self->com;
+            struct ieee80211com *controller = &softc->sc_ic;
+            auto *w = static_cast<SaeJoinWork *>(arg1);
+            int s = splnet();
+            if (!softc->sc_sae_join_pending) {
+                splx(s);
+                return kIOReturnNotReady;
+            }
+            softc->sc_sae_join_pending = 0;
+            w->request_generation = softc->sc_sae_join_generation;
+            w->device_generation = softc->sc_sae_join_device_generation;
+            w->scan_generation = softc->sc_sae_join_scan_generation;
+            w->password_generation = softc->sc_sae_join_password_generation;
+            w->expected_state = softc->sc_sae_join_state;
+            w->force_reauth = softc->sc_sae_join_force_reauth;
+            memcpy(w->bssid, softc->sc_sae_join_bssid, sizeof(w->bssid));
+            w->current = !(softc->sc_flags & IWX_FLAG_SHUTDOWN) &&
+                softc->sc_generation == w->device_generation &&
+                softc->sc_scan_generation == w->scan_generation &&
+                controller->ic_sae_generation == w->password_generation &&
+                controller->ic_state == w->expected_state &&
+                (controller->ic_if.if_flags & IFF_RUNNING) != 0;
+            if (w->current) {
+                w->node = ieee80211_find_node(controller, w->bssid);
+                if (w->node != nullptr) {
+                    w->node = ieee80211_ref_node(w->node);
+                    w->h2e = (w->node->ni_rsnxecaps &
+                        IEEE80211_RSNXECAP_H2E) != 0;
+                    memcpy(w->ownaddr, controller->ic_myaddr,
+                        sizeof(w->ownaddr));
+                    if (w->h2e && controller->ic_sae_pt_valid) {
+                        memcpy(w->pt, controller->ic_sae_pt,
+                            sizeof(w->pt));
+                        w->pt_valid = true;
+                    } else {
+                        w->password_len = controller->ic_sae_password_len;
+                        if (w->password_len <= sizeof(w->password))
+                            memcpy(w->password, controller->ic_sae_password,
+                                w->password_len);
+                        else
+                            w->password_len = 0;
+                    }
+                }
+            }
+            splx(s);
+            return kIOReturnSuccess;
+        }, that, &work);
+    if (result == kIOReturnSuccess && work.current && work.node != nullptr) {
+        if (work.h2e && work.pt_valid)
+            work.error = ieee80211_sae_derive_password_elem(work.pwe,
+                work.pt, work.ownaddr, work.bssid);
+        else if (!work.h2e && work.password_len != 0)
+            work.error = ieee80211_sae_derive_password_elem_hnp(work.pwe,
+                work.password, work.password_len, work.ownaddr, work.bssid);
+    }
+
+    if (result == kIOReturnSuccess) {
+        that->getMainCommandGate()->runAction(
+            [](OSObject *, void *arg0, void *arg1, void *, void *) -> IOReturn {
+                ItlIwx *self = static_cast<ItlIwx *>(arg0);
+                struct iwx_softc *softc = &self->com;
+                struct ieee80211com *controller = &softc->sc_ic;
+                auto *w = static_cast<SaeJoinWork *>(arg1);
+                int s = splnet();
+                bool current = w->current &&
+                    !(softc->sc_flags & IWX_FLAG_SHUTDOWN) &&
+                    softc->sc_generation == w->device_generation &&
+                    softc->sc_scan_generation == w->scan_generation &&
+                    softc->sc_sae_join_generation == w->request_generation &&
+                    controller->ic_sae_generation == w->password_generation &&
+                    controller->ic_state == w->expected_state &&
+                    ieee80211_find_node(controller, w->bssid) == w->node &&
+                    w->node != nullptr &&
+                    (((w->node->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) != 0) ==
+                        w->h2e) &&
+                    memcmp(controller->ic_myaddr, w->ownaddr,
+                        sizeof(w->ownaddr)) == 0;
+                if (current && w->error == 0) {
+                    memcpy(controller->ic_sae_pwe, w->pwe,
+                        sizeof(controller->ic_sae_pwe));
+                    controller->ic_sae_pwe_valid = 1;
+                    controller->ic_xflags |= IEEE80211_F_SAE_PWE;
+                    controller->ic_sae_defer_active = 1;
+                    ieee80211_node_join_bss(controller, w->node,
+                        w->force_reauth);
+                    controller->ic_sae_defer_active = 0;
+                } else if (current) {
+                    explicit_bzero(controller->ic_sae_pwe,
+                        sizeof(controller->ic_sae_pwe));
+                    controller->ic_sae_pwe_valid = 0;
+                    controller->ic_xflags &= ~IEEE80211_F_SAE_PWE;
+                    ieee80211_new_state(controller, IEEE80211_S_SCAN, -1);
+                }
+                splx(s);
+                return kIOReturnSuccess;
+            }, that, &work);
+    }
+
+    if (work.node != nullptr)
+        ieee80211_unref_node(&work.node);
+    explicit_bzero(&work, sizeof(work));
+}
+
+int ItlIwx::
+iwx_defer_sae_join(struct ieee80211com *ic, const uint8_t *bssid,
+    int force_reauth)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)ic->ic_if.if_softc;
+    int s;
+
+    if (sc == nullptr || bssid == nullptr || sc->sc_nswq == nullptr)
+        return EINVAL;
+    s = splnet();
+    if (sc->sc_flags & IWX_FLAG_SHUTDOWN) {
+        splx(s);
+        return EBUSY;
+    }
+    memcpy(sc->sc_sae_join_bssid, bssid, sizeof(sc->sc_sae_join_bssid));
+    ++sc->sc_sae_join_generation;
+    sc->sc_sae_join_device_generation = sc->sc_generation;
+    sc->sc_sae_join_scan_generation = sc->sc_scan_generation;
+    sc->sc_sae_join_password_generation = ic->ic_sae_generation;
+    sc->sc_sae_join_state = ic->ic_state;
+    sc->sc_sae_join_force_reauth = force_reauth;
+    sc->sc_sae_join_pending = 1;
+    task_add(sc->sc_nswq, &sc->sc_sae_join_task);
+    splx(s);
+    return 0;
+}
+
+void ItlIwx::
 iwx_scan_task(void *psc)
 {
     struct iwx_softc *sc = (struct iwx_softc *)psc;
@@ -11876,8 +12046,7 @@ iwx_parse_mcc_update_response(const struct iwx_rx_packet *pkt,
 }
 
 static int
-iwx_apply_mcc_update_response(ItlIwx *driver, struct iwx_softc *sc,
-                              const struct iwx_rx_packet *pkt,
+iwx_apply_mcc_update_response(const struct iwx_rx_packet *pkt,
                               uint8_t response_version, bool v4_supported,
                               struct iwx_mcc_response_view *view)
 {
@@ -11885,16 +12054,38 @@ iwx_apply_mcc_update_response(ItlIwx *driver, struct iwx_softc *sc,
                                              v4_supported, view);
     if (err)
         return err;
-
-    driver->iwx_init_channel_map(sc, NULL,
-                                 const_cast<uint32_t *>(view->channels),
-                                 view->n_channels);
+    if (!view->n_channels || view->n_channels > IWX_NUM_CHANNELS)
+        return EIO;
+    bool hasValidChannel = false;
+    for (uint32_t i = 0; i < view->n_channels; ++i)
+        hasValidChannel |= (le32toh(view->channels[i]) & IWX_NVM_CHANNEL_VALID) != 0;
+    if (!hasValidChannel)
+        return EIO;
     return 0;
 }
 
 int ItlIwx::
-iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2)
+iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
+                        uint8_t sourceId)
 {
+    if (!getMainWorkLoop()->inGate())
+        return getMainCommandGate()->runAction(
+            [](OSObject *, void *arg0, void *arg1, void *arg2, void *arg3) -> IOReturn {
+                return static_cast<ItlIwx *>(arg0)->iwx_send_update_mcc_cmd(
+                    static_cast<struct iwx_softc *>(arg1),
+                    static_cast<const char *>(arg2),
+                    static_cast<uint8_t>(reinterpret_cast<uintptr_t>(arg3)));
+            }, this, sc, const_cast<char *>(alpha2),
+            reinterpret_cast<void *>(uintptr_t(sourceId)));
+
+    if (sc->sc_flags & IWX_FLAG_SHUTDOWN)
+        return ENXIO;
+    if (sc->sc_scan_active) {
+        int scanErr = iwx_scan_abort(sc);
+        if (scanErr)
+            return scanErr;
+    }
+
     XYLog("%s\n", __FUNCTION__);
     struct iwx_mcc_update_cmd mcc_cmd;
     struct iwx_host_cmd hcmd = {
@@ -11923,11 +12114,10 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2)
     
     memset(&mcc_cmd, 0, sizeof(mcc_cmd));
     mcc_cmd.mcc = htole16(alpha2[0] << 8 | alpha2[1]);
-    if (isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_WIFI_MCC_UPDATE) ||
-        isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_LAR_MULTI_MCC))
-        mcc_cmd.source_id = IWX_MCC_SOURCE_GET_CURRENT;
-    else
-        mcc_cmd.source_id = IWX_MCC_SOURCE_OLD_FW;
+    mcc_cmd.source_id =
+        (isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_WIFI_MCC_UPDATE) ||
+         isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_LAR_MULTI_MCC)) ?
+            sourceId : IWX_MCC_SOURCE_OLD_FW;
     
     hcmd.len[0] = sizeof(struct iwx_mcc_update_cmd);
     hcmd.resp_pkt_len = IWX_CMD_RESP_MAX;
@@ -11949,7 +12139,7 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2)
     sc->sc_pcitag->setProperty("AirportItlwm-MCCResponseLength",
                                static_cast<uint32_t>(resp_len), 32);
     err = iwx_apply_mcc_update_response(
-        this, sc, pkt, parse_version,
+        pkt, parse_version,
         isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_MCC_UPDATE_11AX_SUPPORT),
         &response);
     if (err) {
@@ -11966,6 +12156,47 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2)
              response.status, response.mcc, response.cap, response.time,
              response.geo_info, response.source_id, response.n_channels));
 
+    if (response.status != IWX_MCC_RESP_NEW_CHAN_PROFILE &&
+        response.status != IWX_MCC_RESP_SAME_CHAN_PROFILE) {
+        sc->sc_pcitag->setProperty("AirportItlwm-MCCStatus", response.status, 32);
+        sc->sc_pcitag->setProperty("AirportItlwm-MCCChannelCount",
+                                   response.n_channels, 32);
+        sc->sc_pcitag->setProperty("AirportItlwm-MCCFailureStage", "firmware-status");
+        err = EIO;
+        goto out;
+    }
+
+    if (response.status == IWX_MCC_RESP_NEW_CHAN_PROFILE ||
+        response.status == IWX_MCC_RESP_SAME_CHAN_PROFILE) {
+        struct ieee80211com *ic = &sc->sc_ic;
+        struct ieee80211_channel *associatedChannel =
+            ic->ic_state == IEEE80211_S_RUN && ic->ic_bss ?
+                ic->ic_bss->ni_chan : NULL;
+        int associatedIndex = associatedChannel ?
+            ieee80211_chan2ieee(ic, associatedChannel) : 0;
+        bool disconnect = associatedChannel &&
+            (associatedIndex < 0 || associatedIndex > IEEE80211_CHAN_MAX);
+        uint16_t oldMcc = sc->sc_fw_mcc_int;
+
+        iwx_init_channel_map(sc, NULL,
+            const_cast<uint32_t *>(response.channels), response.n_channels);
+        if (associatedChannel && associatedIndex > 0 &&
+            associatedIndex <= IEEE80211_CHAN_MAX)
+            disconnect = ic->ic_channels[associatedIndex].ic_flags == 0;
+        ieee80211_channel_init(IC2IFP(ic));
+        ieee80211_setmode(ic, static_cast<enum ieee80211_phymode>(ic->ic_curmode));
+        if (disconnect)
+            ieee80211_new_state(ic, IEEE80211_S_INIT, -1);
+
+        struct iwx_mcc_chub_notif notif = {};
+        notif.mcc = htole16(response.mcc);
+        iwx_mcc_update(sc, &notif);
+        if (response.status == IWX_MCC_RESP_NEW_CHAN_PROFILE &&
+            oldMcc == notif.mcc && sc->sc_ic.ic_event_handler)
+            (*sc->sc_ic.ic_event_handler)(&sc->sc_ic,
+                IEEE80211_EVT_COUNTRY_CODE_UPDATE, NULL);
+    }
+
     sc->sc_pcitag->setProperty("AirportItlwm-MCCStatus", response.status, 32);
     sc->sc_pcitag->setProperty("AirportItlwm-MCCChannelCount",
                                response.n_channels, 32);
@@ -11975,6 +12206,44 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2)
 out:
     iwx_free_resp(sc, &hcmd);
     
+    return err;
+}
+
+int ItlIwx::
+iwx_process_mcc_request(struct iwx_softc *sc, const char *alpha2,
+                        uint8_t sourceId)
+{
+    if (!getMainWorkLoop()->inGate())
+        return getMainCommandGate()->runAction(
+            [](OSObject *, void *arg0, void *arg1, void *arg2, void *arg3) -> IOReturn {
+                return static_cast<ItlIwx *>(arg0)->iwx_process_mcc_request(
+                    static_cast<struct iwx_softc *>(arg1),
+                    static_cast<const char *>(arg2),
+                    static_cast<uint8_t>(reinterpret_cast<uintptr_t>(arg3)));
+            }, this, sc, const_cast<char *>(alpha2),
+            reinterpret_cast<void *>(uintptr_t(sourceId)));
+
+    if (sc->sc_flags & IWX_FLAG_SHUTDOWN)
+        return ENXIO;
+    if (!(sc->sc_ic.ic_if.if_flags & IFF_RUNNING))
+        return EBUSY;
+
+    if (!sc->sc_nvm.lar_enabled ||
+        (sourceId == IWX_MCC_SOURCE_ME &&
+         (sc->sc_fw_mcc[0] != 'Z' || sc->sc_fw_mcc[1] != 'Z'))) {
+        if (sc->sc_ic.ic_event_handler)
+            sc->sc_ic.ic_event_handler(&sc->sc_ic,
+                IEEE80211_EVT_COUNTRY_CODE_UPDATE,
+                !sc->sc_nvm.lar_enabled && sc->sc_fw_mcc[0] == 'Z' &&
+                    sc->sc_fw_mcc[1] == 'Z' ? const_cast<char *>(alpha2) : NULL);
+        return 0;
+    }
+
+    int err = iwx_send_update_mcc_cmd(sc, alpha2, sourceId);
+    if (err && !(sc->sc_flags & IWX_FLAG_SHUTDOWN) &&
+        sc->sc_ic.ic_event_handler)
+        sc->sc_ic.ic_event_handler(&sc->sc_ic,
+            IEEE80211_EVT_COUNTRY_CODE_UPDATE, NULL);
     return err;
 }
 
@@ -12156,7 +12425,18 @@ iwx_init_hw(struct iwx_softc *sc)
     if (sc->sc_nvm.lar_enabled) {
         stage = "iwx_send_update_mcc_cmd";
         sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
-        err = iwx_send_update_mcc_cmd(sc, "ZZ");
+        char requestedMcc[3] = "ZZ";
+        char overrideMcc[3] = {};
+        uint8_t sourceId =
+            isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_WIFI_MCC_UPDATE) ||
+            isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_LAR_MULTI_MCC) ?
+                IWX_MCC_SOURCE_GET_CURRENT : IWX_MCC_SOURCE_OLD_FW;
+        PE_parse_boot_argn("itlwm_cc", overrideMcc, sizeof(overrideMcc));
+        if (iwx_valid_mcc(overrideMcc)) {
+            memcpy(requestedMcc, overrideMcc, sizeof(requestedMcc));
+            sourceId = IWX_MCC_SOURCE_ME;
+        }
+        err = iwx_send_update_mcc_cmd(sc, requestedMcc, sourceId);
         if (err) {
             XYLog("%s: could not init LAR (error %d)\n",
                    DEVNAME(sc), err);
@@ -12315,6 +12595,8 @@ iwx_init(struct _ifnet *ifp)
         ic->ic_bss->ni_chan = ic->ic_ibss_chan;
         sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "monitor-run");
         ieee80211_new_state(ic, IEEE80211_S_RUN, -1);
+        if (sc->sc_mcc_request_pending)
+            iwx_add_task(sc, systq, &sc->mcc_task);
         sc->sc_pcitag->setProperty("AirportItlwm-InitFailureFunction", "none");
         sc->sc_pcitag->setProperty("AirportItlwm-InitFinalError", static_cast<uint64_t>(0), 32);
         return 0;
@@ -12364,6 +12646,8 @@ iwx_init(struct _ifnet *ifp)
         sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "driver-ready-event-handler-absent");
     }
 #endif
+    if (sc->sc_mcc_request_pending)
+        iwx_add_task(sc, systq, &sc->mcc_task);
     sc->sc_pcitag->setProperty("AirportItlwm-InitFailureFunction", "none");
     sc->sc_pcitag->setProperty("AirportItlwm-InitFinalError", static_cast<uint64_t>(0), 32);
     return 0;
@@ -12580,10 +12864,26 @@ iwx_stop(struct _ifnet *ifp)
     iwx_del_task(sc, sc->sc_nswq, &sc->start_task);
     iwx_del_task(sc, sc->sc_nswq, &sc->mld_link_task);
     iwx_del_task(sc, sc->sc_nswq, &sc->sc_scan_task);
+    iwx_del_task(sc, sc->sc_nswq, &sc->sc_sae_join_task);
+    sc->sc_sae_join_pending = 0;
+    ++sc->sc_sae_join_generation;
+    explicit_bzero(sc->sc_sae_join_bssid,
+        sizeof(sc->sc_sae_join_bssid));
+    ic->ic_sae_defer_active = 0;
+#ifdef AIRPORT_WCL
+    ++ic->ic_sae_generation;
+    explicit_bzero(ic->ic_sae_pt, sizeof(ic->ic_sae_pt));
+    explicit_bzero(ic->ic_sae_pwe, sizeof(ic->ic_sae_pwe));
+    explicit_bzero(ic->ic_sae_password, sizeof(ic->ic_sae_password));
+    ic->ic_sae_password_len = 0;
+    ic->ic_sae_pt_valid = ic->ic_sae_pwe_valid = 0;
+    ic->ic_xflags &= ~IEEE80211_F_SAE_PWE;
+#endif
     iwx_scan_state_reset(sc);
     iwx_del_task(sc, systq, &sc->ba_task);
     iwx_del_task(sc, systq, &sc->mac_ctxt_task);
     iwx_del_task(sc, systq, &sc->chan_ctxt_task);
+    iwx_del_task(sc, systq, &sc->mcc_task);
     KASSERT(sc->task_refs.refs >= 1, "sc->task_refs.refs >= 1");
     //    refcnt_finalize(&sc->task_refs, "iwxstop");
     
@@ -13387,7 +13687,20 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
             case IWX_MCC_CHUB_UPDATE_CMD: {
                 struct iwx_mcc_chub_notif *notif;
                 SYNC_RESP_STRUCT(notif, pkt, struct iwx_mcc_chub_notif *);
-                iwx_mcc_update(sc, notif);
+                uint16_t mcc = le16toh(notif->mcc);
+                char alpha2[3] = {
+                    static_cast<char>((mcc >> 8) & 0xff),
+                    static_cast<char>(mcc & 0xff),
+                    '\0'
+                };
+                if (iwx_valid_mcc(alpha2)) {
+                    int s = splnet();
+                    memcpy(sc->sc_mcc_request, alpha2, sizeof(alpha2));
+                    sc->sc_mcc_source = notif->source_id;
+                    sc->sc_mcc_request_pending = 1;
+                    splx(s);
+                    iwx_add_task(sc, systq, &sc->mcc_task);
+                }
                 break;
             }
                 
@@ -15609,16 +15922,19 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
         ml_init(&rxba->entries[j].frames);
     }
     task_set(&sc->init_task, iwx_init_task, sc, "iwx_init_task");
+    task_set(&sc->mcc_task, iwx_mcc_task, sc, "iwx_mcc_task");
     task_set(&sc->newstate_task, iwx_newstate_task, sc, "iwx_newstate_task");
     task_set(&sc->start_task, iwx_start_deferred, sc, "iwx_start_task");
     task_set(&sc->mld_link_task, iwx_mld_active_link_task, sc,
         "iwx_mld_active_link_task");
     task_set(&sc->sc_scan_task, iwx_scan_task, sc, "iwx_scan_task");
+    task_set(&sc->sc_sae_join_task, iwx_sae_join_task, sc, "iwx_sae_join");
     task_set(&sc->ba_task, iwx_ba_task, sc, "iwx_ba_task");
     task_set(&sc->mac_ctxt_task, iwx_mac_ctxt_task, sc, "iwx_mac_ctxt_task");
     task_set(&sc->chan_ctxt_task, iwx_chan_ctxt_task, sc, "iwx_chan_ctxt_task");
     
     ic->ic_node_alloc = iwx_node_alloc;
+    ic->ic_sae_defer_join = iwx_defer_sae_join;
 #ifdef AIRPORT_WCL
     ic->ic_wcl_update_mld_active_link = iwx_wcl_update_mld_active_link;
 #endif
@@ -15683,6 +15999,48 @@ iwx_radiotap_attach(struct iwx_softc *sc)
     sc->sc_txtap.wt_ihdr.it_present = htole32(IWX_TX_RADIOTAP_PRESENT);
 }
 #endif
+
+void ItlIwx::
+iwx_mcc_task(void *arg)
+{
+    auto sc = static_cast<struct iwx_softc *>(arg);
+    auto that = container_of(sc, ItlIwx, com);
+    struct _ifnet *ifp = &sc->sc_ic.ic_if;
+    char mcc[3];
+    uint8_t sourceId;
+    int s = splnet();
+    if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) || !sc->sc_mcc_request_pending ||
+        !(ifp->if_flags & IFF_RUNNING)) {
+        splx(s);
+        return;
+    }
+    memcpy(mcc, sc->sc_mcc_request, sizeof(mcc));
+    sourceId = sc->sc_mcc_source;
+    sc->sc_mcc_request_pending = 0;
+    splx(s);
+
+    int err = that->iwx_process_mcc_request(sc, mcc, sourceId);
+    if (err) {
+        s = splnet();
+        bool deferred = (sc->sc_flags & IWX_FLAG_SHUTDOWN) ||
+            !(ifp->if_flags & IFF_RUNNING);
+        if (deferred && !sc->sc_mcc_request_pending) {
+            memcpy(sc->sc_mcc_request, mcc, sizeof(mcc));
+            sc->sc_mcc_source = sourceId;
+            sc->sc_mcc_request_pending = 1;
+        }
+        splx(s);
+        XYLog("%s: could not update LAR MCC (error %d)\n",
+              DEVNAME(sc), err);
+    }
+
+    s = splnet();
+    bool pending = sc->sc_mcc_request_pending &&
+        !(sc->sc_flags & IWX_FLAG_SHUTDOWN);
+    splx(s);
+    if (pending)
+        that->iwx_add_task(sc, systq, &sc->mcc_task);
+}
 
 void ItlIwx::
 iwx_init_task(void *arg1)

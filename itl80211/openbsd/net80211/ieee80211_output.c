@@ -74,6 +74,10 @@
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
 
+#include <crypto/sha1.h>
+#include <crypto/sha2.h>
+#include <crypto/hmac.h>
+
 #define IEEE80211_TX_POLICY_TAG_TYPE 1
 #define IEEE80211_TX_POLICY_NOENCRYPT 1
 
@@ -1117,6 +1121,11 @@ ieee80211_add_rsn_body(u_int8_t *frm, struct ieee80211com *ic,
         *frm++ = 6;
         count++;
     }
+    if (!wpa && ieee80211_node_allow_wpa3(ic, ni)) {
+        memcpy(frm, oui, 3); frm += 3;
+        *frm++ = 8;
+        count++;
+    }
     /* write AKM Suite List Count field */
     LE_WRITE_2(pcount, count);
 
@@ -1211,6 +1220,68 @@ ieee80211_add_wpa(u_int8_t *frm, struct ieee80211com *ic,
     /* write length field */
     *plen = frm - plen - 1;
     return frm;
+}
+
+u_int8_t *
+ieee80211_add_rsnxe(u_int8_t *frm, struct ieee80211com *ic,
+    const struct ieee80211_node *ni)
+{
+	*frm++ = IEEE80211_ELEMID_RSNXE;
+	*frm++ = 1;
+	*frm++ = IEEE80211_RSNXECAP_H2E;
+	return frm;
+}
+
+static u_int8_t *
+ieee80211_add_sae_commit(u_int8_t *frm, const struct ieee80211_node *ni)
+{
+	LE_WRITE_2(frm, IEEE80211_SAE_CURVE_ID_P256);
+	frm += 2;
+	if (ni->ni_sae.sae_token_len != 0 &&
+	    (ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) == 0) {
+		memcpy(frm, ni->ni_sae.sae_token, ni->ni_sae.sae_token_len);
+		frm += ni->ni_sae.sae_token_len;
+	}
+	memcpy(frm, ni->ni_sae.sae_scalar, sizeof(ni->ni_sae.sae_scalar));
+	frm += sizeof(ni->ni_sae.sae_scalar);
+	memcpy(frm, ni->ni_sae.sae_element_x, sizeof(ni->ni_sae.sae_element_x));
+	frm += sizeof(ni->ni_sae.sae_element_x);
+	memcpy(frm, ni->ni_sae.sae_element_y, sizeof(ni->ni_sae.sae_element_y));
+	frm += sizeof(ni->ni_sae.sae_element_y);
+	if (ni->ni_sae.sae_token_len != 0 &&
+	    (ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E)) {
+		*frm++ = IEEE80211_ELEMID_EXTENSION;
+		*frm++ = ni->ni_sae.sae_token_len + 1;
+		*frm++ = IEEE80211_EID_EXT_ANTI_CLOGGING_TOKEN;
+		memcpy(frm, ni->ni_sae.sae_token, ni->ni_sae.sae_token_len);
+		frm += ni->ni_sae.sae_token_len;
+	}
+	return frm;
+}
+
+static u_int8_t *
+ieee80211_add_sae_confirm(u_int8_t *frm, const struct ieee80211_node *ni)
+{
+	HMAC_SHA256_CTX ctx;
+
+	HMAC_SHA256_Init(&ctx, ni->ni_sae.sae_kck, sizeof(ni->ni_sae.sae_kck));
+	LE_WRITE_2(frm, ni->ni_sae.sae_send_confirm);
+	HMAC_SHA256_Update(&ctx, frm, 2);
+	frm += 2;
+	HMAC_SHA256_Update(&ctx, ni->ni_sae.sae_scalar,
+	    sizeof(ni->ni_sae.sae_scalar));
+	HMAC_SHA256_Update(&ctx, ni->ni_sae.sae_element_x,
+	    sizeof(ni->ni_sae.sae_element_x));
+	HMAC_SHA256_Update(&ctx, ni->ni_sae.sae_element_y,
+	    sizeof(ni->ni_sae.sae_element_y));
+	HMAC_SHA256_Update(&ctx, ni->ni_sae.sae_peer_scalar,
+	    sizeof(ni->ni_sae.sae_peer_scalar));
+	HMAC_SHA256_Update(&ctx, ni->ni_sae.sae_peer_element_x,
+	    sizeof(ni->ni_sae.sae_peer_element_x));
+	HMAC_SHA256_Update(&ctx, ni->ni_sae.sae_peer_element_y,
+	    sizeof(ni->ni_sae.sae_peer_element_y));
+	HMAC_SHA256_Final(frm, &ctx);
+	return frm + SHA256_DIGEST_LENGTH;
 }
 
 /*
@@ -1859,21 +1930,111 @@ ieee80211_get_auth(struct ieee80211com *ic, struct ieee80211_node *ni,
     u_int16_t status, u_int16_t seq)
 {
 	mbuf_t m;
-    u_int8_t *frm;
-    
-    mbuf_gethdr(MBUF_DONTWAIT, MT_DATA, &m);
-    if (m == NULL)
-        return NULL;
-    mbuf_align_32(m, 2 * 3);
-    mbuf_pkthdr_setlen(m, 2 * 3);
-    mbuf_setlen(m, 2 * 3);
-    
-    frm = mtod(m, u_int8_t *);
-    LE_WRITE_2(frm, IEEE80211_AUTH_ALG_OPEN); frm += 2;
-    LE_WRITE_2(frm, seq); frm += 2;
-    LE_WRITE_2(frm, status);
+	u_int8_t *frm;
+	u_int16_t alg = IEEE80211_AUTH_ALG_OPEN;
+	int sae_commit = 0, sae_confirm = 0;
+	size_t sae_len = 0;
+	u_int8_t scalar[IEEE80211_SAE_MAX_ECC_PRIME_LEN] = {0};
+	u_int8_t element_x[IEEE80211_SAE_MAX_ECC_PRIME_LEN] = {0};
+	u_int8_t element_y[IEEE80211_SAE_MAX_ECC_PRIME_LEN] = {0};
+	u_int8_t rand[IEEE80211_SAE_MAX_ECC_PRIME_LEN] = {0};
+	u_int8_t k[IEEE80211_SAE_MAX_ECC_PRIME_LEN] = {0};
+	u_int8_t kck[IEEE80211_SAE_MAX_ECC_PRIME_LEN] = {0};
+	u_int8_t pmk[IEEE80211_PMK_LEN] = {0};
+	u_int8_t pmkid[IEEE80211_PMKID_LEN] = {0};
 
+	if (ieee80211_node_allow_wpa3(ic, ni) && status == IEEE80211_STATUS_SUCCESS) {
+		if (!ic->ic_sae_pwe_valid ||
+		    (ic->ic_xflags & IEEE80211_F_SAE_PWE) == 0)
+			return NULL;
+		if (seq == IEEE80211_AUTH_OPEN_REQUEST &&
+		    ni->ni_sae.sae_state == SAE_STATE_NOTHING) {
+			if (ieee80211_sae_derive_commit_elem(scalar, element_x,
+			    element_y, rand, ic->ic_sae_pwe) != 0)
+				goto sae_error;
+			sae_commit = 1;
+		} else if (seq == IEEE80211_AUTH_OPEN_REQUEST &&
+		    ni->ni_sae.sae_state == SAE_STATE_COMMITTED &&
+		    ni->ni_sae.sae_token_len != 0) {
+			sae_commit = 2;
+		} else if (seq == IEEE80211_AUTH_OPEN_RESPONSE &&
+		    ni->ni_sae.sae_state ==
+		    (SAE_EVENT_COMMIT_SENT | SAE_EVENT_PEER_COMMIT_RECEIVED)) {
+			if (ieee80211_sae_derive_shared_secret(k,
+			    ni->ni_sae.sae_peer_scalar,
+			    ni->ni_sae.sae_peer_element_x,
+			    ni->ni_sae.sae_peer_element_y, ic->ic_sae_pwe,
+			    ni->ni_sae.sae_rand) != IEEE80211_STATUS_SUCCESS ||
+			    ieee80211_sae_derive_secret_keys(kck, pmk, pmkid, k,
+			    ni->ni_sae.sae_scalar,
+			    ni->ni_sae.sae_peer_scalar) != 0)
+				goto sae_error;
+			sae_confirm = 1;
+		} else {
+			goto sae_error;
+		}
+		alg = IEEE80211_AUTH_ALG_SAE;
+	}
+
+	if (sae_commit) {
+		status = (ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) ?
+		    IEEE80211_STATUS_H2E : IEEE80211_STATUS_SUCCESS;
+		sae_len = 2 + sizeof(scalar) + sizeof(element_x) + sizeof(element_y);
+		if (ni->ni_sae.sae_token_len != 0)
+			sae_len += ni->ni_sae.sae_token_len +
+			    ((ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) ? 3 : 0);
+	} else if (sae_confirm) {
+		sae_len = 2 + SHA256_DIGEST_LENGTH;
+	}
+	mbuf_gethdr(MBUF_DONTWAIT, MT_DATA, &m);
+	if (m == NULL)
+		goto sae_error;
+	mbuf_align_32(m, 2 * 3 + sae_len);
+	mbuf_pkthdr_setlen(m, 2 * 3 + sae_len);
+	mbuf_setlen(m, 2 * 3 + sae_len);
+	frm = mtod(m, u_int8_t *);
+	LE_WRITE_2(frm, alg); frm += 2;
+	LE_WRITE_2(frm, seq); frm += 2;
+	LE_WRITE_2(frm, status); frm += 2;
+
+	if (sae_commit == 1) {
+		memcpy(ni->ni_sae.sae_scalar, scalar, sizeof(scalar));
+		memcpy(ni->ni_sae.sae_element_x, element_x, sizeof(element_x));
+		memcpy(ni->ni_sae.sae_element_y, element_y, sizeof(element_y));
+		memcpy(ni->ni_sae.sae_rand, rand, sizeof(rand));
+		ni->ni_sae.sae_state |= SAE_EVENT_COMMIT_SENT;
+		frm = ieee80211_add_sae_commit(frm, ni);
+	} else if (sae_commit == 2) {
+		frm = ieee80211_add_sae_commit(frm, ni);
+	} else if (sae_confirm) {
+		memcpy(ni->ni_sae.sae_kck, kck, sizeof(kck));
+		memcpy(ni->ni_sae.sae_pmk, pmk, sizeof(pmk));
+		memcpy(ni->ni_sae.sae_pmkid, pmkid, sizeof(pmkid));
+		ni->ni_sae.sae_state |= SAE_EVENT_CONFIRM_SENT;
+		if (ni->ni_sae.sae_send_confirm < 0xffff)
+			ni->ni_sae.sae_send_confirm++;
+		frm = ieee80211_add_sae_confirm(frm, ni);
+	}
+	explicit_bzero(scalar, sizeof(scalar));
+	explicit_bzero(element_x, sizeof(element_x));
+	explicit_bzero(element_y, sizeof(element_y));
+	explicit_bzero(rand, sizeof(rand));
+	explicit_bzero(k, sizeof(k));
+	explicit_bzero(kck, sizeof(kck));
+	explicit_bzero(pmk, sizeof(pmk));
+	explicit_bzero(pmkid, sizeof(pmkid));
 	return m;
+
+sae_error:
+	explicit_bzero(scalar, sizeof(scalar));
+	explicit_bzero(element_x, sizeof(element_x));
+	explicit_bzero(element_y, sizeof(element_y));
+	explicit_bzero(rand, sizeof(rand));
+	explicit_bzero(k, sizeof(k));
+	explicit_bzero(kck, sizeof(kck));
+	explicit_bzero(pmk, sizeof(pmk));
+	explicit_bzero(pmkid, sizeof(pmkid));
+	return NULL;
 }
 
 /*-
@@ -1951,7 +2112,8 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
             (IEEE80211_IS_CHAN_6GHZ(ni->ni_chan) ? 5 : 0)) : 0) +
         (addeht ? 2 + 1 + sizeof(struct ieee80211_eht_cap_elem_fixed) +
             ieee80211_eht_mcs_nss_size(&ic->ic_he_cap_elem,
-                &ic->ic_eht_cap_elem, 0) : 0)
+                &ic->ic_eht_cap_elem, 0) : 0) +
+	    (ieee80211_node_allow_wpa3(ic, ni) ? 2 + 1 : 0)
 #ifdef AIRPORT_WCL
         + ieee80211_mld_assoc_req_size(ic)
 #endif
@@ -2018,6 +2180,8 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
     ni->ni_eht_requested = addeht;
     if (ni->ni_eht_requested)
         frm = ieee80211_add_ehtcaps(frm, ic, ni);
+    if (ieee80211_node_allow_wpa3(ic, ni))
+		frm = ieee80211_add_rsnxe(frm, ic, ni);
 #ifdef AIRPORT_WCL
     if (ni->ni_eht_requested && ic->ic_wcl_peer_is_mlo &&
         ic->ic_mld_link_count != 0)

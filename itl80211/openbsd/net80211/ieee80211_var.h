@@ -564,6 +564,16 @@ struct ieee80211com {
 	u_int8_t		ic_globalcnt[EAPOL_KEY_NONCE_LEN];
 	u_int8_t		ic_nonce[EAPOL_KEY_NONCE_LEN];
 	u_int8_t		ic_psk[IEEE80211_PMK_LEN];
+	u_int8_t		ic_sae_pt[IEEE80211_SAE_MAX_ECC_PRIME_LEN * 2];
+	u_int8_t		ic_sae_pwe[IEEE80211_SAE_MAX_ECC_PRIME_LEN * 2];
+	u_int8_t		ic_sae_password[63];
+	size_t			ic_sae_password_len;
+	int			ic_sae_pt_valid;
+	int			ic_sae_pwe_valid;
+	uint32_t		ic_sae_generation;
+	int			ic_sae_defer_active;
+	int			(*ic_sae_defer_join)(struct ieee80211com *,
+				    const uint8_t *, int);
 	CTimeout*		ic_rsn_timeout;
 	int			ic_tkip_micfail;
 	u_int64_t		ic_tkip_micfail_last_tsc;
@@ -649,6 +659,8 @@ struct ieee80211_ess {
 
 	/* wpakey */
 	u_int8_t		psk[IEEE80211_PMK_LEN];
+	u_int8_t		sae_pt[IEEE80211_SAE_MAX_ECC_PRIME_LEN * 2];
+	int			sae_pt_valid;
 	u_int			rsnprotos;
 	u_int			rsnakms;
 	u_int			rsnciphers;
@@ -690,6 +702,7 @@ struct ieee80211_ess {
 
 /* ic_xflags */
 #define	IEEE80211_F_TX_MGMT_ONLY 0x00000001	/* leave data frames on ifq */
+#define	IEEE80211_F_SAE_PWE	 0x00000002	/* STATUS: SAE PWE set */
 
 /* ic_caps */
 #define	IEEE80211_C_WEP		0x00000001	/* CAPABILITY: WEP available */

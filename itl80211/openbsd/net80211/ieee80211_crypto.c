@@ -61,8 +61,6 @@
 
 void    ieee80211_prf(const u_int8_t *, size_t, const u_int8_t *, size_t,
         const u_int8_t *, size_t, u_int8_t *, size_t);
-void    ieee80211_kdf(const u_int8_t *, size_t, const u_int8_t *, size_t,
-        const u_int8_t *, size_t, u_int8_t *, size_t);
 void    ieee80211_derive_pmkid(enum ieee80211_akm, const u_int8_t *,
         const u_int8_t *, const u_int8_t *, u_int8_t *);
 
@@ -541,6 +539,7 @@ ieee80211_eapol_key_mic(struct ieee80211_eapol_key *key, const u_int8_t *kck)
         memcpy(key->mic, digest, EAPOL_KEY_MIC_LEN);
         break;
     case EAPOL_KEY_DESC_V3:
+    case EAPOL_KEY_DESC_USE_AKM:
         AES_CMAC_Init(&ctx.cmac);
         AES_CMAC_SetKey(&ctx.cmac, kck);
         AES_CMAC_Update(&ctx.cmac, (u_int8_t *)key, len);
@@ -660,6 +659,7 @@ ieee80211_eapol_key_decrypt(struct ieee80211_eapol_key *key,
         return 0;
     case EAPOL_KEY_DESC_V2:
     case EAPOL_KEY_DESC_V3:
+    case EAPOL_KEY_DESC_USE_AKM:
         /* Key Data Length must be a multiple of 8 */
         if (len < 16 + 8 || (len & 7) != 0)
             return 1;
@@ -679,6 +679,10 @@ ieee80211_pmksa_add(struct ieee80211com *ic, enum ieee80211_akm akm,
     const u_int8_t *macaddr, const u_int8_t *key, u_int32_t lifetime)
 {
 	struct ieee80211_pmk *pmk;
+
+	/* SAE PMKIDs come from the commit scalars, not from the PMK. */
+	if (akm == IEEE80211_AKM_SAE)
+		return NULL;
 
 	/* check if an entry already exists for this (STA,AKMP) */
 	TAILQ_FOREACH(pmk, &ic->ic_pmksa, pmk_next) {

@@ -22,6 +22,8 @@ public:
     virtual void clearScanningFlags() = 0;
     
     virtual IOReturn setMulticastList(IOEthernetAddress *addr, int count) = 0;
+
+    virtual bool setCountryCode(const char *) { return false; }
 };
 
 #endif /* ItlDriverController_h */

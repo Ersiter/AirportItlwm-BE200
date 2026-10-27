@@ -621,11 +621,21 @@ struct iwx_softc {
     pci_intr_handle_t ih;
 
 	struct task		init_task; /* NB: not reference-counted */
+	struct task		mcc_task;
 //	struct refcnt		task_refs;
 	struct task newstate_task;
 	struct task start_task;
 	struct task mld_link_task;
 	struct task sc_scan_task;
+	struct task sc_sae_join_task;
+	uint8_t sc_sae_join_bssid[IEEE80211_ADDR_LEN];
+	uint32_t sc_sae_join_generation;
+	uint32_t sc_sae_join_device_generation;
+	uint32_t sc_sae_join_scan_generation;
+	uint32_t sc_sae_join_password_generation;
+	int sc_sae_join_state;
+	int sc_sae_join_force_reauth;
+	int sc_sae_join_pending;
 	enum ieee80211_state	ns_nstate;
 	int			ns_arg;
 
@@ -727,6 +737,9 @@ struct iwx_softc {
 	int n_cmd_versions;
     char sc_fw_mcc[3];
     uint16_t sc_fw_mcc_int;
+    char sc_mcc_request[3];
+    uint8_t sc_mcc_source;
+    int sc_mcc_request_pending;
 #define IWX_IML_MAX_LEN 2048*10
     uint32_t sc_iml_len;
     uint8_t sc_iml[IWX_IML_MAX_LEN];

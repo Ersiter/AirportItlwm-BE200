@@ -1286,8 +1286,10 @@ setCOUNTRY_CODE(OSObject *object, struct apple80211_country_code_data *data)
 {
     XYLog("%s cc=%s\n", __FUNCTION__, data->cc);
     if (data && data->cc[0] != 120 && data->cc[0] != 88) {
-        memcpy(geo_location_cc, data->cc, sizeof(geo_location_cc));
-        fNetIf->postMessage(APPLE80211_M_COUNTRY_CODE_CHANGED);
+        if (!fHalService->getDriverController()->setCountryCode(data->cc)) {
+            memcpy(geo_location_cc, data->cc, sizeof(geo_location_cc));
+            fNetIf->postMessage(APPLE80211_M_COUNTRY_CODE_CHANGED);
+        }
     }
     return kIOReturnSuccess;
 }

@@ -205,6 +205,8 @@ public:
     virtual void clearScanningFlags() override;
     
     virtual IOReturn setMulticastList(IOEthernetAddress *addr, int count) override;
+
+    virtual bool setCountryCode(const char *countryCode) override;
     
     void releaseAll();
     void joinSSID(const char *ssid, const char *pwd);
@@ -464,6 +466,8 @@ public:
     int    iwx_media_change(struct _ifnet *);
     static void    iwx_newstate_task(void *);
     static void    iwx_scan_task(void *);
+    static int     iwx_defer_sae_join(struct ieee80211com *, const uint8_t *, int);
+    static void    iwx_sae_join_task(void *);
     static void    iwx_mld_active_link_task(void *);
     static int    iwx_newstate(struct ieee80211com *, enum ieee80211_state, int);
     void    iwx_endscan(struct iwx_softc *, uint8_t, bool = true);
@@ -472,7 +476,8 @@ public:
     int    iwx_sf_config(struct iwx_softc *, int);
     int    iwx_send_bt_init_conf(struct iwx_softc *);
     int    iwx_send_soc_conf(struct iwx_softc *);
-    int    iwx_send_update_mcc_cmd(struct iwx_softc *, const char *);
+    int    iwx_send_update_mcc_cmd(struct iwx_softc *, const char *, uint8_t);
+    int    iwx_process_mcc_request(struct iwx_softc *, const char *, uint8_t);
     int    iwx_send_temp_report_ths_cmd(struct iwx_softc *);
     int    iwx_init_hw(struct iwx_softc *);
     int    iwx_init(struct _ifnet *);
@@ -506,6 +511,7 @@ public:
     void    iwx_attach_hook(struct device *);
     bool    iwx_attach(struct iwx_softc *, struct pci_attach_args *);
     static void    iwx_init_task(void *);
+    static void    iwx_mcc_task(void *);
     int    iwx_activate(struct iwx_softc *, int);
     int    iwx_resume(struct iwx_softc *);
     

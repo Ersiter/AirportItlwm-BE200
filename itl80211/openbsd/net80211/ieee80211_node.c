@@ -306,6 +306,8 @@ ieee80211_ess_setwpaparms(struct ieee80211_ess *ess,
         ess->rsnakms |= IEEE80211_AKM_8021X;
     if (wpa->i_akms & IEEE80211_WPA_AKM_SHA256_8021X)
         ess->rsnakms |= IEEE80211_AKM_SHA256_8021X;
+    if (wpa->i_akms & IEEE80211_WPA_AKM_SAE)
+        ess->rsnakms |= IEEE80211_AKM_SAE;
     if (ess->rsnakms == 0)	/* set to default (PSK) */
         ess->rsnakms = IEEE80211_AKM_PSK;
     
@@ -367,6 +369,8 @@ ieee80211_ess_clear_wpa(struct ieee80211_ess *ess)
     ess->rsnciphers = 0;
     ess->rsngroupcipher = (enum ieee80211_cipher)0;
     explicit_bzero(ess->psk, sizeof(ess->psk));
+    explicit_bzero(ess->sae_pt, sizeof(ess->sae_pt));
+    ess->sae_pt_valid = 0;
     ess->flags &= ~(IEEE80211_F_PSK | IEEE80211_F_RSNON);
 }
 
@@ -671,10 +675,21 @@ ieee80211_set_ess(struct ieee80211com *ic, struct ieee80211_ess *ess,
     
     ieee80211_disable_wep(ic);
     ieee80211_disable_rsn(ic);
+    explicit_bzero(ic->ic_sae_pt, sizeof(ic->ic_sae_pt));
+    explicit_bzero(ic->ic_sae_pwe, sizeof(ic->ic_sae_pwe));
+    explicit_bzero(ic->ic_sae_password, sizeof(ic->ic_sae_password));
+    ic->ic_sae_password_len = 0;
+    ++ic->ic_sae_generation;
+    ic->ic_sae_pt_valid = ic->ic_sae_pwe_valid = 0;
+    ic->ic_sae_defer_active = 0;
+    ic->ic_xflags &= ~IEEE80211_F_SAE_PWE;
     
     if (ess->flags & IEEE80211_F_RSNON) {
         explicit_bzero(ic->ic_psk, sizeof(ic->ic_psk));
         memcpy(ic->ic_psk, ess->psk, sizeof(ic->ic_psk));
+        ic->ic_sae_pt_valid = ess->sae_pt_valid;
+        if (ess->sae_pt_valid)
+            memcpy(ic->ic_sae_pt, ess->sae_pt, sizeof(ic->ic_sae_pt));
         
         ic->ic_rsnprotos = ess->rsnprotos;
         ic->ic_rsnakms = ess->rsnakms;
@@ -1114,6 +1129,13 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
             if (!(ic->ic_flags & IEEE80211_F_PSK))
                 fail |= IEEE80211_NODE_ASSOCFAIL_WPA_PROTO;
         }
+        if ((ni->ni_rsnakms & ic->ic_rsnakms & ~IEEE80211_AKM_SAE) == 0 &&
+            (ni->ni_rsnakms & ic->ic_rsnakms & IEEE80211_AKM_SAE) != 0 &&
+            ((ic->ic_caps & IEEE80211_C_MFP) == 0 ||
+             !(ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC) ||
+             ((ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) ?
+                !ic->ic_sae_pt_valid : ic->ic_sae_password_len == 0)))
+            fail |= IEEE80211_NODE_ASSOCFAIL_WPA_PROTO;
         if (ni->ni_rsngroupcipher != IEEE80211_CIPHER_WEP40 &&
             ni->ni_rsngroupcipher != IEEE80211_CIPHER_TKIP &&
             ni->ni_rsngroupcipher != IEEE80211_CIPHER_CCMP &&
@@ -1258,6 +1280,12 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
     (*ic->ic_node_copy)(ic, ic->ic_bss, selbs);
     ni = ic->ic_bss;
     ni->ni_assoc_fail |= assoc_fail;
+    ni->ni_flags &= ~(IEEE80211_NODE_MFP | IEEE80211_NODE_RXMGMTPROT |
+        IEEE80211_NODE_TXMGMTPROT);
+    ni->ni_flags &= ~IEEE80211_NODE_PMKID;
+    explicit_bzero(ni->ni_pmkid, sizeof(ni->ni_pmkid));
+    explicit_bzero(&ni->ni_sae, sizeof(ni->ni_sae));
+    ni->ni_sae.sae_state = SAE_STATE_NOTHING;
     
     ic->ic_curmode = ieee80211_chan2mode(ic, ni->ni_chan);
     
@@ -1271,6 +1299,17 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
         ieee80211_choose_rsnparams(ic);
     else if (ic->ic_flags & IEEE80211_F_WEPON)
         ni->ni_rsncipher = IEEE80211_CIPHER_USEGROUP;
+
+    if (ieee80211_node_allow_wpa3(ic, ni) &&
+        !ic->ic_sae_defer_active && ic->ic_sae_defer_join != NULL) {
+        explicit_bzero(ic->ic_sae_pwe, sizeof(ic->ic_sae_pwe));
+        ic->ic_sae_pwe_valid = 0;
+        ic->ic_xflags &= ~IEEE80211_F_SAE_PWE;
+        if (ic->ic_sae_defer_join(ic, ni->ni_macaddr, force_reauth) == 0)
+            return;
+		ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+        return;
+    }
     
     ieee80211_node_newstate(selbs, IEEE80211_STA_BSS);
 #ifndef IEEE80211_STA_ONLY
@@ -1298,6 +1337,33 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
         
         timeout_del(&ic->ic_bgscan_timeout);
         ic->ic_flags &= ~IEEE80211_F_BGSCAN;
+
+        explicit_bzero(&ni->ni_sae, sizeof(ni->ni_sae));
+        ni->ni_sae.sae_state = SAE_STATE_NOTHING;
+        if (ieee80211_node_allow_wpa3(ic, ni)) {
+            int error;
+            if (ic->ic_sae_defer_active)
+                error = ic->ic_sae_pwe_valid ? 0 : -1;
+            else if (ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E)
+                error = ieee80211_sae_derive_password_elem(ic->ic_sae_pwe,
+                    ic->ic_sae_pt, ic->ic_myaddr, ni->ni_macaddr);
+            else
+                error = ieee80211_sae_derive_password_elem_hnp(
+                    ic->ic_sae_pwe, ic->ic_sae_password,
+                    ic->ic_sae_password_len, ic->ic_myaddr, ni->ni_macaddr);
+            if (error != 0) {
+                explicit_bzero(ic->ic_sae_pwe, sizeof(ic->ic_sae_pwe));
+                ic->ic_sae_pwe_valid = 0;
+                ic->ic_xflags &= ~IEEE80211_F_SAE_PWE;
+            } else {
+                ic->ic_sae_pwe_valid = 1;
+                ic->ic_xflags |= IEEE80211_F_SAE_PWE;
+            }
+        } else {
+            explicit_bzero(ic->ic_sae_pwe, sizeof(ic->ic_sae_pwe));
+            ic->ic_sae_pwe_valid = 0;
+            ic->ic_xflags &= ~IEEE80211_F_SAE_PWE;
+        }
         
         if (!force_reauth) {
             /*
@@ -1597,8 +1663,15 @@ ieee80211_choose_rsnparams(struct ieee80211com *ic)
     
     /* filter out unsupported AKMPs */
     ni->ni_rsnakms &= ic->ic_rsnakms;
-    /* prefer SHA-256 based AKMPs */
-    if ((ic->ic_flags & IEEE80211_F_PSK) && (ni->ni_rsnakms &
+    /* prefer SAE when a password is configured and MFP can be negotiated */
+    if ((ic->ic_sae_pt_valid || ic->ic_sae_password_len != 0) &&
+        (ni->ni_rsnakms & IEEE80211_AKM_SAE) &&
+        (ic->ic_caps & IEEE80211_C_MFP) &&
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC) &&
+        ((ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) == 0 ||
+         ic->ic_sae_pt_valid)) {
+        ni->ni_rsnakms = IEEE80211_AKM_SAE;
+    } else if ((ic->ic_flags & IEEE80211_F_PSK) && (ni->ni_rsnakms &
                                              (IEEE80211_AKM_PSK | IEEE80211_AKM_SHA256_PSK))) {
         /* AP supports PSK AKMP and a PSK is configured */
         if (ni->ni_rsnakms & IEEE80211_AKM_SHA256_PSK)
@@ -1632,6 +1705,22 @@ ieee80211_choose_rsnparams(struct ieee80211com *ic)
     if ((ic->ic_caps & IEEE80211_C_MFP) &&
         (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC))
         ni->ni_flags |= IEEE80211_NODE_MFP;
+}
+
+int
+ieee80211_node_allow_wpa3(struct ieee80211com *ic,
+    const struct ieee80211_node *ni)
+{
+    if ((ic->ic_flags & IEEE80211_F_RSNON) == 0 ||
+        (ni->ni_rsnprotos & IEEE80211_PROTO_RSN) == 0 ||
+        ((ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) ?
+            !ic->ic_sae_pt_valid : ic->ic_sae_password_len == 0) ||
+        (ic->ic_caps & IEEE80211_C_MFP) == 0 ||
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC) == 0 ||
+        (ni->ni_rsnakms & IEEE80211_AKM_SAE) == 0)
+        return 0;
+
+    return 1;
 }
 
 int
@@ -1673,6 +1762,8 @@ ieee80211_node_cleanup(struct ieee80211com *ic, struct ieee80211_node *ni)
         ni->ni_rsnie_tlv = NULL;
         ni->ni_rsnie_tlv_len = 0;
     }
+    explicit_bzero(&ni->ni_sae, sizeof(ni->ni_sae));
+    ni->ni_rsnxecaps = 0;
     ieee80211_ba_del(ni);
     ieee80211_ba_free(ni);
     if (ni->ni_unref_arg != NULL) {
@@ -2115,6 +2206,7 @@ ieee80211_free_node(struct ieee80211com *ic, struct ieee80211_node *ni)
 #endif
     ieee80211_ba_del(ni);
     ieee80211_ba_free(ni);
+    explicit_bzero(&ni->ni_sae, sizeof(ni->ni_sae));
     RB_REMOVE(ieee80211_tree, &ic->ic_tree, ni);
     ic->ic_nnodes--;
 #ifndef IEEE80211_STA_ONLY
@@ -3416,6 +3508,17 @@ ieee80211_node_leave_rsn(struct ieee80211com *ic, struct ieee80211_node *ni)
     }
     ni->ni_flags &= ~IEEE80211_NODE_PMK;
     ni->ni_rsn_gstate = RSNA_IDLE;
+    ni->ni_flags &= ~IEEE80211_NODE_PMKID;
+    ni->ni_flags &= ~(IEEE80211_NODE_MFP | IEEE80211_NODE_RXMGMTPROT |
+        IEEE80211_NODE_TXMGMTPROT);
+    explicit_bzero(ni->ni_pmkid, sizeof(ni->ni_pmkid));
+    ni->ni_rsnxecaps = 0;
+    explicit_bzero(&ni->ni_sae, sizeof(ni->ni_sae));
+    if (ni == ic->ic_bss) {
+        explicit_bzero(ic->ic_sae_pwe, sizeof(ic->ic_sae_pwe));
+        ic->ic_sae_pwe_valid = 0;
+        ic->ic_xflags &= ~IEEE80211_F_SAE_PWE;
+    }
     
     timeout_del(&ni->ni_eapol_to);
     timeout_del(&ni->ni_sa_query_to);

@@ -1326,6 +1326,8 @@ ieee80211_auth_open(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 		if (ic->ic_flags & IEEE80211_F_RSNON) {
 			/* XXX not here! */
 			ic->ic_bss->ni_flags &= ~IEEE80211_NODE_TXRXPROT;
+			ic->ic_bss->ni_flags &= ~(IEEE80211_NODE_RXMGMTPROT |
+			    IEEE80211_NODE_TXMGMTPROT);
 			ic->ic_bss->ni_port_valid = 0;
 			ic->ic_bss->ni_replaycnt_ok = 0;
 			(*ic->ic_delete_key)(ic, ic->ic_bss,
@@ -1350,6 +1352,142 @@ ieee80211_auth_open(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 	default:
 		break;
 	}
+}
+
+static void
+ieee80211_auth_sae_failure(struct ieee80211com *ic,
+    struct ieee80211_node *ni)
+{
+	explicit_bzero(&ni->ni_sae, sizeof(ni->ni_sae));
+	ni->ni_sae.sae_state = SAE_STATE_NOTHING;
+	ni->ni_flags &= ~(IEEE80211_NODE_PMKID | IEEE80211_NODE_RXMGMTPROT |
+	    IEEE80211_NODE_TXMGMTPROT);
+	explicit_bzero(ni->ni_pmkid, sizeof(ni->ni_pmkid));
+	if (ni != ic->ic_bss)
+		ni->ni_fails++;
+	else
+		ieee80211_try_another_bss(ic);
+	ic->ic_stats.is_rx_auth_fail++;
+	ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+}
+
+void
+ieee80211_auth_sae(struct ieee80211com *ic, const struct ieee80211_frame *wh,
+	const uint8_t *sae_data, size_t sae_len, struct ieee80211_node *ni,
+	struct ieee80211_rxinfo *rxi, u_int16_t seq, u_int16_t status)
+{
+	const uint8_t *scalar, *element_x, *element_y;
+	uint16_t peer_send_confirm;
+
+	(void)rxi;
+	if (ic->ic_opmode != IEEE80211_M_STA ||
+	    ic->ic_state != IEEE80211_S_AUTH || ni != ic->ic_bss ||
+	    !ieee80211_node_allow_wpa3(ic, ni))
+		goto discard;
+
+	if (seq == IEEE80211_AUTH_OPEN_REQUEST &&
+	    status == IEEE80211_STATUS_ANTI_CLOGGING_TOKEN_REQ &&
+	    ni->ni_sae.sae_state == SAE_STATE_COMMITTED) {
+		const uint8_t *token;
+		size_t token_len;
+
+		if (sae_len < 2 || LE_READ_2(sae_data) !=
+		    IEEE80211_SAE_CURVE_ID_P256)
+			goto token_failure;
+		token = sae_data + 2;
+		token_len = sae_len - 2;
+		if (ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) {
+			if (token_len < 3 || token[0] != IEEE80211_ELEMID_EXTENSION ||
+			    token[1] < 2 || token[1] != token_len - 2 ||
+			    token[2] != IEEE80211_EID_EXT_ANTI_CLOGGING_TOKEN)
+				goto token_failure;
+			token_len = token[1] - 1;
+			if (token_len > IEEE80211_SAE_H2E_TOKEN_MAX_LEN)
+				goto token_failure;
+			token += 3;
+		} else if (token_len == 0) {
+			goto token_failure;
+		}
+		if (token_len > sizeof(ni->ni_sae.sae_token))
+			goto token_failure;
+		explicit_bzero(ni->ni_sae.sae_token,
+		    sizeof(ni->ni_sae.sae_token));
+		memcpy(ni->ni_sae.sae_token, token, token_len);
+		ni->ni_sae.sae_token_len = token_len;
+		ic->ic_mgt_timer = 0;
+		IEEE80211_SEND_MGMT(ic, ni, IEEE80211_FC0_SUBTYPE_AUTH,
+		    IEEE80211_AUTH_OPEN_REQUEST);
+		return;
+	token_failure:
+		ieee80211_auth_sae_failure(ic, ni);
+		return;
+	}
+
+	if (seq == IEEE80211_AUTH_OPEN_REQUEST) {
+		if (ni->ni_sae.sae_state != SAE_STATE_COMMITTED ||
+		    status != ((ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) ?
+			IEEE80211_STATUS_H2E : IEEE80211_STATUS_SUCCESS) ||
+		    sae_len < IEEE80211_SAE_COMMIT_MIN_LEN ||
+		    ieee80211_sae_verify_commit_elem(&scalar, &element_x,
+		    &element_y, sae_data, sae_len, ni->ni_sae.sae_scalar,
+		    ni->ni_sae.sae_element_x, ni->ni_sae.sae_element_y) !=
+		    IEEE80211_STATUS_SUCCESS) {
+			ieee80211_auth_sae_failure(ic, ni);
+			return;
+		}
+		memcpy(ni->ni_sae.sae_peer_scalar, scalar,
+		    sizeof(ni->ni_sae.sae_peer_scalar));
+		memcpy(ni->ni_sae.sae_peer_element_x, element_x,
+		    sizeof(ni->ni_sae.sae_peer_element_x));
+		memcpy(ni->ni_sae.sae_peer_element_y, element_y,
+		    sizeof(ni->ni_sae.sae_peer_element_y));
+		explicit_bzero(ni->ni_sae.sae_token,
+		    sizeof(ni->ni_sae.sae_token));
+		ni->ni_sae.sae_token_len = 0;
+		ni->ni_sae.sae_state |= SAE_EVENT_PEER_COMMIT_RECEIVED;
+		ic->ic_mgt_timer = 0;
+		IEEE80211_SEND_MGMT(ic, ni, IEEE80211_FC0_SUBTYPE_AUTH,
+		    IEEE80211_AUTH_OPEN_RESPONSE);
+		return;
+	}
+
+	if (seq == IEEE80211_AUTH_OPEN_RESPONSE) {
+		if (sae_len < 2) {
+			ieee80211_auth_sae_failure(ic, ni);
+			return;
+		}
+		peer_send_confirm = LE_READ_2(sae_data);
+		if (ni->ni_sae.sae_state != SAE_STATE_CONFIRMED ||
+		    status != IEEE80211_STATUS_SUCCESS ||
+		    sae_len < IEEE80211_SAE_CONFIRM_MIN_LEN ||
+		    ieee80211_sae_verify_confirm(sae_data, sae_len,
+		    ni->ni_sae.sae_kck, ni->ni_sae.sae_scalar,
+		    ni->ni_sae.sae_element_x, ni->ni_sae.sae_element_y,
+		    ni->ni_sae.sae_peer_scalar,
+		    ni->ni_sae.sae_peer_element_x,
+		    ni->ni_sae.sae_peer_element_y) != 0) {
+			ieee80211_auth_sae_failure(ic, ni);
+			return;
+		}
+		ni->ni_sae.sae_peer_send_confirm = peer_send_confirm;
+		ni->ni_sae.sae_state |= SAE_EVENT_PEER_CONFIRM_RECEIVED;
+		if (ni->ni_sae.sae_state != SAE_STATE_ACCEPTED) {
+			ieee80211_auth_sae_failure(ic, ni);
+			return;
+		}
+		memcpy(ni->ni_pmkid, ni->ni_sae.sae_pmkid,
+		    sizeof(ni->ni_pmkid));
+		ni->ni_flags |= IEEE80211_NODE_PMKID;
+		ic->ic_mgt_timer = 0;
+		ieee80211_new_state(ic, IEEE80211_S_ASSOC,
+		    wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK);
+		return;
+	}
+
+discard:
+	DPRINTF(("discard SAE auth from %s; state %u, seq %u, status %u\n",
+	    ether_sprintf((u_int8_t *)wh->i_addr2), ic->ic_state, seq, status));
+	ic->ic_stats.is_rx_bad_auth++;
 }
 
 void

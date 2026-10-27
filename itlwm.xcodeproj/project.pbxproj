@@ -1011,6 +1011,36 @@
 		F8F9EDE1240B7415009CB8E7 /* _task.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8F9EDE0240B7415009CB8E7 /* _task.cpp */; };
 		F8FA0EEC2501E7EE00B1822E /* zutil.h in Headers */ = {isa = PBXBuildFile; fileRef = F8FA0EEB2501E7EE00B1822E /* zutil.h */; };
 		A7D000012026100700000001 /* ItlDma.cpp in Sources */ = {isa = PBXBuildFile; fileRef = A7D000022026100700000001 /* ItlDma.cpp */; };
+		628B5C9210C049EFB2D9D074 /* ec_p256_m31.c in Sources */ = {isa = PBXBuildFile; fileRef = CA5768199009465C95E4FD5B /* ec_p256_m31.c */; };
+		330E8561590F4B78B44326AC /* ec_p256_m31.c in Sources */ = {isa = PBXBuildFile; fileRef = CA5768199009465C95E4FD5B /* ec_p256_m31.c */; };
+		E022988CE079436AA2C4ECBC /* ec_p256_m31.c in Sources */ = {isa = PBXBuildFile; fileRef = CA5768199009465C95E4FD5B /* ec_p256_m31.c */; };
+		3143C01C62014D1AA15A9C7A /* ec_p256_m31.c in Sources */ = {isa = PBXBuildFile; fileRef = CA5768199009465C95E4FD5B /* ec_p256_m31.c */; };
+		F967721FB9FB425F9A9E93FC /* ec_p256_m31.c in Sources */ = {isa = PBXBuildFile; fileRef = CA5768199009465C95E4FD5B /* ec_p256_m31.c */; };
+		2678DC2910854BF6B4DC93D3 /* ec_p256_m31.c in Sources */ = {isa = PBXBuildFile; fileRef = CA5768199009465C95E4FD5B /* ec_p256_m31.c */; };
+		54D45A0CC4954D1DB63FD96E /* ec_p256_m31.c in Sources */ = {isa = PBXBuildFile; fileRef = CA5768199009465C95E4FD5B /* ec_p256_m31.c */; };
+		92E8B6A4EA4843A8938C77E0 /* ec_p256_m31.c in Sources */ = {isa = PBXBuildFile; fileRef = CA5768199009465C95E4FD5B /* ec_p256_m31.c */; };
+		F252137DD8A94D81A6C0F630 /* ec_p256_m31.c in Sources */ = {isa = PBXBuildFile; fileRef = CA5768199009465C95E4FD5B /* ec_p256_m31.c */; };
+		E6B00D0FB5D540779710EAF1 /* ec_p256_m31.c in Sources */ = {isa = PBXBuildFile; fileRef = CA5768199009465C95E4FD5B /* ec_p256_m31.c */; };
+		BC136DD13E464A439F02D46E /* i31.c in Sources */ = {isa = PBXBuildFile; fileRef = 7971F88F6DF042D8B23F56CE /* i31.c */; };
+		D378E4B1D97149B99DD37214 /* i31.c in Sources */ = {isa = PBXBuildFile; fileRef = 7971F88F6DF042D8B23F56CE /* i31.c */; };
+		CC9BED2D36C44E6486316A63 /* i31.c in Sources */ = {isa = PBXBuildFile; fileRef = 7971F88F6DF042D8B23F56CE /* i31.c */; };
+		6FC955D10A4F4B0B930DE0E4 /* i31.c in Sources */ = {isa = PBXBuildFile; fileRef = 7971F88F6DF042D8B23F56CE /* i31.c */; };
+		5AFD54A82FDE441F915A3424 /* i31.c in Sources */ = {isa = PBXBuildFile; fileRef = 7971F88F6DF042D8B23F56CE /* i31.c */; };
+		AE4E1E1528114EC19CFBC33D /* i31.c in Sources */ = {isa = PBXBuildFile; fileRef = 7971F88F6DF042D8B23F56CE /* i31.c */; };
+		21230074ADB445CDBCA54C9A /* i31.c in Sources */ = {isa = PBXBuildFile; fileRef = 7971F88F6DF042D8B23F56CE /* i31.c */; };
+		EC3B7A0BEA164FE585AB0443 /* i31.c in Sources */ = {isa = PBXBuildFile; fileRef = 7971F88F6DF042D8B23F56CE /* i31.c */; };
+		9A14DCCA5C8645CB961EFC29 /* i31.c in Sources */ = {isa = PBXBuildFile; fileRef = 7971F88F6DF042D8B23F56CE /* i31.c */; };
+		B31CA34654BF4976A305CCE7 /* i31.c in Sources */ = {isa = PBXBuildFile; fileRef = 7971F88F6DF042D8B23F56CE /* i31.c */; };
+		8610D2E04CD04606B7B5BBCC /* ieee80211_sae.c in Sources */ = {isa = PBXBuildFile; fileRef = E9C9633E3F634031A25FEA80 /* ieee80211_sae.c */; };
+		64BE0CA6C40640FFBEEDFE27 /* ieee80211_sae.c in Sources */ = {isa = PBXBuildFile; fileRef = E9C9633E3F634031A25FEA80 /* ieee80211_sae.c */; };
+		9F3A4811A2AA4795B136A968 /* ieee80211_sae.c in Sources */ = {isa = PBXBuildFile; fileRef = E9C9633E3F634031A25FEA80 /* ieee80211_sae.c */; };
+		26C9FD9B696D45B7AA6B3F71 /* ieee80211_sae.c in Sources */ = {isa = PBXBuildFile; fileRef = E9C9633E3F634031A25FEA80 /* ieee80211_sae.c */; };
+		F168FE2D0F5443F0AEBC6775 /* ieee80211_sae.c in Sources */ = {isa = PBXBuildFile; fileRef = E9C9633E3F634031A25FEA80 /* ieee80211_sae.c */; };
+		25A23931CA6940ADB2C9528F /* ieee80211_sae.c in Sources */ = {isa = PBXBuildFile; fileRef = E9C9633E3F634031A25FEA80 /* ieee80211_sae.c */; };
+		D03797CBD5904999A0E05ED2 /* ieee80211_sae.c in Sources */ = {isa = PBXBuildFile; fileRef = E9C9633E3F634031A25FEA80 /* ieee80211_sae.c */; };
+		C289FEC63AA74E2F98F2F2AC /* ieee80211_sae.c in Sources */ = {isa = PBXBuildFile; fileRef = E9C9633E3F634031A25FEA80 /* ieee80211_sae.c */; };
+		D46644B68CFC4A469AF7F14D /* ieee80211_sae.c in Sources */ = {isa = PBXBuildFile; fileRef = E9C9633E3F634031A25FEA80 /* ieee80211_sae.c */; };
+		1113DC0822F6441DB271CD90 /* ieee80211_sae.c in Sources */ = {isa = PBXBuildFile; fileRef = E9C9633E3F634031A25FEA80 /* ieee80211_sae.c */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1364,6 +1394,11 @@
 		F8FA0EED2501E8C100B1822E /* zutil.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = zutil.c; sourceTree = "<group>"; };
 		A7D000022026100700000001 /* ItlDma.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = ItlDma.cpp; sourceTree = "<group>"; };
 		A7D000032026100700000001 /* ItlDma.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = ItlDma.hpp; sourceTree = "<group>"; };
+		CA5768199009465C95E4FD5B /* ec_p256_m31.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ec_p256_m31.c; sourceTree = "<group>"; };
+		1CF9A74F90E7427AB240EB41 /* ec_p256_m31.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ec_p256_m31.h; sourceTree = "<group>"; };
+		7971F88F6DF042D8B23F56CE /* i31.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = i31.c; sourceTree = "<group>"; };
+		B45F5DC783174CE587883A7B /* i31.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = i31.h; sourceTree = "<group>"; };
+		E9C9633E3F634031A25FEA80 /* ieee80211_sae.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = ieee80211_sae.c; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1523,6 +1558,10 @@
 		024A07C823FCBC6C009FBA6C /* crypto */ = {
 			isa = PBXGroup;
 			children = (
+				B45F5DC783174CE587883A7B /* i31.h */,
+				7971F88F6DF042D8B23F56CE /* i31.c */,
+				1CF9A74F90E7427AB240EB41 /* ec_p256_m31.h */,
+				CA5768199009465C95E4FD5B /* ec_p256_m31.c */,
 				F88D2B3B2414E64000BBE700 /* sha1-pbkdf2.c */,
 				024A07C923FCBC6C009FBA6C /* aes.c */,
 				024A07CA23FCBC6C009FBA6C /* hmac.c */,
@@ -1759,6 +1798,7 @@
 		F8C2EC2E24080319007A9422 /* net80211 */ = {
 			isa = PBXGroup;
 			children = (
+				E9C9633E3F634031A25FEA80 /* ieee80211_sae.c */,
 				F8C2EC2F24080319007A9422 /* ieee80211_proto.c */,
 				F8C2EC3024080319007A9422 /* _string.c */,
 				F8C2EC3124080319007A9422 /* ieee80211_amrr.h */,
@@ -2658,6 +2698,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				628B5C9210C049EFB2D9D074 /* ec_p256_m31.c in Sources */,
+				BC136DD13E464A439F02D46E /* i31.c in Sources */,
+				8610D2E04CD04606B7B5BBCC /* ieee80211_sae.c in Sources */,
 				F8A4307325062CE300EA545E /* zutil.c in Sources */,
 				F8294FE424FCBF5100239253 /* FwBinary.cpp in Sources */,
 				F8ED134424FBB5B70068C831 /* ItlIwx.cpp in Sources */,
@@ -2738,6 +2781,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				330E8561590F4B78B44326AC /* ec_p256_m31.c in Sources */,
+				D378E4B1D97149B99DD37214 /* i31.c in Sources */,
+				64BE0CA6C40640FFBEEDFE27 /* ieee80211_sae.c in Sources */,
 				35CBE671251CB89700435CBC /* _mbuf.cpp in Sources */,
 				F8C594D725FD935B0007D19C /* ieee80211_ra.c in Sources */,
 				35CBE672251CB89700435CBC /* _task.cpp in Sources */,
@@ -2820,6 +2866,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E022988CE079436AA2C4ECBC /* ec_p256_m31.c in Sources */,
+				CC9BED2D36C44E6486316A63 /* i31.c in Sources */,
+				9F3A4811A2AA4795B136A968 /* ieee80211_sae.c in Sources */,
 				35CBE6DB251CB8BF00435CBC /* _mbuf.cpp in Sources */,
 				F8C594D525FD935B0007D19C /* ieee80211_ra.c in Sources */,
 				35CBE6DC251CB8BF00435CBC /* _task.cpp in Sources */,
@@ -2902,6 +2951,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3143C01C62014D1AA15A9C7A /* ec_p256_m31.c in Sources */,
+				6FC955D10A4F4B0B930DE0E4 /* i31.c in Sources */,
+				26C9FD9B696D45B7AA6B3F71 /* ieee80211_sae.c in Sources */,
 				35CBE746251CB8CA00435CBC /* _mbuf.cpp in Sources */,
 				F8C594D425FD935B0007D19C /* ieee80211_ra.c in Sources */,
 				35CBE747251CB8CA00435CBC /* _task.cpp in Sources */,
@@ -2984,6 +3036,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F967721FB9FB425F9A9E93FC /* ec_p256_m31.c in Sources */,
+				5AFD54A82FDE441F915A3424 /* i31.c in Sources */,
+				F168FE2D0F5443F0AEBC6775 /* ieee80211_sae.c in Sources */,
 				F897ECCB266EFF93005EE8F7 /* _mbuf.cpp in Sources */,
 				F897ECCC266EFF93005EE8F7 /* ieee80211_ra.c in Sources */,
 				F897ECCD266EFF93005EE8F7 /* _task.cpp in Sources */,
@@ -3067,6 +3122,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				2678DC2910854BF6B4DC93D3 /* ec_p256_m31.c in Sources */,
+				AE4E1E1528114EC19CFBC33D /* i31.c in Sources */,
+				25A23931CA6940ADB2C9528F /* ieee80211_sae.c in Sources */,
 				F89B6C20250232DC000F77FF /* _mbuf.cpp in Sources */,
 				F8C594D625FD935B0007D19C /* ieee80211_ra.c in Sources */,
 				F89B6C21250232DC000F77FF /* _task.cpp in Sources */,
@@ -3149,6 +3207,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				54D45A0CC4954D1DB63FD96E /* ec_p256_m31.c in Sources */,
+				21230074ADB445CDBCA54C9A /* i31.c in Sources */,
+				D03797CBD5904999A0E05ED2 /* ieee80211_sae.c in Sources */,
 				F8876A4E28B71F5400A21E42 /* rs.cpp in Sources */,
 				F8AE650A285471560085B4CF /* _mbuf.cpp in Sources */,
 				F8AE650B285471560085B4CF /* ieee80211_ra.c in Sources */,
@@ -3232,6 +3293,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				92E8B6A4EA4843A8938C77E0 /* ec_p256_m31.c in Sources */,
+				EC3B7A0BEA164FE585AB0443 /* i31.c in Sources */,
+				C289FEC63AA74E2F98F2F2AC /* ieee80211_sae.c in Sources */,
 				F8F84F682ADE26F1002808DE /* rs.cpp in Sources */,
 				F8B210BC2A2EC2680043ECBD /* _mbuf.cpp in Sources */,
 				F8B210BD2A2EC2680043ECBD /* ieee80211_ra.c in Sources */,
@@ -3314,6 +3378,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F252137DD8A94D81A6C0F630 /* ec_p256_m31.c in Sources */,
+				9A14DCCA5C8645CB961EFC29 /* i31.c in Sources */,
+				D46644B68CFC4A469AF7F14D /* ieee80211_sae.c in Sources */,
 				A7D000012026100700000001 /* ItlDma.cpp in Sources */,
 				F8D94CA62B9ABFE20081A3C4 /* rs.cpp in Sources */,
 				F8D94CA72B9ABFE20081A3C4 /* _mbuf.cpp in Sources */,
@@ -3398,6 +3465,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E6B00D0FB5D540779710EAF1 /* ec_p256_m31.c in Sources */,
+				B31CA34654BF4976A305CCE7 /* i31.c in Sources */,
+				1113DC0822F6441DB271CD90 /* ieee80211_sae.c in Sources */,
 				A7D000012026100700000001 /* ItlDma.cpp in Sources */,
 				F8D94CA62B9ABFE20081A3C4 /* rs.cpp in Sources */,
 				F8D94CA72B9ABFE20081A3C4 /* _mbuf.cpp in Sources */,

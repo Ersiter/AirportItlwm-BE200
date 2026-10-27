@@ -99,6 +99,8 @@ eventHandler(struct ieee80211com *ic, int msgCode, void *data)
 #else
     switch (msgCode) {
         case IEEE80211_EVT_COUNTRY_CODE_UPDATE:
+            if (data)
+                memcpy(that->geo_location_cc, data, sizeof(that->geo_location_cc));
             interface->postMessage(APPLE80211_M_COUNTRY_CODE_CHANGED, NULL, 0, 0);
             break;
         case IEEE80211_EVT_STA_ASSOC_DONE:
@@ -1130,6 +1132,9 @@ getCARD_CAPABILITIES(OSObject *object,
         (1 << (APPLE80211_CAP_SHORT_GI_20MHZ - 16));
     // Apple80211Scan/ScanAsync reject native scan requests without capability 22.
     cd->capabilities[2] |= 0x40;
+    // Apple80211Associate2 requires this bit before issuing an SAE join.
+    if ((caps & IEEE80211_C_MFP) && ic->ic_sae_defer_join)
+        cd->capabilities[9] |= 0x08;
     // Tahoe WCLDeviceConfiguration::isHeSupported reads byte 17, bit 7.
     // WCL uses this capability together with the BSS HE IE for PHY reporting.
     if (caps & IEEE80211_C_HE)
@@ -1224,7 +1229,14 @@ getCOUNTRY_CODE(OSObject *object,
     memset(user_override_cc, 0, sizeof(user_override_cc));
     PE_parse_boot_argn("itlwm_cc", user_override_cc, 3);
     /* user_override_cc > firmware_cc > geo_location_cc */
-    strncpy((char*)cd->cc, user_override_cc[0] ? user_override_cc : ((cc_fw[0] == 'Z' && cc_fw[1] == 'Z' && geo_location_cc[0]) ? geo_location_cc : cc_fw), sizeof(cd->cc));
+    const char *countryCode = cc_fw;
+    if (user_override_cc[0] && cc_fw[0] == user_override_cc[0] &&
+        cc_fw[1] == user_override_cc[1])
+        countryCode = user_override_cc;
+    else if (cc_fw[0] == 'Z' && cc_fw[1] == 'Z' &&
+             !user_override_cc[0] && geo_location_cc[0])
+        countryCode = geo_location_cc;
+    strncpy((char*)cd->cc, countryCode, sizeof(cd->cc));
     return kIOReturnSuccess;
 }
 
@@ -1236,7 +1248,16 @@ setCOUNTRY_CODE(OSObject *object, struct apple80211_country_code_data *data)
         return kIOReturnBadArgument;
     if (data->cc[0] != 'x' && data->cc[0] != 'X' &&
         memcmp(geo_location_cc, data->cc, sizeof(geo_location_cc)) != 0) {
-        memcpy(geo_location_cc, data->cc, sizeof(geo_location_cc));
+        char user_override_cc[3] = {};
+        PE_parse_boot_argn("itlwm_cc", user_override_cc, sizeof(user_override_cc));
+        if (user_override_cc[0])
+            return kIOReturnSuccess;
+        if (fHalService->getDriverController()->setCountryCode(
+                reinterpret_cast<const char *>(data->cc)))
+            return kIOReturnSuccess;
+        else {
+            memcpy(geo_location_cc, data->cc, sizeof(geo_location_cc));
+        }
         if (fNetIf)
             static_cast<AirportItlwmSkywalkInterface *>(fNetIf)->handleWCLEvent(
                 IEEE80211_EVT_COUNTRY_CODE_UPDATE, nullptr);

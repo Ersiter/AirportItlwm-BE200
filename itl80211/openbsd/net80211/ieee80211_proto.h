@@ -151,6 +151,8 @@ extern	u_int8_t *ieee80211_add_rsn(u_int8_t *, struct ieee80211com *,
 		const struct ieee80211_node *);
 extern	u_int8_t *ieee80211_add_wpa(u_int8_t *, struct ieee80211com *,
 		const struct ieee80211_node *);
+extern	u_int8_t *ieee80211_add_rsnxe(u_int8_t *, struct ieee80211com *,
+		const struct ieee80211_node *);
 extern	u_int8_t *ieee80211_add_xrates(u_int8_t *,
 		const struct ieee80211_rateset *);
 extern	u_int8_t *ieee80211_add_htcaps(u_int8_t *, struct ieee80211com *);
@@ -175,6 +177,10 @@ extern	void ieee80211_auth_open_confirm(struct ieee80211com *,
 extern	void ieee80211_auth_open(struct ieee80211com *,
 	    const struct ieee80211_frame *, struct ieee80211_node *,
 	    struct ieee80211_rxinfo *rs, u_int16_t, u_int16_t);
+extern	void ieee80211_auth_sae(struct ieee80211com *,
+	    const struct ieee80211_frame *, const uint8_t *, size_t,
+	    struct ieee80211_node *, struct ieee80211_rxinfo *,
+	    u_int16_t, u_int16_t);
 extern	void ieee80211_stop_ampdu_tx(struct ieee80211com *,
 	    struct ieee80211_node *, int);
 extern	void ieee80211_gtk_rekey_timeout(void *);

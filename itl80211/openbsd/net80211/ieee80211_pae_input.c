@@ -140,11 +140,19 @@ ieee80211_eapol_key_input(struct ieee80211com *ic, mbuf_t m,
     
     /* discard EAPOL-Key frames with an unknown descriptor version */
     desc = info & EAPOL_KEY_VERSION_MASK;
-    if (desc < EAPOL_KEY_DESC_V1 || desc > EAPOL_KEY_DESC_V3)
+    if (ieee80211_node_allow_wpa3(ic, ni) &&
+        ni->ni_sae.sae_state == SAE_STATE_ACCEPTED) {
+        if (desc != EAPOL_KEY_DESC_USE_AKM)
+            goto done;
+    } else if (desc < EAPOL_KEY_DESC_V1 || desc > EAPOL_KEY_DESC_V3)
         goto done;
     
     if (ieee80211_is_sha256_akm((enum ieee80211_akm)ni->ni_rsnakms)) {
-        if (desc != EAPOL_KEY_DESC_V3)
+        if (ieee80211_node_allow_wpa3(ic, ni) &&
+            ni->ni_sae.sae_state == SAE_STATE_ACCEPTED) {
+            if (desc != EAPOL_KEY_DESC_USE_AKM)
+                goto done;
+        } else if (desc != EAPOL_KEY_DESC_V3)
             goto done;
     } else if (ni->ni_rsncipher == IEEE80211_CIPHER_CCMP ||
                ni->ni_rsngroupcipher == IEEE80211_CIPHER_CCMP) {
@@ -265,6 +273,9 @@ ieee80211_recv_4way_msg1(struct ieee80211com *ic,
             return;
         }
         memcpy(ni->ni_pmk, pmk->pmk_key, IEEE80211_PMK_LEN);
+    } else if (ieee80211_node_allow_wpa3(ic, ni) &&
+        ni->ni_sae.sae_state == SAE_STATE_ACCEPTED) {
+        memcpy(ni->ni_pmk, ni->ni_sae.sae_pmk, IEEE80211_PMK_LEN);
     } else    /* use pre-shared key */
         memcpy(ni->ni_pmk, ic->ic_psk, IEEE80211_PMK_LEN);
     ni->ni_flags |= IEEE80211_NODE_PMK;
@@ -507,6 +518,10 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         DPRINTF(("IGTK KDE found but GTK KDE missing\n"));
         return;
     }
+    if (ieee80211_node_allow_wpa3(ic, ni) && igtk == NULL) {
+        reason = IEEE80211_REASON_AUTH_LEAVE;
+        goto deauth;
+    }
     /* check that the Install bit is set if using pairwise keys */
     if (ni->ni_rsncipher != IEEE80211_CIPHER_USEGROUP &&
         !(info & EAPOL_KEY_INSTALL)) {
@@ -672,6 +687,8 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
             /* install the IGTK */
             switch ((*ic->ic_set_key)(ic, ni, k)) {
                 case 0:
+                    ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT;
+                    ni->ni_flags |= IEEE80211_NODE_RXMGMTPROT;
                     break;
                 case EBUSY:
                     deferlink = 1;
@@ -1006,6 +1023,9 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
             /* install the IGTK */
             switch ((*ic->ic_set_key)(ic, ni, k)) {
                 case 0:
+                    ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT;
+                    ni->ni_flags |= IEEE80211_NODE_RXMGMTPROT;
+                    break;
                 case EBUSY:
                     break;
                 default:

@@ -962,12 +962,16 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
                     subtype == IEEE80211_FC0_SUBTYPE_DEAUTH ||
                     subtype == IEEE80211_FC0_SUBTYPE_ACTION) {
                     if (!IEEE80211_IS_MULTICAST(wh->i_addr1) &&
-                        !(wh->i_fc[1] & IEEE80211_FC1_PROTECTED)) {
+                        !(wh->i_fc[1] & IEEE80211_FC1_PROTECTED) &&
+                        !(rxi->rxi_flags & IEEE80211_RXI_HWDEC)) {
                         /* unicast mgmt not encrypted */
                         goto out;
                     }
-                    /* do software decryption */
-                    m = ieee80211_decrypt(ic, m, ni);
+                    if (rxi->rxi_flags & IEEE80211_RXI_HWDEC) {
+                        if (!IEEE80211_IS_MULTICAST(wh->i_addr1))
+                            m = ieee80211_input_hwdecrypt(ic, ni, m, rxi);
+                    } else
+                        m = ieee80211_decrypt(ic, m, ni);
                     if (m == NULL) {
                         /* XXX stats */
                         goto out;
@@ -1806,6 +1810,8 @@ ieee80211_parse_rsn_akm(const u_int8_t selector[4])
                 return IEEE80211_AKM_SHA256_8021X;
             case 6:    /* PSK with SHA256 KDF */
                 return IEEE80211_AKM_SHA256_PSK;
+            case 8:    /* SAE */
+                return IEEE80211_AKM_SAE;
         }
     }
     return IEEE80211_AKM_NONE;    /* ignore unknown AKMs */
@@ -2138,7 +2144,7 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     const struct ieee80211_frame *wh;
     const u_int8_t *frm, *efrm;
     const u_int8_t *tstamp, *ssid, *rates, *xrates, *edcaie, *wmmie, *extcap;
-    const u_int8_t *rsnie, *wpaie, *htcaps, *htop;
+    const u_int8_t *rsnie, *rsnxeie, *wpaie, *htcaps, *htop;
     const uint8_t *csa;
     const uint8_t *vhtcap;
     const uint8_t *vhtopmode;
@@ -2192,6 +2198,7 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     capinfo = LE_READ_2(frm); frm += 2;
     
     ssid = rates = xrates = edcaie = wmmie = extcap = rsnie = wpaie = csa = vhtcap = vhtopmode = hecap = heopmode = he6ghzcap = NULL;
+    rsnxeie = NULL;
     htcaps = htop = NULL;
     if (rxi->rxi_chan) {
         bchan = rxi->rxi_chan;
@@ -2247,6 +2254,9 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                 break;
             case IEEE80211_ELEMID_RSN:
                 rsnie = frm;
+                break;
+            case IEEE80211_ELEMID_RSNXE:
+                rsnxeie = frm;
                 break;
             case IEEE80211_ELEMID_XCAPS:
                 extcap = frm;
@@ -2557,6 +2567,7 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
         ni->ni_rsngroupcipher = (enum ieee80211_cipher)0;
         ni->ni_rsngroupmgmtcipher = (enum ieee80211_cipher)0;
         ni->ni_rsncaps = 0;
+        ni->ni_rsnxecaps = 0;
         
         if (rsnie != NULL &&
             ieee80211_parse_rsn(ic, rsnie, &rsn) == 0) {
@@ -2588,6 +2599,8 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                 ni->ni_rsngroupmgmtcipher =
                 rsn.rsn_groupmgmtcipher;
                 ni->ni_rsncaps = rsn.rsn_caps;
+                if (rsnxeie != NULL && rsnxeie[1] >= 1)
+                    ni->ni_rsnxecaps = rsnxeie[2];
             }
         } else if (wpaie != NULL &&
                    (ni->ni_supported_rsnprotos & IEEE80211_PROTO_WPA) &&
@@ -2801,7 +2814,11 @@ ieee80211_recv_auth(struct ieee80211com *ic, mbuf_t m,
     DPRINTF(("auth %d seq %d from %s\n", algo, seq,
              ether_sprintf((u_int8_t *)wh->i_addr2)));
     
-    /* only "open" auth mode is supported */
+    if (algo == IEEE80211_AUTH_ALG_SAE) {
+        ieee80211_auth_sae(ic, wh, frm, mbuf_len(m) - sizeof(*wh) - 6,
+            ni, rxi, seq, status);
+        return;
+    }
     if (algo != IEEE80211_AUTH_ALG_OPEN) {
         DPRINTF(("unsupported auth algorithm %d from %s\n",
                  algo, ether_sprintf((u_int8_t *)wh->i_addr2)));
