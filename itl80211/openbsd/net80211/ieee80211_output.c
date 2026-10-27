@@ -74,6 +74,51 @@
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
 
+#define IEEE80211_TX_POLICY_TAG_TYPE 1
+#define IEEE80211_TX_POLICY_NOENCRYPT 1
+
+static int
+ieee80211_tx_policy_tag_id(mbuf_tag_id_t *tag_id)
+{
+	return mbuf_tag_id_find("com.zxystd.itlwm.net80211", tag_id);
+}
+
+int
+ieee80211_mark_eapol_noencrypt(mbuf_t m)
+{
+	mbuf_tag_id_t tag_id;
+	u_int8_t *tag_data;
+	int error;
+
+	error = ieee80211_tx_policy_tag_id(&tag_id);
+	if (error)
+		return error;
+	error = mbuf_tag_allocate(m, tag_id, IEEE80211_TX_POLICY_TAG_TYPE,
+	    sizeof(*tag_data), MBUF_DONTWAIT, (void **)&tag_data);
+	if (error)
+		return error;
+	*tag_data = IEEE80211_TX_POLICY_NOENCRYPT;
+	return 0;
+}
+
+static int
+ieee80211_eapol_noencrypt(mbuf_t m)
+{
+	mbuf_tag_id_t tag_id;
+	u_int8_t *tag_data;
+	size_t tag_len;
+	int no_encrypt = 0;
+
+	if (ieee80211_tx_policy_tag_id(&tag_id) == 0 &&
+	    mbuf_tag_find(m, tag_id, IEEE80211_TX_POLICY_TAG_TYPE,
+	    &tag_len, (void **)&tag_data) == 0) {
+		no_encrypt = tag_len == sizeof(*tag_data) &&
+		    *tag_data == IEEE80211_TX_POLICY_NOENCRYPT;
+		mbuf_tag_free(m, tag_id, IEEE80211_TX_POLICY_TAG_TYPE);
+	}
+	return no_encrypt;
+}
+
 int	ieee80211_mgmt_output(struct _ifnet *, struct ieee80211_node *,
 	    mbuf_t, int);
 int	ieee80211_can_use_ampdu(struct ieee80211com *,
@@ -544,7 +589,7 @@ ieee80211_encap(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node **pni)
 	mbuf_tag_id_t mtag;
 	u_int8_t *addr;
 	u_int dlt, hdrlen;
-	int addqos, tid = 0;
+	int addqos, tid = 0, no_encrypt = 0;
 
 	/* Handle raw frames if mbuf is tagged as 802.11 */
     if (0) {
@@ -594,6 +639,8 @@ fallback:
         }
     }
     memcpy(&eh, mtod(m, caddr_t), sizeof(struct ether_header));
+    if (eh.ether_type == htons(ETHERTYPE_PAE))
+        no_encrypt = ieee80211_eapol_noencrypt(m);
     
     ni = ieee80211_find_txnode(ic, eh.ether_dhost);
     if (ni == NULL) {
@@ -714,7 +761,7 @@ fallback:
     
     if ((ic->ic_flags & IEEE80211_F_WEPON) ||
         ((ic->ic_flags & IEEE80211_F_RSNON) &&
-         (ni->ni_flags & IEEE80211_NODE_TXPROT)))
+         (ni->ni_flags & IEEE80211_NODE_TXPROT) && !no_encrypt))
         wh->i_fc[1] |= IEEE80211_FC1_PROTECTED;
     
 #ifndef IEEE80211_STA_ONLY

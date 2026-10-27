@@ -96,6 +96,7 @@ extern	void ieee80211_tx_compressed_bar(struct ieee80211com *,
 		struct ieee80211_node *, int, uint16_t);
 extern	mbuf_t ieee80211_encap(struct _ifnet *, mbuf_t,
 		struct ieee80211_node **);
+extern	int ieee80211_mark_eapol_noencrypt(mbuf_t);
 extern	mbuf_t ieee80211_get_rts(struct ieee80211com *,
 		const struct ieee80211_frame *, u_int16_t);
 extern	mbuf_t ieee80211_get_cts_to_self(struct ieee80211com *,

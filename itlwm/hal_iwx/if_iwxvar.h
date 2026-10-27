@@ -607,6 +607,7 @@ struct iwx_diagnostic {
     uint32_t command;
     uint32_t response_length, response_word0, response_word1;
     uint8_t response_flags;
+    int8_t tx_protected;
     int line, error, generation, flags, state, next_state, if_flags, mac_reconfig;
     volatile uint32_t sequence;
 };

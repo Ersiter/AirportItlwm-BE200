@@ -501,6 +501,16 @@ ieee80211_send_4way_msg4(struct ieee80211com *ic, struct ieee80211_node *ni)
     /* empty key data field */
     mbuf_pkthdr_setlen(m, sizeof(*key));
     mbuf_setlen(m, sizeof(*key));
+
+    /* Preserve the pre-key TX policy if this M4 waits in the output queue. */
+    if ((ic->ic_flags & IEEE80211_F_RSNON) &&
+        !(ni->ni_flags & IEEE80211_NODE_TXPROT)) {
+        int error = ieee80211_mark_eapol_noencrypt(m);
+        if (error) {
+            mbuf_freem(m);
+            return error;
+        }
+    }
     
     if (ic->ic_if.if_flags & IFF_DEBUG)
         XYLog("%s: sending msg %d/%d of the %s handshake to %s\n",

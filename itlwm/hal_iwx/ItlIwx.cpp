@@ -239,6 +239,7 @@ iwx_record_diagnostic(struct iwx_softc *sc, const char *event,
     record->mac_reconfig = sc->sc_ic.ic_wcl_mac_reconfig;
     record->response_length = response ? iwx_rx_packet_payload_len(response) : 0;
     record->response_flags = response ? response->hdr.group_id : 0;
+    record->tx_protected = -1;
     record->response_word0 = record->response_word1 = 0;
     if (record->response_length >= sizeof(uint32_t))
         memcpy(&record->response_word0, response->data, sizeof(uint32_t));
@@ -250,6 +251,7 @@ iwx_record_diagnostic(struct iwx_softc *sc, const char *event,
 struct iwx_eapol_tx_info {
     uint32_t length;
     uint8_t type, code, identifier;
+    int8_t protected_frame;
     uint8_t source[ETHER_ADDR_LEN], destination[ETHER_ADDR_LEN], bssid[ETHER_ADDR_LEN];
 };
 
@@ -262,6 +264,7 @@ iwx_eapol_tx_info(mbuf_t m, bool ethernet_frame, struct iwx_eapol_tx_info *info)
     size_t length = mbuf_pkthdr_len(m);
     if (mbuf_copydata(m, 0, MIN(length, sizeof(bytes)), bytes))
         return false;
+    info->protected_frame = -1;
     size_t offset;
 
     if (ethernet_frame) {
@@ -282,6 +285,7 @@ iwx_eapol_tx_info(mbuf_t m, bool ethernet_frame, struct iwx_eapol_tx_info *info)
         if (length < hdrlen + 12 ||
             bytes[hdrlen + 6] != 0x88 || bytes[hdrlen + 7] != 0x8e)
             return false;
+        info->protected_frame = (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0;
         offset = hdrlen + 8;
         memcpy(info->bssid, wh->i_addr1, ETHER_ADDR_LEN);
         memcpy(info->source, wh->i_addr2, ETHER_ADDR_LEN);
@@ -312,6 +316,7 @@ iwx_eapol_tx_payload_info(mbuf_t m, const uint8_t *bssid,
     if (bytes[6] != 0x88 || bytes[7] != 0x8e)
         return false;
     memset(info, 0, sizeof(*info));
+    info->protected_frame = -1;
     info->length = (uint32_t)length;
     info->type = bytes[9];
     info->identifier = 0xff;
@@ -347,6 +352,7 @@ iwx_record_eapol_tx(struct iwx_softc *sc, const char *event, int error,
     record->mac_reconfig = sc->sc_ic.ic_wcl_mac_reconfig;
     record->response_length = info->length;
     record->response_flags = info->identifier;
+    record->tx_protected = info->protected_frame;
     record->response_word0 = record->response_word1 = 0;
     memcpy(&record->response_word0, info->bssid, sizeof(uint32_t));
     memcpy(&record->response_word1, info->bssid + sizeof(uint32_t), 2);
@@ -354,11 +360,13 @@ iwx_record_eapol_tx(struct iwx_softc *sc, const char *event, int error,
 
     if (!publish)
         return;
-    char value[256];
+    char value[320];
     snprintf(value, sizeof(value),
-        "seq=%u gen=%d event=%s error=%d len=%u type=%u eap_code=%u eap_id=%u qid=%u idx=%u src=%02x:%02x:%02x:%02x:%02x:%02x dst=%02x:%02x:%02x:%02x:%02x:%02x bssid=%02x:%02x:%02x:%02x:%02x:%02x",
+        "seq=%u gen=%d event=%s error=%d len=%u type=%u eap_code=%u eap_id=%u protected=%s qid=%u idx=%u src=%02x:%02x:%02x:%02x:%02x:%02x dst=%02x:%02x:%02x:%02x:%02x:%02x bssid=%02x:%02x:%02x:%02x:%02x:%02x",
         sequence, sc->sc_generation, event, error, info->length, info->type,
-        info->code, info->identifier, qid, index,
+        info->code, info->identifier,
+        info->protected_frame < 0 ? "unknown" :
+            (info->protected_frame ? "1" : "0"), qid, index,
         info->source[0], info->source[1], info->source[2], info->source[3],
         info->source[4], info->source[5], info->destination[0],
         info->destination[1], info->destination[2], info->destination[3],
@@ -386,11 +394,12 @@ iwx_publish_diagnostics(struct iwx_softc *sc)
         absolutetime_to_nanoseconds(record.uptime, &nanos);
         snprintf(key, sizeof(key), "AirportItlwm-Diagnostic%02u", i);
         snprintf(value, sizeof(value),
-            "seq=%u uptime_us=%llu event=%s source=%s:%d error=%d cmd=0x%08x gen=%d flags=0x%x state=%d next=%d ifflags=0x%x mac_reconfig=%d rxflags=0x%x rxlen=%u word0=0x%08x word1=0x%08x",
+            "seq=%u uptime_us=%llu event=%s source=%s:%d error=%d cmd=0x%08x gen=%d flags=0x%x state=%d next=%d ifflags=0x%x mac_reconfig=%d rxflags=0x%x rxlen=%u txprotected=%d word0=0x%08x word1=0x%08x",
             sequence, nanos / 1000, record.event, record.function, record.line,
             record.error, record.command, record.generation, record.flags,
             record.state, record.next_state, record.if_flags, record.mac_reconfig,
             record.response_flags, record.response_length,
+            record.tx_protected,
             le32toh(record.response_word0), le32toh(record.response_word1));
         sc->sc_pcitag->setProperty(key, value);
     }
@@ -11375,6 +11384,12 @@ iwx_newstate_task(void *psc)
             splx(s);
             return;
         }
+
+        if (nstate != sc->ns_nstate || arg != sc->ns_arg) {
+            that->iwx_del_task(sc, sc->sc_nswq, &sc->newstate_task);
+            nstate = sc->ns_nstate;
+            arg = sc->ns_arg;
+        }
     }
     
     switch (nstate) {
@@ -11429,7 +11444,7 @@ out:
 #endif
             iwx_schedule_recovery(sc, __FUNCTION__, __LINE__);
         }
-        else
+        else if (nstate == sc->ns_nstate && arg == sc->ns_arg)
             sc->sc_newstate(ic, nstate, arg);
     }
     //    refcnt_rele_wake(&sc->task_refs);
@@ -12507,6 +12522,11 @@ iwx_start(struct _ifnet *ifp)
     struct iwx_softc *sc = (struct iwx_softc*)ifp->if_softc;
     ItlIwx *that = container_of(sc, ItlIwx, com);
 #ifdef AIRPORT_WCL
+    if (that->getMainWorkLoop()->inGate()) {
+        _iwx_start_task(that, &that->com.sc_ic.ic_ac.ac_if,
+                        nullptr, nullptr, nullptr);
+        return;
+    }
     // NDRV/DLIL output callbacks must not wait on the controller command gate.
     that->iwx_add_task(sc, sc->sc_nswq, &sc->start_task);
 #else
