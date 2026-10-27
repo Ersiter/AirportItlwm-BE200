@@ -18,6 +18,13 @@
 
 extern IOCommandGate *_fCommandGate;
 
+static AirportWCL::ChannelBand wclChannelBand(const ieee80211_channel *channel)
+{
+    return IEEE80211_IS_CHAN_6GHZ(channel) ? AirportWCL::ChannelBand::GHz6 :
+        (IEEE80211_IS_CHAN_5GHZ(channel) ? AirportWCL::ChannelBand::GHz5 :
+            AirportWCL::ChannelBand::GHz2);
+}
+
 enum { WCL_USER_EAPOL_DEFER, WCL_USER_EAPOL_SET_LINK, WCL_USER_EAPOL_TAKE, WCL_USER_EAPOL_PURGE, WCL_USER_EAPOL_INPUT_RESULT };
 
 struct WCLUserEapolInputResult {
@@ -494,20 +501,9 @@ IOReturn AirportItlwmSkywalkInterface::beginWCLScan(apple80211ScanRequest *reque
     instance->pciNub->setProperty("AirportItlwm-WCLScanChannelCount", scan.channelCount, 32);
     instance->pciNub->setProperty("AirportItlwm-WCLScanType", scan.type, 32);
     instance->pciNub->setProperty("AirportItlwm-WCLScanSsidLength", scan.ssidLength, 32);
-    {
-        char channels[96];
-        size_t offset = 0;
-        channels[0] = '\0';
-        unsigned limit = scan.channelCount < sizeof(scan.channels) ? scan.channelCount : sizeof(scan.channels);
-        for (unsigned i = 0; i < limit && i < 12 && offset + 8 < sizeof(channels); i++) {
-            int written = snprintf(channels + offset, sizeof(channels) - offset, "%s%u",
-                                   i ? "," : "", scan.channels[i]);
-            if (written <= 0)
-                break;
-            offset += (size_t)written;
-        }
-        instance->pciNub->setProperty("AirportItlwm-WCLScanChannelList", channels);
-    }
+    instance->pciNub->setProperty("AirportItlwm-WCLChannelCodecVersion", 2, 32);
+    instance->pciNub->setProperty("AirportItlwm-WCLScanLegacyMap", scan.channels, sizeof(scan.channels));
+    instance->pciNub->setProperty("AirportItlwm-WCLScan6GHzMap", scan.channels6GHz, sizeof(scan.channels6GHz));
     ieee80211com *ic = fHalService->get80211Controller();
     if (!(ic->ic_if.if_flags & IFF_RUNNING)) {
         instance->pciNub->setProperty("AirportItlwm-WCLScanExit", "not-running");
@@ -521,16 +517,26 @@ IOReturn AirportItlwmSkywalkInterface::beginWCLScan(apple80211ScanRequest *reque
         instance->pciNub->setProperty("AirportItlwm-WCLScanExit", "busy-auth");
         return kIOReturnBusy;
     }
-    if (scan.channelCount) {
-        bool usable = false;
-        for (unsigned channel = 1; channel <= IEEE80211_CHAN_MAX; ++channel)
-            if (ic->ic_channels[channel].ic_flags &&
-                AirportWCL::scanChannelSelected(scan.channels, true, channel))
-                usable = true;
-        if (!usable) {
-            instance->pciNub->setProperty("AirportItlwm-WCLScanExit", "no-channels");
-            return kIOReturnUnsupported;
-        }
+    uint8_t mappedChannels[sizeof(ic->ic_wcl_scan_channels)] = {};
+    unsigned mappedCount = 0, mapped6GHz = 0;
+    for (unsigned index = 1; index <= IEEE80211_CHAN_MAX; ++index) {
+        const auto channel = &ic->ic_channels[index];
+        if (!channel->ic_freq || !isset(ic->ic_chan_active, index))
+            continue;
+        bool sixGHz = IEEE80211_IS_CHAN_6GHZ(channel);
+        if (!AirportWCL::scanChannelSelected(sixGHz ? scan.channels6GHz : scan.channels,
+                scan.channelCount != 0, ieee80211_chan2number(ic, channel)))
+            continue;
+        setbit(mappedChannels, index);
+        ++mappedCount;
+        if (sixGHz)
+            ++mapped6GHz;
+    }
+    instance->pciNub->setProperty("AirportItlwm-WCLScanMappedChannels", mappedCount, 32);
+    instance->pciNub->setProperty("AirportItlwm-WCLScanMapped6GHz", mapped6GHz, 32);
+    if (!mappedCount) {
+        instance->pciNub->setProperty("AirportItlwm-WCLScanExit", "no-channels");
+        return kIOReturnUnsupported;
     }
     scanPending = true;
     scanCompleted = false;
@@ -539,7 +545,7 @@ IOReturn AirportItlwmSkywalkInterface::beginWCLScan(apple80211ScanRequest *reque
     ic->ic_wcl_scan_ssid_length = scan.type == 2 ? 0 : scan.ssidLength;
     memcpy(ic->ic_wcl_scan_ssid, scan.ssid, sizeof(scan.ssid));
     ic->ic_wcl_scan_restricted = scan.channelCount != 0;
-    memcpy(ic->ic_wcl_scan_channels, scan.channels, sizeof(scan.channels));
+    memcpy(ic->ic_wcl_scan_channels, mappedChannels, sizeof(mappedChannels));
     scanSource->setTimeoutMS(20000);
     if (ic->ic_state == IEEE80211_S_RUN) {
         ieee80211_begin_cache_bgscan(&ic->ic_if);
@@ -611,14 +617,18 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
         instance->pciNub->setProperty("AirportItlwm-WCLBeaconDropReason", "chan");
         return;
     }
-    unsigned channel = ieee80211_chan2ieee(ic, node->ni_chan);
-    if (!channel || channel > 196) {
+    unsigned channel = ieee80211_chan2number(ic, node->ni_chan);
+    uint16_t spec = AirportWCL::channelSpec20(channel, wclChannelBand(node->ni_chan));
+    if (!spec) {
         instance->pciNub->setProperty("AirportItlwm-WCLBeaconDrops", ++wclBeaconDrops, 32);
         instance->pciNub->setProperty("AirportItlwm-WCLBeaconDropReason", "chan");
         return;
     }
     instance->pciNub->setProperty("AirportItlwm-WCLScanResults", ++wclScanResults, 32);
     instance->pciNub->setProperty("AirportItlwm-WCLScanLastChannel", channel, 32);
+    instance->pciNub->setProperty("AirportItlwm-WCLScanLastBand",
+        IEEE80211_IS_CHAN_6GHZ(node->ni_chan) ? 6 :
+            (IEEE80211_IS_CHAN_5GHZ(node->ni_chan) ? 5 : 2), 32);
     {
         size_t ssidLength = node->ni_esslen > sizeof(wclResultRing[0].ssid) ?
             sizeof(wclResultRing[0].ssid) : node->ni_esslen;
@@ -630,8 +640,8 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
         slot.channel = uint8_t(channel);
         slot.rssi = IWM_MIN_DBM + node->ni_rssi;
         char text[48], key[32];
-        snprintf(text, sizeof(text), "%.*s|%u|%d", int(ssidLength), node->ni_essid,
-                 channel, slot.rssi);
+        snprintf(text, sizeof(text), "%.*s|%04x|%d", int(ssidLength), node->ni_essid,
+                 spec, slot.rssi);
         snprintf(key, sizeof(key), "AirportItlwm-WCLResult%u", slotIndex);
         instance->pciNub->setProperty(key, text);
         wclResultRingNext = uint8_t((slotIndex + 1) & 3);
@@ -642,7 +652,7 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
         return;
     *metadata = {};
     metadata->ieLength = uint32_t(length);
-    metadata->channelSpec = uint16_t(channel | (IEEE80211_IS_CHAN_5GHZ(node->ni_chan) ? 0xd000 : 0x1000));
+    metadata->channelSpec = spec;
     metadata->channel = channel;
     metadata->ssidLength = node->ni_esslen;
     memcpy(metadata->ssid, node->ni_essid, node->ni_esslen);
@@ -1408,19 +1418,26 @@ IOReturn AirportItlwmSkywalkInterface::getWCL_CHANNELS_INFO(apple80211ChannelInf
     auto info = reinterpret_cast<AirportWCL::ChannelInfo *>(data);
     bzero(info, sizeof(*info));
     ieee80211com *ic = fHalService->get80211Controller();
-    for (unsigned i = 1; i < IEEE80211_CHAN_MAX && info->count < 400; ++i) {
+    for (unsigned i = 1; i <= IEEE80211_CHAN_MAX && info->count < 400; ++i) {
         if (!isset(ic->ic_chan_active, i))
             continue;
         const ieee80211_channel *channel = &ic->ic_channels[i];
+        unsigned number = ieee80211_chan2number(ic, channel);
+        uint16_t spec = AirportWCL::channelSpec20(number, wclChannelBand(channel));
+        if (!spec)
+            continue;
         auto &entry = info->channels[info->count++];
-        entry.channel = i;
-        entry.channelSpec = uint16_t(i | (IEEE80211_IS_CHAN_5GHZ(channel) ? 0xd000 : 0x1000));
+        entry.channel = number;
+        entry.channelSpec = spec;
+        if (IEEE80211_IS_CHAN_6GHZ(channel))
+            info->supports6GHz = 1;
         if (channel->ic_flags & IEEE80211_CHAN_DFS)
             entry.flags |= 2;
         if (channel->ic_flags & IEEE80211_CHAN_PASSIVE)
             entry.flags |= 4;
     }
     instance->pciNub->setProperty("AirportItlwm-WCLChannelsInfo", info->count, 32);
+    instance->pciNub->setProperty("AirportItlwm-WCLChannels6GHz", info->supports6GHz, 32);
     apple80211_country_code_data country = {};
     if (instance->getCOUNTRY_CODE(static_cast<OSObject *>(this), &country) == kIOReturnSuccess)
         memcpy(info->country, country.cc, 3);
@@ -1446,7 +1463,7 @@ IOReturn AirportItlwmSkywalkInterface::copyWCLChannels(void *data)
         const ieee80211_channel *channel = &ic->ic_channels[i];
         if (!isset(ic->ic_chan_active, i) || !channel->ic_freq)
             continue;
-        AirportWCL::appendChannel(*info, i, IEEE80211_IS_CHAN_5GHZ(channel),
+        AirportWCL::appendChannel(*info, ieee80211_chan2number(ic, channel), wclChannelBand(channel),
             channel->ic_flags & IEEE80211_CHAN_DFS,
             channel->ic_flags & IEEE80211_CHAN_PASSIVE,
             IEEE80211_IS_CHAN_HT40(channel) || IEEE80211_IS_CHAN_VHT40(channel),

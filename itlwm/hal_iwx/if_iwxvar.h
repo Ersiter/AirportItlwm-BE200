@@ -624,6 +624,7 @@ struct iwx_softc {
 	struct task newstate_task;
 	struct task start_task;
 	struct task mld_link_task;
+	struct task sc_scan_task;
 	enum ieee80211_state	ns_nstate;
 	int			ns_arg;
 
@@ -731,6 +732,15 @@ struct iwx_softc {
 
 	int sc_intmask;
 	int sc_flags;
+	uint32_t sc_scan_generation;
+	uint32_t sc_scan_task_generation;
+	int sc_scan_task_device_generation;
+	uint16_t sc_scan_next_channel;
+	uint8_t sc_scan_batch;
+	uint8_t sc_scan_active;
+	uint8_t sc_scan_batch_pending;
+	uint8_t sc_scan_bgscan;
+	uint8_t sc_scan_wcl_owned;
 
 	uint32_t sc_fh_init_mask;
 	uint32_t sc_hw_init_mask;

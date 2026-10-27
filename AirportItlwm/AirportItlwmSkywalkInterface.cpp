@@ -39,6 +39,8 @@ static int ieeeChanFlag2appleScanFlagVentura(int flags)
         ret |= APPLE80211_C_FLAG_2GHZ;
     if (flags & IEEE80211_CHAN_5GHZ)
         ret |= APPLE80211_C_FLAG_5GHZ;
+    if (flags & IEEE80211_CHAN_6GHZ)
+        ret |= APPLE80211_C_FLAG_6GHZ;
     ret |= (APPLE80211_C_FLAG_ACTIVE | APPLE80211_C_FLAG_20MHZ);
     return ret;
 }
@@ -50,6 +52,8 @@ static int ieeeChanFlag2apple(int flags, int bw)
         ret |= APPLE80211_C_FLAG_2GHZ;
     if (flags & IEEE80211_CHAN_5GHZ)
         ret |= APPLE80211_C_FLAG_5GHZ;
+    if (flags & IEEE80211_CHAN_6GHZ)
+        ret |= APPLE80211_C_FLAG_6GHZ;
     if (!(flags & IEEE80211_CHAN_PASSIVE))
         ret |= APPLE80211_C_FLAG_ACTIVE;
     if (flags & IEEE80211_CHAN_DFS)
@@ -466,7 +470,7 @@ getCHANNEL(struct apple80211_channel_data *cd)
         memset(cd, 0, sizeof(apple80211_channel_data));
         cd->version = APPLE80211_VERSION;
         cd->channel.version = APPLE80211_VERSION;
-        cd->channel.channel = ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan);
+        cd->channel.channel = ieee80211_chan2number(ic, ic->ic_bss->ni_chan);
         cd->channel.flags = ieeeChanFlag2apple(ic->ic_bss->ni_chan->ic_flags, ic->ic_bss->ni_chw);
         return kIOReturnSuccess;
     }
@@ -842,7 +846,7 @@ getSUPPORTED_CHANNELS(struct apple80211_sup_channel_data *ad)
     struct ieee80211com *ic = fHalService->get80211Controller();
     for (int i = 0; i < IEEE80211_CHAN_MAX; i++) {
         if (ic->ic_channels[i].ic_freq != 0) {
-            ad->supported_channels[ad->num_channels].channel = ieee80211_chan2ieee(ic, &ic->ic_channels[i]);
+            ad->supported_channels[ad->num_channels].channel = ieee80211_chan2number(ic, &ic->ic_channels[i]);
             ad->supported_channels[ad->num_channels].flags = ieeeChanFlag2appleScanFlagVentura(ic->ic_channels[i].ic_flags);
             ad->num_channels++;
         }
@@ -1043,7 +1047,7 @@ static int convertNodeToScanResult(ItlHalService *fHalService, struct ieee80211_
     result->asr_age = (uint32_t)(airport_up_time() - fNextNodeToSend->ni_age_ts);
     result->asr_cap = fNextNodeToSend->ni_capinfo;
     result->asr_channel.version = APPLE80211_VERSION;
-    result->asr_channel.channel = ieee80211_chan2ieee(fHalService->get80211Controller(), fNextNodeToSend->ni_chan);
+    result->asr_channel.channel = ieee80211_chan2number(fHalService->get80211Controller(), fNextNodeToSend->ni_chan);
     result->asr_channel.flags = ieeeChanFlag2appleScanFlagVentura(fNextNodeToSend->ni_chan->ic_flags);
     result->asr_noise = -fHalService->getDriverInfo()->getBSSNoise();
     result->asr_rssi = -(0 - IWM_MIN_DBM - fNextNodeToSend->ni_rssi);

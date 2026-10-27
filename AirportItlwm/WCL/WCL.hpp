@@ -15,6 +15,19 @@
 
 namespace AirportWCL {
 
+enum class ChannelBand : uint16_t { GHz2 = 0, GHz5 = 0xc000, GHz6 = 0x4000 };
+
+inline bool validChannel(unsigned channel, ChannelBand band) {
+    if (band == ChannelBand::GHz6)
+        return channel >= 1 && channel <= 233 && (channel - 1) % 4 == 0;
+    return channel >= 1 && channel <= (band == ChannelBand::GHz2 ? 14U : 196U) &&
+        (band != ChannelBand::GHz5 || channel > 14);
+}
+
+inline uint16_t channelSpec20(unsigned channel, ChannelBand band) {
+    return validChannel(channel, band) ? uint16_t(channel | 0x1000 | uint16_t(band)) : 0;
+}
+
 enum class MacUpdate { Invalid, Unchanged, Busy, Change };
 inline MacUpdate planMacUpdate(const uint8_t *current, const uint8_t *requested,
                                size_t length, bool initializing) {
@@ -254,13 +267,13 @@ static_assert(offsetof(NativeChannelInfo, supports80MHz) == 0xafe, "CHANNELS_INF
 static_assert(offsetof(NativeChannelInfo, firmwareChannelSpec) == 0xc90, "CHANNELS_INFO firmware chanspec");
 static_assert(offsetof(NativeChannelInfo, channelBitmap) == 0x12d0, "CHANNELS_INFO bitmap");
 
-inline bool appendChannel(NativeChannelInfo &info, unsigned channel, bool fiveGHz,
+inline bool appendChannel(NativeChannelInfo &info, unsigned channel, ChannelBand band,
                           bool dfs, bool passive, bool supports40MHz, bool supports80MHz)
 {
-    if (!channel || channel > 255 || info.count >= 400)
+    uint16_t spec = channelSpec20(channel, band);
+    if (!spec || info.count >= 400)
         return false;
     unsigned index = info.count++;
-    uint16_t spec = uint16_t(channel | (fiveGHz ? 0xd000 : 0x1000));
     info.channelSpec[index] = spec;
     info.firmwareChannelSpec[index] = spec;
     info.channel[index] = channel;
@@ -268,7 +281,8 @@ inline bool appendChannel(NativeChannelInfo &info, unsigned channel, bool fiveGH
     info.passive[index] = passive;
     info.supports40MHz[index] = supports40MHz;
     info.supports80MHz[index] = supports80MHz;
-    info.channelBitmap[index] = 3U | (fiveGHz ? 4U : 0U) |
+    info.channelBitmap[index] = 3U | (band == ChannelBand::GHz5 ? 4U :
+        (band == ChannelBand::GHz6 ? 0x200U : 0U)) |
         (dfs ? 8U : 0U) | (passive ? 32U : 0U);
     return true;
 }
@@ -422,6 +436,7 @@ struct ScanRequest {
     uint8_t bssid[6];
     uint32_t channelCount;
     uint8_t channels[32];
+    uint8_t channels6GHz[32];
 };
 
 // RX buffers may carry trailing FCS or DMA padding after the IE chain.
@@ -466,12 +481,16 @@ inline bool decodeScan(const void *buffer, size_t length, ScanRequest &out) {
     for (uint32_t i = 0; i < count; ++i) {
         const uint8_t *entry = p + 0x58 + size_t(i) * 12;
         uint32_t channel = read32(entry + 4), flags = read32(entry + 8);
-        // Do not confuse 6 GHz channel numbers with overlapping 2.4 GHz ones.
-        if (!channel || channel > 196 || (flags & 0x2000))
+        uint32_t bands = flags & (0x8 | 0x10 | 0x2000);
+        if (bands && (bands & (bands - 1)))
             continue;
-        if (((flags & 0x8) && channel > 14) || ((flags & 0x10) && channel <= 14))
+        ChannelBand band = bands == 0x2000 ? ChannelBand::GHz6 :
+            (bands == 0x10 || (!bands && channel > 14) ?
+                ChannelBand::GHz5 : ChannelBand::GHz2);
+        if (!validChannel(channel, band))
             continue;
-        out.channels[channel / 8] |= 1U << (channel % 8);
+        uint8_t *map = band == ChannelBand::GHz6 ? out.channels6GHz : out.channels;
+        map[channel / 8] |= 1U << (channel % 8);
     }
     return true;
 }

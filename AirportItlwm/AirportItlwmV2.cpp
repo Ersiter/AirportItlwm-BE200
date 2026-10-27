@@ -1086,7 +1086,8 @@ IOReturn AirportItlwm::
 getCARD_CAPABILITIES(OSObject *object,
                                      struct apple80211_capability_data *cd)
 {
-    uint32_t caps = fHalService->get80211Controller()->ic_caps;
+    auto ic = fHalService->get80211Controller();
+    uint32_t caps = ic->ic_caps;
     memset(cd, 0, sizeof(struct apple80211_capability_data));
 
     if (caps & IEEE80211_C_WEP)
@@ -1133,6 +1134,13 @@ getCARD_CAPABILITIES(OSObject *object,
     // WCL uses this capability together with the BSS HE IE for PHY reporting.
     if (caps & IEEE80211_C_HE)
         cd->capabilities[17] |= 0x80;
+    // Native WCL is6GSupported reads capability byte 11, bit 6.
+    for (unsigned i = 1; i <= IEEE80211_CHAN_MAX; ++i)
+        if (isset(ic->ic_chan_active, i) &&
+            IEEE80211_IS_CHAN_6GHZ(&ic->ic_channels[i])) {
+            cd->capabilities[11] |= 0x40;
+            break;
+        }
 #else
     cd->capabilities[2] = 0xFF; // BURST, WME, SHORT_GI_40MHZ, SHORT_GI_20MHZ, WOW, TSN, ?, ?
     cd->capabilities[3] = 0x2B;

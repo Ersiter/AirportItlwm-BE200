@@ -135,21 +135,22 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
         ::free(req);
         return err;
     }
-    if (scanActive) {
-        req->scan_params.probe_params.direct_scan[0].id = IEEE80211_ELEMID_SSID;
-        req->scan_params.probe_params.direct_scan[0].len = scanSSIDLength;
-        memcpy(req->scan_params.probe_params.direct_scan[0].ssid, scanSSID,
-               scanSSIDLength);
-    }
-    
     cp = &req->scan_params.channel_params;
-    
     cp->flags = IWX_SCAN_CHANNEL_FLAG_ENABLE_CHAN_ORDER;
-    for (auto c = &ic->ic_channels[1];
-         c <= &ic->ic_channels[IEEE80211_CHAN_MAX] &&
-         cp->count < nitems(cp->channel_config) &&
-         cp->count < sc->sc_capa_n_scan_channels; c++) {
-        if (!IEEE80211_IS_CHAN_2GHZ(c) && !IEEE80211_IS_CHAN_5GHZ(c))
+    const uint8_t channelLimit = MIN(nitems(cp->channel_config),
+                                     sc->sc_capa_n_scan_channels);
+    uint16_t channelIndex = sc->sc_scan_next_channel;
+    uint8_t sixGHzCount = 0;
+    bool hasLegacyChannel = false;
+    int batchBand = -1;
+    for (; channelIndex <= IEEE80211_CHAN_MAX; channelIndex++) {
+        auto c = &ic->ic_channels[channelIndex];
+        if (!isset(ic->ic_chan_active, channelIndex) || !c->ic_freq || !c->ic_flags)
+            continue;
+        bool is6GHz = IEEE80211_IS_CHAN_6GHZ(c);
+        bool is2GHz = IEEE80211_IS_CHAN_2GHZ(c);
+        bool is5GHz = IEEE80211_IS_CHAN_5GHZ(c);
+        if (!is2GHz && !is5GHz && !is6GHz)
             continue;
 #ifdef AIRPORT_WCL
         if (!AirportWCL::scanChannelSelected(ic->ic_wcl_scan_channels,
@@ -157,26 +158,65 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
                 ieee80211_chan2ieee(ic, c)))
             continue;
 #endif
+        int channelBand = is6GHz ? 1 : 0;
+        if (cp->count && batchBand != channelBand)
+            break;
+        if (cp->count >= channelLimit)
+            break;
+        batchBand = channelBand;
         auto channel = &cp->channel_config[cp->count++];
-        uint32_t channelFlags =
-            (IEEE80211_IS_CHAN_2GHZ(c) ? IWX_PHY_BAND_24 : IWX_PHY_BAND_5) << 30;
+        uint32_t band = is6GHz ? IWX_PHY_BAND_6 :
+            is2GHz ? IWX_PHY_BAND_24 : IWX_PHY_BAND_5;
+        uint32_t channelFlags = band << 30;
+        if (is6GHz) {
+            channelFlags |= IWX_UHB_CHAN_CFG_FLAG_FORCE_PASSIVE;
+            sixGHzCount++;
+        } else {
+            hasLegacyChannel = true;
 #ifdef AIRPORT_WCL
-        if (AirportWCL::probeChannel(scanActive,
-                c->ic_flags & IEEE80211_CHAN_PASSIVE,
-                c->ic_flags & IEEE80211_CHAN_DFS))
+            if (AirportWCL::probeChannel(scanActive,
+                    c->ic_flags & IEEE80211_CHAN_PASSIVE,
+                    c->ic_flags & IEEE80211_CHAN_DFS))
 #else
-        if (scanActive && !bgscan)
+            if (scanActive && !bgscan)
 #endif
-            channelFlags |= 1;
+                channelFlags |= 1;
+        }
         channel->flags = htole32(channelFlags);
-        channel->channel_num = ieee80211_mhz2ieee(c->ic_freq, 0);
+        channel->channel_num = ieee80211_chan2number(ic, c);
         channel->psd_20 = 0x80;
         channel->iter_count = 1;
+        channel->iter_interval = 0;
+    }
+    sc->sc_scan_next_channel = channelIndex;
+    if (!cp->count) {
+        ::free(req);
+        return 0;
+    }
+    if (scanActive && hasLegacyChannel) {
+        req->scan_params.probe_params.direct_scan[0].id = IEEE80211_ELEMID_SSID;
+        req->scan_params.probe_params.direct_scan[0].len = scanSSIDLength;
+        memcpy(req->scan_params.probe_params.direct_scan[0].ssid, scanSSID,
+               scanSSIDLength);
     }
     cp->n_aps_override[0] = IWX_SCAN_ADWELL_N_APS_GO_FRIENDLY;
     cp->n_aps_override[1] = IWX_SCAN_ADWELL_N_APS_SOCIAL_CHS;
-    
+
+#ifdef AIRPORT_WCL
+    sc->sc_pcitag->setProperty("AirportItlwm-HWScanBatch", ++sc->sc_scan_batch, 32);
+    sc->sc_pcitag->setProperty("AirportItlwm-HWScan6GHzCount", sixGHzCount, 32);
+    sc->sc_pcitag->setProperty("AirportItlwm-HWScanChannelCount", cp->count, 32);
+    sc->sc_pcitag->setProperty("AirportItlwm-HWScanChannelMap",
+        cp->channel_config, cp->count * sizeof(cp->channel_config[0]));
+    sc->sc_pcitag->setProperty("AirportItlwm-HWScanSendStatus", UINT32_MAX, 32);
+#endif
+    sc->sc_scan_batch_pending = 1;
     err = iwx_send_cmd(sc, &hcmd);
+    if (err)
+        sc->sc_scan_batch_pending = 0;
+#ifdef AIRPORT_WCL
+    sc->sc_pcitag->setProperty("AirportItlwm-HWScanSendStatus", err, 32);
+#endif
     ::free(req);
     return err;
 }

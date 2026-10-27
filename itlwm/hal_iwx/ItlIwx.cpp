@@ -132,6 +132,20 @@ OSDefineMetaClassAndStructors(ItlIwx, ItlHalService)
 
 #define IC2IFP(_ic_) (&(_ic_)->ic_if)
 
+static void
+iwx_scan_state_reset(struct iwx_softc *sc)
+{
+    sc->sc_scan_generation++;
+    sc->sc_scan_task_generation = 0;
+    sc->sc_scan_task_device_generation = 0;
+    sc->sc_scan_next_channel = 0;
+    sc->sc_scan_batch = 0;
+    sc->sc_scan_active = 0;
+    sc->sc_scan_batch_pending = 0;
+    sc->sc_scan_bgscan = 0;
+    sc->sc_scan_wcl_owned = 0;
+}
+
 struct iwx_deferred_eapol {
     struct task task;
     struct iwx_softc *sc;
@@ -565,6 +579,8 @@ IOReturn ItlIwx::disable(IONetworkInterface *netif)
 void ItlIwx::
 clearScanningFlags()
 {
+    iwx_del_task(&com, com.sc_nswq, &com.sc_scan_task);
+    iwx_scan_state_reset(&com);
     com.sc_flags &= ~(IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN |
                       IWX_FLAG_SCAN_ABORTING);
 }
@@ -8516,7 +8532,7 @@ iwx_umac_scan_fill_channels(struct iwx_softc *sc,
 #ifdef AIRPORT_WCL
         if (!AirportWCL::scanChannelSelected(ic->ic_wcl_scan_channels,
                 ic->ic_wcl_scan_requested && ic->ic_wcl_scan_restricted,
-                ieee80211_chan2number(ic, c)))
+                ieee80211_chan2ieee(ic, c)))
             continue;
 #endif
         
@@ -8895,8 +8911,24 @@ iwx_get_scan_req_umac_data(struct iwx_softc *sc, struct iwx_scan_req_umac *req)
 int ItlIwx::
 iwx_umac_scan(struct iwx_softc *sc, int bgscan)
 {
-    if (iwx_lookup_cmd_ver(sc, IWX_LONG_GROUP, IWX_SCAN_REQ_UMAC) == 17)
-        return iwx_umac_scan_v17(sc, bgscan);
+    if (iwx_lookup_cmd_ver(sc, IWX_LONG_GROUP, IWX_SCAN_REQ_UMAC) == 17) {
+        bool start = !sc->sc_scan_active;
+        if (start) {
+            iwx_scan_state_reset(sc);
+            sc->sc_scan_active = 1;
+            sc->sc_scan_next_channel = 1;
+            sc->sc_scan_bgscan = bgscan;
+#ifdef AIRPORT_WCL
+            sc->sc_scan_wcl_owned = sc->sc_ic.ic_wcl_scan_requested;
+#endif
+        }
+        int err = iwx_umac_scan_v17(sc, bgscan);
+        if (err || (start && !sc->sc_scan_batch_pending)) {
+            iwx_scan_state_reset(sc);
+            return err ? err : ENOENT;
+        }
+        return 0;
+    }
     XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
     int scanSSIDLength = ic->ic_des_esslen;
@@ -9908,12 +9940,33 @@ iwx_scan_abort(struct iwx_softc *sc)
 {
     XYLog("%s\n", __FUNCTION__);
     int err;
+    bool scan_v17 = sc->sc_scan_active;
+    bool batch_pending = sc->sc_scan_batch_pending;
+
+    if (scan_v17) {
+        sc->sc_flags |= IWX_FLAG_SCAN_ABORTING;
+        iwx_del_task(sc, sc->sc_nswq, &sc->sc_scan_task);
+        iwx_scan_state_reset(sc);
+    }
 
     if (!sc->sc_use_mld_api) {
+        if (scan_v17 && !batch_pending) {
+            iwx_endscan(sc, IWX_SCAN_OFFLOAD_COMPLETED, false);
+            sc->sc_flags &= ~IWX_FLAG_SCAN_ABORTING;
+            return 0;
+        }
         err = iwx_umac_scan_abort(sc);
-        if (err == 0)
+        if (err == 0) {
             sc->sc_flags &= ~(IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN);
+            sc->sc_flags &= ~IWX_FLAG_SCAN_ABORTING;
+        }
         return err;
+    }
+
+    if (scan_v17 && !batch_pending) {
+        iwx_endscan(sc, IWX_SCAN_OFFLOAD_COMPLETED, false);
+        sc->sc_flags &= ~IWX_FLAG_SCAN_ABORTING;
+        return 0;
     }
 
     struct iwx_umac_scan_abort cmd = { 0 };
@@ -11424,7 +11477,56 @@ iwx_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
 }
 
 void ItlIwx::
-iwx_endscan(struct iwx_softc *sc)
+iwx_scan_task(void *psc)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)psc;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+    if (!that->getMainWorkLoop()->inGate()) {
+        that->getMainCommandGate()->runAction(
+            [](OSObject *, void *arg0, void *, void *, void *) -> IOReturn {
+                iwx_scan_task(arg0);
+                return kIOReturnSuccess;
+            }, psc);
+        return;
+    }
+
+    struct ieee80211com *ic = &sc->sc_ic;
+    int scanGeneration = sc->sc_scan_task_generation;
+    int deviceGeneration = sc->sc_scan_task_device_generation;
+    int err;
+    int s = splnet();
+    if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) || !sc->sc_scan_active ||
+        sc->sc_scan_batch_pending ||
+        scanGeneration != sc->sc_scan_generation ||
+        deviceGeneration != sc->sc_generation ||
+        !(sc->sc_flags & (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)))
+        goto out;
+
+#ifdef AIRPORT_WCL
+    if (sc->sc_scan_wcl_owned && !ic->ic_wcl_scan_requested) {
+        that->iwx_scan_abort(sc);
+        goto out;
+    }
+#endif
+
+    err = that->iwx_umac_scan_v17(sc, sc->sc_scan_bgscan);
+    if (!err && !sc->sc_scan_batch_pending) {
+        that->iwx_endscan(sc, IWX_SCAN_OFFLOAD_COMPLETED, false);
+    } else if (err) {
+#ifdef AIRPORT_WCL
+        iwx_record_diagnostic(sc, "scan-batch-error", __FUNCTION__, __LINE__,
+                              err, 0, sc->sc_scan_batch);
+        iwx_publish_diagnostics(sc);
+#endif
+        iwx_schedule_recovery(sc, __FUNCTION__, __LINE__);
+    }
+
+out:
+    splx(s);
+}
+
+void ItlIwx::
+iwx_endscan(struct iwx_softc *sc, uint8_t status, bool allowContinuation)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     
@@ -11438,8 +11540,36 @@ iwx_endscan(struct iwx_softc *sc)
     
     if ((sc->sc_flags & (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)) == 0)
         return;
+
+#ifdef AIRPORT_WCL
+    if (sc->sc_scan_active)
+        sc->sc_pcitag->setProperty("AirportItlwm-HWScanCompletionStatus",
+                                   status, 32);
+#endif
     
+    if (sc->sc_scan_active && sc->sc_scan_batch_pending) {
+        sc->sc_scan_batch_pending = 0;
+        bool wclRequestActive = true;
+#ifdef AIRPORT_WCL
+        wclRequestActive = !sc->sc_scan_wcl_owned || ic->ic_wcl_scan_requested;
+#endif
+        if (allowContinuation && status == IWX_SCAN_OFFLOAD_COMPLETED &&
+            sc->sc_scan_next_channel <= IEEE80211_CHAN_MAX &&
+            !(sc->sc_flags & IWX_FLAG_SCAN_ABORTING) && wclRequestActive) {
+            sc->sc_scan_task_generation = sc->sc_scan_generation;
+            sc->sc_scan_task_device_generation = sc->sc_generation;
+            iwx_add_task(sc, sc->sc_nswq, &sc->sc_scan_task);
+            return;
+        }
+    }
+
     bool scan_aborting = sc->sc_flags & IWX_FLAG_SCAN_ABORTING;
+    if (sc->sc_scan_active && status != IWX_SCAN_OFFLOAD_COMPLETED)
+        scan_aborting = true;
+    if (sc->sc_scan_active) {
+        iwx_del_task(sc, sc->sc_nswq, &sc->sc_scan_task);
+        iwx_scan_state_reset(sc);
+    }
     sc->sc_flags &= ~(IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN);
     getMainCommandGate()->commandWakeup(&sc->sc_flags);
     if (scan_aborting) {
@@ -12429,6 +12559,8 @@ iwx_stop(struct _ifnet *ifp)
     iwx_del_task(sc, sc->sc_nswq, &sc->newstate_task);
     iwx_del_task(sc, sc->sc_nswq, &sc->start_task);
     iwx_del_task(sc, sc->sc_nswq, &sc->mld_link_task);
+    iwx_del_task(sc, sc->sc_nswq, &sc->sc_scan_task);
+    iwx_scan_state_reset(sc);
     iwx_del_task(sc, systq, &sc->ba_task);
     iwx_del_task(sc, systq, &sc->mac_ctxt_task);
     iwx_del_task(sc, systq, &sc->chan_ctxt_task);
@@ -13220,15 +13352,15 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                 struct iwx_umac_scan_complete *notif;
                 SYNC_RESP_STRUCT(notif, pkt, struct iwx_umac_scan_complete *);
                 if (le32toh(notif->uid) == 0)
-                    iwx_endscan(sc);
+                    iwx_endscan(sc, notif->status, true);
                 break;
             }
                 
             case IWX_SCAN_ITERATION_COMPLETE_UMAC: {
                 struct iwx_umac_scan_iter_complete_notif *notif;
                 SYNC_RESP_STRUCT(notif, pkt, struct iwx_umac_scan_iter_complete_notif *);
-                if (!sc->sc_use_mld_api)
-                    iwx_endscan(sc);
+                if (!sc->sc_use_mld_api && !sc->sc_scan_active)
+                    iwx_endscan(sc, IWX_SCAN_OFFLOAD_COMPLETED, true);
                 break;
             }
                 
@@ -15461,6 +15593,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     task_set(&sc->start_task, iwx_start_deferred, sc, "iwx_start_task");
     task_set(&sc->mld_link_task, iwx_mld_active_link_task, sc,
         "iwx_mld_active_link_task");
+    task_set(&sc->sc_scan_task, iwx_scan_task, sc, "iwx_scan_task");
     task_set(&sc->ba_task, iwx_ba_task, sc, "iwx_ba_task");
     task_set(&sc->mac_ctxt_task, iwx_mac_ctxt_task, sc, "iwx_mac_ctxt_task");
     task_set(&sc->chan_ctxt_task, iwx_chan_ctxt_task, sc, "iwx_chan_ctxt_task");

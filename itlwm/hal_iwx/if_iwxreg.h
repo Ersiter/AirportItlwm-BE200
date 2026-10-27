@@ -3351,6 +3351,9 @@ struct iwx_time_quota_cmd {
 #define IWX_PHY_BAND_24 (1)
 #define IWX_PHY_BAND_6  (2)
 
+/* SCAN_CHANNEL_CFG_S_VER7: force 6 GHz channels to passive scanning. */
+#define IWX_UHB_CHAN_CFG_FLAG_FORCE_PASSIVE (1U << 26)
+
 #define IWX_RX_MPDU_BAND_POS  6
 #define IWX_RX_MPDU_BAND_MASK 0xc0
 

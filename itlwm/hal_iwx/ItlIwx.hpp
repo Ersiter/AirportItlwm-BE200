@@ -463,9 +463,10 @@ public:
            struct ieee80211_node *, struct ieee80211_key *);
     int    iwx_media_change(struct _ifnet *);
     static void    iwx_newstate_task(void *);
+    static void    iwx_scan_task(void *);
     static void    iwx_mld_active_link_task(void *);
     static int    iwx_newstate(struct ieee80211com *, enum ieee80211_state, int);
-    void    iwx_endscan(struct iwx_softc *);
+    void    iwx_endscan(struct iwx_softc *, uint8_t, bool = true);
     void    iwx_fill_sf_command(struct iwx_softc *, struct iwx_sf_cfg_cmd *,
             struct ieee80211_node *);
     int    iwx_sf_config(struct iwx_softc *, int);
