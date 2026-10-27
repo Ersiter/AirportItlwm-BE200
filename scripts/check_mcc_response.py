@@ -74,6 +74,7 @@ program = r'''
 #define __packed __attribute__((packed))
 #define nitems(array) (sizeof(array) / sizeof((array)[0]))
 #define IWX_NUM_2GHZ_CHANNELS 14
+#define IWX_NUM_CHANNELS 110
 #define IWX_FIRST_2GHZ_HT_MINUS 5
 #define IWX_LAST_2GHZ_HT_PLUS 9
 #define IWX_NVM_CHANNEL_VALID (1u << 0)
@@ -166,12 +167,12 @@ static iwx_rx_packet *make_packet(uint32_t payload_len) {
     return pkt;
 }
 
-static void test_v8_nonzero_status_maps_real_channels() {
+static void test_v8_response_maps_real_channels() {
     constexpr uint32_t count = 50;
     const size_t payload_len = sizeof(iwx_mcc_update_resp_v8) + count * sizeof(uint32_t);
     auto *pkt = make_packet(static_cast<uint32_t>(payload_len));
     auto *wire = reinterpret_cast<iwx_mcc_update_resp_v8 *>(pkt->data);
-    wire->status = 4;
+    wire->status = 0;
     wire->mcc = 0x434e;
     wire->cap = 0x12345678;
     wire->time = 7;
@@ -190,19 +191,23 @@ static void test_v8_nonzero_status_maps_real_channels() {
         &sc, IWX_LONG_GROUP, IWX_MCC_UPDATE_CMD);
     require(reported_version == 8, "GL86 notification version table lookup");
     require(iwx_apply_mcc_update_response(
-                &driver, &sc, pkt,
-                iwx_mcc_response_version_for_parse(reported_version), true, &view) == 0,
-            "v8 response parse and channel-map application");
-    require(view.status == 4 && view.cap == 0x12345678 && view.mcc == 0x434e,
-            "v8 little-endian fields and nonzero status retained");
+                pkt, iwx_mcc_response_version_for_parse(reported_version), true, &view) == 0,
+            "v8 response parse and validation");
+    require(view.status == 0 && view.cap == 0x12345678 && view.mcc == 0x434e,
+            "v8 little-endian fields and accepted status retained");
     require(view.n_channels == count && view.channels == wire->channels,
             "v8 channel array view");
 
+    driver.iwx_init_channel_map(&sc, nullptr,
+                               const_cast<uint32_t *>(view.channels), view.n_channels);
     require(sc.sc_ic.ic_channels[1].ic_freq == 6,
             "v8 channel map reaches real channel mapper");
     require((sc.sc_ic.ic_channels[1].ic_flags & (IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_HT20)) ==
             (IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_HT20),
-            "v8 channel flags mapped despite nonzero status");
+            "v8 channel flags mapped");
+    wire->status = 4;
+    require(iwx_apply_mcc_update_response(pkt, 8, true, &view) == 0 &&
+            view.status == 4, "nonzero status remains available to caller");
     delete pkt;
 }
 
@@ -279,8 +284,7 @@ static void test_bad_lengths() {
     wire->status = 2;
     wire->n_channels = 1;
     iwx_softc sc{};
-    ItlIwx driver;
-    require(iwx_apply_mcc_update_response(&driver, &sc, mismatch, 8, true, &view) == EIO,
+    require(iwx_apply_mcc_update_response(mismatch, 8, true, &view) == EIO,
             "v8 trailing bytes rejected");
     require(view.header_valid && view.status == 2 && view.n_channels == 1,
             "malformed response retains safe header diagnostics");
@@ -296,7 +300,7 @@ static void test_bad_lengths() {
 }
 
 int main() {
-    test_v8_nonzero_status_maps_real_channels();
+    test_v8_response_maps_real_channels();
     test_v4_capability_layout();
     test_v3_layout();
     test_bad_lengths();
