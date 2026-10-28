@@ -558,9 +558,14 @@ inline LegacyAuth classifyLegacyAuth(const JoinRequest &j) {
     if (j.upperAuth & ~(personal | enterprise | sae)) return LegacyAuth::Invalid;
     if ((j.upperAuth & sae) && j.upperAuth != sae) return LegacyAuth::Invalid;
     if ((j.upperAuth & personal) && (j.upperAuth & enterprise)) return LegacyAuth::Invalid;
-    if (j.upperAuth & personal)
-        return j.keyLength == 32 && (j.keyCipher == 6 || j.keyCipher == 7) ?
-            LegacyAuth::Personal : LegacyAuth::Invalid;
+    if (j.upperAuth & personal) {
+        if (j.keyLength == 32 && (j.keyCipher == 6 || j.keyCipher == 7))
+            return LegacyAuth::Personal;
+        if (j.keyCipher == 10 && j.keyLength >= 8 && j.keyLength <= 63 &&
+            !memchr(j.key, 0, j.keyLength))
+            return LegacyAuth::Personal;
+        return LegacyAuth::Invalid;
+    }
     // Native WCL carries the raw SAE password (cipher 10), not a PMK.
     if (j.upperAuth == sae) {
         if (j.keyLength < 1 || j.keyLength > 63 || j.keyCipher != 10)

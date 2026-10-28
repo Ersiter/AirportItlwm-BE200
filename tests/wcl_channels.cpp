@@ -49,6 +49,27 @@ int main()
     assert(!AirportWCL::decodeChannelSpec20(0x9001, channel, band));
     assert(!AirportWCL::decodeChannelSpec20(0x5096, channel, band));
 
+    AirportWCL::JoinRequest join = {};
+    join.lowerAuth = 1;
+    join.upperAuth = 1u << 3;
+    join.keyLength = 32;
+    join.keyCipher = 6;
+    assert(AirportWCL::classifyLegacyAuth(join) == AirportWCL::LegacyAuth::Personal);
+    join.keyLength = 8;
+    join.keyCipher = 10;
+    memcpy(join.key, "password", 8);
+    assert(AirportWCL::classifyLegacyAuth(join) == AirportWCL::LegacyAuth::Personal);
+    memset(join.key, 'a', 63);
+    join.keyLength = 63;
+    assert(AirportWCL::classifyLegacyAuth(join) == AirportWCL::LegacyAuth::Personal);
+    join.keyLength = 7;
+    assert(AirportWCL::classifyLegacyAuth(join) == AirportWCL::LegacyAuth::Invalid);
+    join.keyLength = 64;
+    assert(AirportWCL::classifyLegacyAuth(join) == AirportWCL::LegacyAuth::Invalid);
+    join.keyLength = 8;
+    join.key[4] = 0;
+    assert(AirportWCL::classifyLegacyAuth(join) == AirportWCL::LegacyAuth::Invalid);
+
     uint8_t requestBuffer[0x58 + 4 * 12] = {};
     write32(requestBuffer + 0x40, 1);
     write32(requestBuffer + 0x54, 4);

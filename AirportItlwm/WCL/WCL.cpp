@@ -15,6 +15,7 @@
 #include <net80211/ieee80211_ioctl.h>
 #include <net80211/ieee80211_priv.h>
 #include <sys/_mbuf.h>
+#include <crypto/sha1.h>
 
 extern IOCommandGate *_fCommandGate;
 
@@ -899,7 +900,17 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
             ic->ic_sae_pt_valid = 1;
         }
         if (personal) {
-            memcpy(ic->ic_psk, join.key, sizeof(ic->ic_psk));
+            if (join.keyCipher == 10) {
+                join.key[join.keyLength] = 0;
+                if (pbkdf2_sha1(reinterpret_cast<const char *>(join.key), join.ssid,
+                        join.ssidLength, 4096, ic->ic_psk, sizeof(ic->ic_psk)) != 0) {
+                    explicit_bzero(ic->ic_psk, sizeof(ic->ic_psk));
+                    explicit_bzero(&join, sizeof(join));
+                    return kIOReturnBadArgument;
+                }
+            } else {
+                memcpy(ic->ic_psk, join.key, sizeof(ic->ic_psk));
+            }
             ic->ic_flags |= IEEE80211_F_PSK;
         } else if (!sae && join.keyLength == IEEE80211_PMK_LEN) {
             bool cached = true;

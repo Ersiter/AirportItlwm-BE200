@@ -1132,7 +1132,9 @@ getCARD_CAPABILITIES(OSObject *object,
         (1 << (APPLE80211_CAP_SHORT_GI_20MHZ - 16));
     // Apple80211Scan/ScanAsync reject native scan requests without capability 22.
     cd->capabilities[2] |= 0x40;
-    // Apple80211Associate2 requires this bit before issuing an SAE join.
+    // Apple80211Associate2 filters SAE using both MFP and SAE capabilities.
+    if (caps & IEEE80211_C_MFP)
+        cd->capabilities[6] |= 0x01;
     if ((caps & IEEE80211_C_MFP) && ic->ic_sae_defer_join)
         cd->capabilities[9] |= 0x08;
     // Tahoe WCLDeviceConfiguration::isHeSupported reads byte 17, bit 7.
