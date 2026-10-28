@@ -379,6 +379,7 @@ bandwidth_program = r'''
 #define nitems(array) (sizeof(array) / sizeof((array)[0]))
 #define XYLog(...) do {} while (0)
 #define IEEE80211_CHAN_2GHZ 0x00000001
+#define IEEE80211_CHAN_5GHZ 0x00000002
 #define IEEE80211_CHAN_6GHZ 0x40000000
 #define IEEE80211_CHAN_NO_40MHZ 0x01
 #define IEEE80211_CHAN_NO_80MHZ 0x02
@@ -413,7 +414,6 @@ bandwidth_program = r'''
 #define IEEE80211_IS_CHAN_6GHZ(channel) (((channel)->ic_flags & IEEE80211_CHAN_6GHZ) != 0)
 #define abs(value) std::abs(value)
 static uint16_t le16toh(uint16_t value) { return value; }
-static const char *ieee80211_chan_width_name[] = {"20", "40", "80", "160", "320"};
 struct ieee80211_channel { int ic_freq = 0; uint32_t ic_flags = 0; uint8_t ic_reg_flags = 0; uint16_t ic_center_freq1 = 0, ic_center_freq2 = 0; };
 struct ieee80211_he_cap_elem { uint8_t phy_cap_info[11]{}; };
 struct ieee80211_he_mcs_nss_supp { uint16_t tx_mcs_160 = 0, rx_mcs_160 = 0; };
