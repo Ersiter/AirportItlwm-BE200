@@ -439,8 +439,6 @@ ieee80211_derive_ptk(enum ieee80211_akm akm, const u_int8_t *pmk,
     const u_int8_t *aa, const u_int8_t *spa, const u_int8_t *anonce,
     const u_int8_t *snonce, struct ieee80211_ptk *ptk)
 {
-	void (*kdf)(const u_int8_t *, size_t, const u_int8_t *, size_t,
-        const u_int8_t *, size_t, u_int8_t *, size_t);
     u_int8_t buf[2 * IEEE80211_ADDR_LEN + 2 * EAPOL_KEY_NONCE_LEN];
     int ret;
 
@@ -454,9 +452,19 @@ ieee80211_derive_ptk(enum ieee80211_akm akm, const u_int8_t *pmk,
     memcpy(&buf[12], ret ? anonce : snonce, EAPOL_KEY_NONCE_LEN);
     memcpy(&buf[44], ret ? snonce : anonce, EAPOL_KEY_NONCE_LEN);
 
-    kdf = ieee80211_is_sha256_akm(akm) ? ieee80211_kdf : ieee80211_prf;
-    (*kdf)(pmk, IEEE80211_PMK_LEN, (const u_int8_t *)"Pairwise key expansion", 23,
-        buf, sizeof buf, (u_int8_t *)ptk, sizeof(*ptk));
+    if (ieee80211_is_sha256_akm(akm)) {
+        ieee80211_kdf(pmk, IEEE80211_PMK_LEN,
+            (const u_int8_t *)"Pairwise key expansion",
+            22 /* KDF omits \0 */, buf, sizeof buf, (u_int8_t *)ptk,
+            /* expected output size of 48 is mixed into hash */
+            MIN(48, sizeof(*ptk)));
+        static_assert(sizeof(struct ieee80211_ptk) >= 48, "CCMP PTK size");
+    } else {
+        ieee80211_prf(pmk, IEEE80211_PMK_LEN,
+            (const u_int8_t *)"Pairwise key expansion",
+            23 /* PRF uses \0 */, buf, sizeof buf, (u_int8_t *)ptk,
+            sizeof(*ptk));
+    }
 }
 
 static void
