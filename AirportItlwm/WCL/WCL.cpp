@@ -1019,6 +1019,7 @@ void AirportItlwmSkywalkInterface::finishWCLJoin(uint16_t status, uint16_t reaso
         clearWCLPMKSA();
         ic->ic_wcl_enterprise = false;
         explicit_bzero(ic->ic_psk, sizeof(ic->ic_psk));
+        clearWCLSAE(ic);
     }
 }
 
