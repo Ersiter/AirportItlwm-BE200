@@ -721,7 +721,7 @@ br_ec_p256_sswu(unsigned char *point, const unsigned char *u_value,
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 	};
 	uint32_t decoded[15], modulus[10], reduced[10];
-	uint32_t u[9], u2[9], z[9], a[9], b[9], zero[9] = {0}, one[9] = {1};
+	uint32_t u[9], u2[9], z[9] = {0}, a[9], b[9], zero[9] = {0}, one[9] = {1};
 	uint32_t inv[9], x1a[9], x1b[9], x1[9], x2[9];
 	uint32_t t[9], m[9], gx1[9], gx2[9], v[9], x[9], y[9], tmp[9];
 	unsigned char prime[32], ubin[32], xbin[32], ybin[32];
@@ -754,9 +754,8 @@ br_ec_p256_sswu(unsigned char *point, const unsigned char *u_value,
 	reduce_final_f256(z);
 
 	square_f256(u2, u);
-	square_f256(t, u2);
-	mul_f256(t, t, z);
 	mul_f256(m, z, u2);
+	square_f256(t, m);
 	add_f256(m, m, t);
 	reduce_final_f256(m);
 	is_zero = 0;

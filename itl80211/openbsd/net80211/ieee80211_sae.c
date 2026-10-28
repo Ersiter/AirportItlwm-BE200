@@ -45,6 +45,9 @@
  * words to store the group's prime number.
  */
  #define SAE_I31INT_WORDS (1 + (SAE_P256_PRIME_LEN / 4) + 1)
+#define SAE_I31INT_BITS (((SAE_P256_PRIME_LEN * 8 / 31) << 5) + \
+    (SAE_P256_PRIME_LEN * 8 % 31))
+#define SAE_I31SUM_BITS (SAE_I31INT_BITS + 1)
 
 /* Derive the P-256 password token (PT) used by H2E from password and SSID. */
 int
@@ -255,9 +258,10 @@ ieee80211_sae_derive_password_elem(uint8_t *pwe, const uint8_t *pt,
 
 	/* val as i31 integer. */
 	br_i31_decode(val, hash, sizeof(hash));
+	val[0] = SAE_I31INT_BITS;
 
 	/* The number 1 as i31 integer. */
-	br_i31_zero(one, prime_len * 8);
+	br_i31_zero(one, SAE_I31INT_BITS);
 	one[1] = 0x1;
 	br_i31_encode(bin, sizeof(bin), one);
 
@@ -325,7 +329,7 @@ ieee80211_sae_derive_commit_elem(uint8_t *scalar, uint8_t *element_x,
 	br_i31_decode(p, prime, prime_len);
 
 	/* The number 1 as i31 integer. */
-	br_i31_zero(one, prime_len * 8);
+	br_i31_zero(one, SAE_I31INT_BITS);
 	one[1] = 0x1;
 	br_i31_encode(bin, sizeof(bin), one);
 
@@ -338,6 +342,7 @@ ieee80211_sae_derive_commit_elem(uint8_t *scalar, uint8_t *element_x,
 	for (tries = 0; tries < 100; tries++) {
 		arc4random_buf(bin, sizeof(bin));
 		br_i31_decode(rand, bin, sizeof(bin));
+		rand[0] = SAE_I31INT_BITS;
 		explicit_bzero(bin, sizeof(bin));
 
 		if (br_i31_iszero(rand))
@@ -359,8 +364,8 @@ ieee80211_sae_derive_commit_elem(uint8_t *scalar, uint8_t *element_x,
 		/* Ensure that 1 < rand holds. */
 		memcpy(t, rand, sizeof(t)); /* t = rand */
 		br_i31_sub(t, one, 1);   /* t = rand - 1 */
-		if (br_i31_iszero(t))
-			continue; /* --> rand == 1 */
+		if (br_i31_iszero(rand) || br_i31_iszero(t))
+			continue; /* --> rand <= 1 */
 
 		break;
 	}
@@ -376,6 +381,7 @@ ieee80211_sae_derive_commit_elem(uint8_t *scalar, uint8_t *element_x,
 	for (tries = 0; tries < 100; tries++) {
 		arc4random_buf(bin, sizeof(bin));
 		br_i31_decode(mask, bin, sizeof(bin));
+		mask[0] = SAE_I31INT_BITS;
 		explicit_bzero(bin, sizeof(bin));
 
 		if (br_i31_iszero(mask))
@@ -390,11 +396,13 @@ ieee80211_sae_derive_commit_elem(uint8_t *scalar, uint8_t *element_x,
 		/* Ensure that 1 < mask holds. */
 		memcpy(t, mask, sizeof(t)); /* t = mask */
 		br_i31_sub(t, one, 1);   /* t = mask - 1 */
-		if (br_i31_iszero(t))
-			continue; /* --> mask == 1 */
+		if (br_i31_iszero(mask) || br_i31_iszero(t))
+			continue; /* --> mask <= 1 */
 
+		rand[0] = mask[0] = SAE_I31SUM_BITS;
 		memcpy(t, rand, sizeof(t)); /* t = rand */
 		br_i31_add(t, mask, 1); /* t = rand + mask */
+		rand[0] = mask[0] = SAE_I31INT_BITS;
 		br_i31_reduce(val, t, r); /* val = ((rand + mask) % r) */
 		if (br_i31_iszero(val))
 			continue; /* --> scalar == 0 */
@@ -497,7 +505,7 @@ ieee80211_sae_verify_commit_elem(const uint8_t **scalar,
 	br_i31_decode(r, order, order_len);
 
 	/* The number 1 as i31 integer. */
-	br_i31_zero(one, prime_len * 8);
+	br_i31_zero(one, SAE_I31INT_BITS);
 	one[1] = 0x1;
 	br_i31_encode(bin, sizeof(bin), one);
 
@@ -553,7 +561,7 @@ ieee80211_sae_derive_shared_secret(uint8_t *k, const uint8_t *scalar,
 		goto done;
 
 	/* The number 1 as i31 integer. */
-	br_i31_zero(one, prime_len * 8);
+	br_i31_zero(one, SAE_I31INT_BITS);
 	one[1] = 0x1;
 
 	/* The number 1 in unsigned big-endian. */
@@ -640,9 +648,11 @@ ieee80211_sae_derive_secret_keys(uint8_t *sae_kck, uint8_t *pmk,
 
 	/* Own SAE commit scalar as i31 integer. */
 	br_i31_decode(os, own_scalar, SAE_P256_PRIME_LEN);
+	os[0] = SAE_I31SUM_BITS;
 
 	/* Peer SAE commit scalar as i31 integer. */
 	br_i31_decode(ps, peer_scalar, SAE_P256_PRIME_LEN);
+	ps[0] = SAE_I31SUM_BITS;
 
 	/* context = (commit-scalar + peer-commit-scalar) mod r */
 	memcpy(t, os, sizeof(t)); /* t = commit-scalar */

@@ -884,6 +884,7 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
         }
         int error = ieee80211_ioctl_setwpaparms(ic, &wpa);
         if (error && error != ENETRESET) {
+            instance->pciNub->setProperty("AirportItlwm-WCLJoinExit", "rsn-parameters");
             clearWCLSAE(ic);
             explicit_bzero(&join, sizeof(join));
             return kIOReturnBadArgument;
@@ -891,6 +892,7 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
         if (sae) {
             if (ieee80211_sae_password_to_pt(ic->ic_sae_pt, join.key,
                 join.keyLength, join.ssid, join.ssidLength) != 0) {
+                instance->pciNub->setProperty("AirportItlwm-WCLJoinExit", "sae-pt");
                 clearWCLSAE(ic);
                 explicit_bzero(&join, sizeof(join));
                 return kIOReturnBadArgument;
