@@ -4803,10 +4803,16 @@ iwx_setup_he_rates(struct iwx_softc *sc)
     ic->ic_flags |= IEEE80211_F_HEON;
     if (sc->sc_use_mld_api &&
         sc->sc_device_family == IWX_DEVICE_FAMILY_BZ &&
-        iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP,
-            IWX_MLD_STA_CONFIG_CMD) == 2 &&
-        iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP,
-            IWX_TLC_MNG_CONFIG_CMD) == 6) {
+        (iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP,
+            IWX_MLD_STA_CONFIG_CMD) == 2 ||
+         iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP,
+            IWX_MLD_STA_CONFIG_CMD) == 1 ||
+         iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP,
+            IWX_MLD_STA_CONFIG_CMD) == IWX_FW_CMD_VER_UNKNOWN) &&
+        (iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP,
+            IWX_TLC_MNG_CONFIG_CMD) == 6 ||
+         iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP,
+            IWX_TLC_MNG_CONFIG_CMD) == 4)) {
         ic->ic_eht_cap_elem.mac_cap_info[0] =
             IEEE80211_EHT_MAC_CAP0_OM_CONTROL;
         ic->ic_eht_cap_elem.phy_cap_info[0] =
@@ -10556,8 +10562,21 @@ iwx_rs_init(struct iwx_softc *sc, struct iwx_node *in, bool update)
     cmd_id = iwx_cmd_id(IWX_TLC_MNG_CONFIG_CMD, IWX_DATA_PATH_GROUP, 0);
     cmdver = iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP, IWX_TLC_MNG_CONFIG_CMD);
     XYLog("%s cmdver %d\n", __FUNCTION__, cmdver);
-    if ((ni->ni_flags & IEEE80211_NODE_EHT) && cmdver != 6)
+    if ((ni->ni_flags & IEEE80211_NODE_EHT) && cmdver != 6 && cmdver != 4)
         return ENOTSUP;
+    if ((ni->ni_flags & IEEE80211_NODE_EHT) && cmdver == 4) {
+        struct iwx_tlc_config_cmd_v6 rates = {};
+        rates.max_ch_width = cfg_cmd.max_ch_width;
+        if (!iwx_rs_fw_eht_set_enabled_rates(ic, ni, &rates))
+            return EINVAL;
+        cfg_cmd.flags &= ~(IWX_TLC_MNG_CFG_FLAGS_STBC_MSK |
+            IWX_TLC_MNG_CFG_FLAGS_HE_STBC_160MHZ_MSK |
+            IWX_TLC_MNG_CFG_FLAGS_HE_DCM_NSS_1_MSK |
+            IWX_TLC_MNG_CFG_FLAGS_HE_DCM_NSS_2_MSK);
+        for (unsigned int ss = 0; ss < IWX_TLC_NSS_MAX; ss++)
+            for (unsigned int bw = 0; bw < IWX_TLC_MCS_PER_BW_NUM_V4; bw++)
+                cfg_cmd.ht_rates[ss][bw] = htole16(le32toh(rates.ht_rates[ss][bw]));
+    }
     if (sc->sc_use_mld_api && cmdver == 6) {
         struct iwx_tlc_config_cmd_v6 cfg_cmd_v6 = {};
 

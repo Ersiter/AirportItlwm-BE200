@@ -684,8 +684,6 @@ iwx_mld_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
         (in->in_ni.ni_flags & (IEEE80211_NODE_HECAP | IEEE80211_NODE_HEOP)) !=
             (IEEE80211_NODE_HECAP | IEEE80211_NODE_HEOP))
         return EINVAL;
-    if ((in->in_ni.ni_flags & IEEE80211_NODE_EHT) && cmd_ver != 2)
-        return ENOTSUP;
 
     link_slot = iwx_mld_link_slot(ic, &in->in_ni);
     if (link_slot < 0 || link_slot >= IWX_MLD_MAX_LINKS ||
