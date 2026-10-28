@@ -64,6 +64,7 @@ channel_arrays = "\n".join(
 )
 channel_map = function(source, "void ItlIwx::\niwx_init_channel_map(")
 proto_source = (root / "itl80211/openbsd/net80211/ieee80211_proto.c").read_text(encoding="utf-8")
+vht_negotiate = function(proto_source, "void\nieee80211_vht_negotiate(")
 he_negotiate = function(proto_source, "void\nieee80211_he_negotiate(")
 eht_negotiate = function(proto_source, "void\nieee80211_eht_negotiate(")
 
@@ -381,6 +382,7 @@ bandwidth_program = r'''
 #define IEEE80211_CHAN_2GHZ 0x00000001
 #define IEEE80211_CHAN_5GHZ 0x00000002
 #define IEEE80211_CHAN_6GHZ 0x40000000
+#define IEEE80211_IS_CHAN_5GHZ(channel) (((channel)->ic_flags & IEEE80211_CHAN_5GHZ) != 0)
 #define IEEE80211_CHAN_NO_40MHZ 0x01
 #define IEEE80211_CHAN_NO_80MHZ 0x02
 #define IEEE80211_CHAN_NO_160MHZ 0x04
@@ -392,6 +394,34 @@ bandwidth_program = r'''
 #define IEEE80211_CHAN_WIDTH_80 2
 #define IEEE80211_CHAN_WIDTH_160 3
 #define IEEE80211_CHAN_WIDTH_320 4
+#define IEEE80211_CHAN_WIDTH_80P80 5
+#define IEEE80211_NODE_VHT 0x100000U
+#define IEEE80211_NODE_VHT_SGI80 0x20000000U
+#define IEEE80211_NODE_VHT_SGI160 0x40000000U
+#define IEEE80211_MODE_11AC 1
+#define IEEE80211_F_NOVHT 0x01
+#define IEEE80211_F_VHTON 0x02
+#define IEEE80211_F_WEPON 0x04
+#define IEEE80211_F_RSNON 0x08
+#define IEEE80211_CIPHER_USEGROUP 0x01
+#define IEEE80211_CIPHER_TKIP 0x02
+#define IEEE80211_C_SUPPORTS_VHT_EXT_NSS_BW 0x01
+#define IEEE80211_VHTCAP_SUPP_CHAN_WIDTH_MASK 0x0000000cU
+#define IEEE80211_VHTCAP_SUPP_CHAN_WIDTH_160MHZ 0x00000004U
+#define IEEE80211_VHTCAP_SUPP_CHAN_WIDTH_160_80P80MHZ 0x00000008U
+#define IEEE80211_VHTCAP_EXT_NSS_BW_MASK 0xc0000000U
+#define IEEE80211_VHTCAP_EXT_NSS_BW_SHIFT 30
+#define IEEE80211_VHT_CHANWIDTH_USE_HT 0
+#define IEEE80211_VHT_CHANWIDTH_80MHZ 1
+#define IEEE80211_VHT_CHANWIDTH_160MHZ 2
+#define IEEE80211_VHT_CHANWIDTH_80P80MHZ 3
+#define IEEE80211_HT_OP_MODE_CCFS2_MASK 0x0000fc00U
+#define IEEE80211_HT_OP_MODE_CCFS2_SHIFT 10
+#define IEEE80211_VHTCAP_SHORT_GI_80 0x00000020U
+#define IEEE80211_VHTCAP_SHORT_GI_160 0x00000040U
+#define IEEE80211_VHTCAP_SHORT_GI_80_MASK IEEE80211_VHTCAP_SHORT_GI_80
+#define IEEE80211_VHTCAP_SHORT_GI_160_MASK IEEE80211_VHTCAP_SHORT_GI_160
+#define IEEE80211_VHTCAP_SUPP_CHAN_WIDTH_MASK_S 2
 #define IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G 0x02
 #define IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G 0x04
 #define IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G 0x08
@@ -423,6 +453,10 @@ struct ieee80211_he_6ghz_oper { uint8_t primary, control, ccfs0, ccfs1; };
 struct ieee80211_node {
     ieee80211_channel *ni_chan = nullptr;
     uint32_t ni_flags = 0, ni_he_oper_params = 0;
+    uint32_t ni_vhtcaps = 0, ni_rsnciphers = 0;
+    uint16_t ni_htop1 = 0;
+    uint8_t ni_vht_chan1 = 0, ni_vht_chan2 = 0, ni_vht_chanwidth = 0;
+    bool vht_supported = true;
     uint8_t ni_he_optional[8]{}, ni_eht_oper[8]{}, ni_eht_oper_width = 0;
     uint8_t ni_eht_ccfs0 = 0, ni_eht_ccfs1 = 0, ni_eht_mcs_nss_len = 0;
     uint8_t ni_eht_mcs_nss[9]{}, ni_chw = IEEE80211_CHAN_WIDTH_20;
@@ -434,6 +468,8 @@ struct ieee80211_node {
     ieee80211_eht_cap_elem ni_eht_cap_elem{};
 };
 struct ieee80211com {
+    uint32_t ic_modecaps = 0, ic_userflags = 0, ic_flags = 0, ic_caps = 0;
+    struct { unsigned is_vht_nego_no_mandatory_mcs = 0, is_vht_nego_bad_crypto = 0; } ic_stats;
     ieee80211_he_cap_elem ic_he_cap_elem{};
     ieee80211_he_mcs_nss_supp ic_he_mcs_nss_supp{};
     bool ic_eht_cap_valid = false;
@@ -443,17 +479,80 @@ struct ieee80211com {
 static int ieee80211_he_supported(ieee80211com *, ieee80211_node *ni) {
     return ni->he_cap_valid && !(ni->ni_chan->ic_reg_flags & IEEE80211_CHAN_NO_HE);
 }
+static bool ieee80211_node_supports_vht(ieee80211_node *ni) { return ni->vht_supported; }
+static bool ieee80211_node_supports_vht_sgi80(ieee80211_node *) { return false; }
+static bool ieee80211_node_supports_vht_sgi160(ieee80211_node *) { return false; }
+static unsigned u32_get_bits(uint32_t value, uint32_t mask) { return (value & mask) >> __builtin_ctz(mask); }
 static uint16_t ieee80211_he_mcs_intersection(uint16_t, uint16_t) { return 0; }
 static int ieee80211_chan2number(ieee80211com *, ieee80211_channel *channel) {
     return (channel->ic_freq - 5950) / 5;
 }
 static int ieee80211_ieee2mhz(int channel, int band) {
-    return channel * 5 + ((band & IEEE80211_CHAN_6GHZ) ? 5950 : 0);
+    return channel * 5 + ((band & IEEE80211_CHAN_6GHZ) ? 5950 :
+        ((band & IEEE80211_CHAN_5GHZ) ? 5000 : 2407));
 }
+VHT_NEGOTIATION
 HE_NEGOTIATION
 EHT_NEGOTIATION
 static void require(bool ok, const char *message) {
     if (!ok) { std::cerr << "FAIL: " << message << "\n"; std::exit(1); }
+}
+static void setup_5ghz(ieee80211com &ic, ieee80211_node &ni, ieee80211_channel &channel,
+    uint8_t op_width, uint8_t seg0, uint8_t seg1) {
+    channel.ic_freq = 5180;
+    channel.ic_flags = IEEE80211_CHAN_5GHZ;
+    ni.ni_chan = &channel;
+    ni.ni_flags = IEEE80211_NODE_HT | IEEE80211_NODE_QOS |
+        IEEE80211_NODE_HECAP | IEEE80211_NODE_HEOP;
+    ni.ni_he_requested = true;
+    ni.he_cap_valid = true;
+    ni.ni_he_cap_elem.phy_cap_info[0] = 0x0c;
+    ic.ic_he_cap_elem.phy_cap_info[0] = 0x0c;
+    ni.ni_vhtcaps = IEEE80211_VHTCAP_SUPP_CHAN_WIDTH_160MHZ;
+    ni.ni_vht_chanwidth = op_width;
+    ni.ni_vht_chan1 = seg0;
+    ni.ni_vht_chan2 = seg1;
+    ic.ic_modecaps = 1U << IEEE80211_MODE_11AC;
+    ic.ic_flags = IEEE80211_F_VHTON;
+}
+static void test_5ghz_vht_operation_and_he_width_fallback() {
+    ieee80211com ic{}; ieee80211_node ni{}; ieee80211_channel channel{};
+    setup_5ghz(ic, ni, channel, IEEE80211_VHT_CHANWIDTH_80MHZ, 42, 50);
+    ieee80211_vht_negotiate(&ic, &ni);
+    require(ni.ni_chw == IEEE80211_CHAN_WIDTH_160 && channel.ic_center_freq1 == 5250,
+        "5 GHz VHT 80 MHz operation segments identify 160 MHz center");
+    ieee80211_he_negotiate(&ic, &ni);
+    require((ni.ni_flags & IEEE80211_NODE_HE) && ni.ni_chw == IEEE80211_CHAN_WIDTH_160 &&
+        channel.ic_center_freq1 == 5250, "HE preserves AP 160 MHz when local, peer, and MCC allow it");
+
+    ieee80211com ap80_ic{}; ieee80211_node ap80_ni{}; ieee80211_channel ap80_channel{};
+    setup_5ghz(ap80_ic, ap80_ni, ap80_channel, IEEE80211_VHT_CHANWIDTH_80MHZ, 42, 0);
+    ieee80211_vht_negotiate(&ap80_ic, &ap80_ni);
+    ieee80211_he_negotiate(&ap80_ic, &ap80_ni);
+    require(ap80_ni.ni_chw == IEEE80211_CHAN_WIDTH_80 && ap80_channel.ic_center_freq1 == 5210,
+        "5 GHz AP 80 MHz operation remains 80 despite peer 160 capability");
+
+    ieee80211com direct_ic{}; ieee80211_node direct_ni{}; ieee80211_channel direct_channel{};
+    setup_5ghz(direct_ic, direct_ni, direct_channel, IEEE80211_VHT_CHANWIDTH_160MHZ, 50, 0);
+    ieee80211_vht_negotiate(&direct_ic, &direct_ni);
+    require(direct_ni.ni_chw == IEEE80211_CHAN_WIDTH_160 && direct_channel.ic_center_freq1 == 5250,
+        "5 GHz direct VHT 160 MHz operation uses segment 0 center");
+
+    ieee80211com no160_ic{}; ieee80211_node no160_ni{}; ieee80211_channel no160_channel{};
+    setup_5ghz(no160_ic, no160_ni, no160_channel, IEEE80211_VHT_CHANWIDTH_80MHZ, 42, 50);
+    no160_channel.ic_reg_flags = IEEE80211_CHAN_NO_160MHZ;
+    ieee80211_vht_negotiate(&no160_ic, &no160_ni);
+    ieee80211_he_negotiate(&no160_ic, &no160_ni);
+    require(no160_ni.ni_chw == IEEE80211_CHAN_WIDTH_80 && no160_channel.ic_center_freq1 == 5210,
+        "5 GHz MCC NO160 falls back to AP primary 80 MHz segment");
+
+    ieee80211com no80_ic{}; ieee80211_node no80_ni{}; ieee80211_channel no80_channel{};
+    setup_5ghz(no80_ic, no80_ni, no80_channel, IEEE80211_VHT_CHANWIDTH_80MHZ, 42, 50);
+    no80_channel.ic_reg_flags = IEEE80211_CHAN_NO_160MHZ | IEEE80211_CHAN_NO_80MHZ;
+    ieee80211_vht_negotiate(&no80_ic, &no80_ni);
+    ieee80211_he_negotiate(&no80_ic, &no80_ni);
+    require(no80_ni.ni_chw == IEEE80211_CHAN_WIDTH_40 && no80_channel.ic_center_freq1 == 5190,
+        "5 GHz MCC NO80 retains the primary 40 MHz segment");
 }
 static void setup_6ghz(ieee80211com &ic, ieee80211_node &ni, ieee80211_channel &channel) {
     channel.ic_freq = 5975;
@@ -570,13 +669,14 @@ static void test_eht_primary_puncture_and_phy_restrictions() {
             "NO_EHT retains HE and prevents EHT negotiation");
 }
 int main() {
+    test_5ghz_vht_operation_and_he_width_fallback();
     test_he_160_and_no160_fallback();
     test_eht_320_no320_and_he_fallback();
     test_eht_no_info_and_invalid_centers();
     test_eht_primary_puncture_and_phy_restrictions();
-    std::cout << "production HE/EHT bandwidth checks passed\n";
+    std::cout << "production VHT/HE/EHT bandwidth checks passed\n";
 }
-'''.replace("HE_NEGOTIATION", he_negotiate).replace("EHT_NEGOTIATION", eht_negotiate)
+'''.replace("VHT_NEGOTIATION", vht_negotiate).replace("HE_NEGOTIATION", he_negotiate).replace("EHT_NEGOTIATION", eht_negotiate)
 
 with tempfile.TemporaryDirectory(prefix="itlwm-mcc-response-") as folder:
     folder = Path(folder)
