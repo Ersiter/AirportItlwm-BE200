@@ -11384,8 +11384,9 @@ iwx_newstate_task(void *psc)
         if (nstate == ostate) {
             if (sc->sc_flags & IWX_FLAG_SCANNING) {
 #ifdef AIRPORT_WCL
-                if (ic->ic_wcl_join_requested && !ic->ic_wcl_scan_requested &&
-                    !sc->sc_scan_wcl_join) {
+                if ((ic->ic_wcl_join_requested && !ic->ic_wcl_scan_requested &&
+                     !sc->sc_scan_wcl_join) ||
+                    (ic->ic_wcl_scan_requested && !sc->sc_scan_wcl_owned)) {
                     err = that->iwx_scan_abort(sc);
                     if (err)
                         goto out;

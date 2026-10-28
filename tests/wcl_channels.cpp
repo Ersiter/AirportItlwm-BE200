@@ -70,6 +70,42 @@ int main()
     join.key[4] = 0;
     assert(AirportWCL::classifyLegacyAuth(join) == AirportWCL::LegacyAuth::Invalid);
 
+    AirportWCL::DerivedCredentialCache cached = {};
+    cached.valid = 1;
+    cached.kind = AirportWCL::DerivedCredentialKind::Personal;
+    cached.ssidLength = 4;
+    cached.credentialLength = 8;
+    cached.resultLength = 32;
+    memcpy(cached.ssid, "home", 4);
+    memcpy(cached.credential, "password", 8);
+    assert(AirportWCL::matchesDerivedCredential(cached,
+        AirportWCL::DerivedCredentialKind::Personal,
+        reinterpret_cast<const uint8_t *>("home"), 4,
+        reinterpret_cast<const uint8_t *>("password"), 8));
+    assert(!AirportWCL::matchesDerivedCredential(cached,
+        AirportWCL::DerivedCredentialKind::Personal,
+        reinterpret_cast<const uint8_t *>("away"), 4,
+        reinterpret_cast<const uint8_t *>("password"), 8));
+    assert(!AirportWCL::matchesDerivedCredential(cached,
+        AirportWCL::DerivedCredentialKind::Personal,
+        reinterpret_cast<const uint8_t *>("home"), 4,
+        reinterpret_cast<const uint8_t *>("passw0rd"), 8));
+    assert(!AirportWCL::matchesDerivedCredential(cached,
+        AirportWCL::DerivedCredentialKind::SAE,
+        reinterpret_cast<const uint8_t *>("home"), 4,
+        reinterpret_cast<const uint8_t *>("password"), 8));
+    cached.kind = AirportWCL::DerivedCredentialKind::SAE;
+    cached.resultLength = 64;
+    assert(AirportWCL::matchesDerivedCredential(cached,
+        AirportWCL::DerivedCredentialKind::SAE,
+        reinterpret_cast<const uint8_t *>("home"), 4,
+        reinterpret_cast<const uint8_t *>("password"), 8));
+    cached.valid = 0;
+    assert(!AirportWCL::matchesDerivedCredential(cached,
+        AirportWCL::DerivedCredentialKind::Personal,
+        reinterpret_cast<const uint8_t *>("home"), 4,
+        reinterpret_cast<const uint8_t *>("password"), 8));
+
     uint8_t requestBuffer[0x58 + 4 * 12] = {};
     write32(requestBuffer + 0x40, 1);
     write32(requestBuffer + 0x54, 4);

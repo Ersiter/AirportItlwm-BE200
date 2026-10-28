@@ -447,6 +447,7 @@ private:
     static void wclJoinTimeout(OSObject *, IOTimerEventSource *);
     IOReturn beginWCLScan(apple80211ScanRequest *);
     void clearWCLPMKSA();
+    void clearWCLDerivedCredential();
     IOReturn installWCLKey(apple80211_key *);
     IOReturn accessWCLRSN(apple80211_rsn_ie_data *, bool);
     IOReturn beginWCLJoin(apple80211AssocCandidates *);
@@ -492,6 +493,7 @@ private:
     bool joinPending;
     bool joinDeferred = false;
     AirportWCL::JoinRequest deferredJoin = {};
+    AirportWCL::DerivedCredentialCache wclDerivedCredential = {};
     bool assocNotified;
     bool firstBeaconNotified;
     bool portAuthorized;

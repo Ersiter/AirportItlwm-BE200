@@ -363,6 +363,7 @@ void AirportItlwmSkywalkInterface::stopWCL()
     scanPending = joinPending = false;
     joinDeferred = false;
     explicit_bzero(&deferredJoin, sizeof(deferredJoin));
+    explicit_bzero(&wclDerivedCredential, sizeof(wclDerivedCredential));
     if (fHalService) {
         ieee80211com *ic = fHalService->get80211Controller();
         ic->ic_wcl_join_requested = false;
@@ -449,7 +450,10 @@ IOReturn AirportItlwmSkywalkInterface::wclCommand(OSObject *, void *a0, void *a1
         case 12:
             self->handleWCLEvent(int(uintptr_t(a2)), nullptr);
             return kIOReturnSuccess;
-        case 11: self->clearWCLPMKSA(); return kIOReturnSuccess;
+        case 11:
+            self->clearWCLPMKSA();
+            self->clearWCLDerivedCredential();
+            return kIOReturnSuccess;
         case 8: return self->installWCLKey(static_cast<apple80211_key *>(a2));
         case 9: return self->accessWCLRSN(static_cast<apple80211_rsn_ie_data *>(a2), true);
         case 10: return self->accessWCLRSN(static_cast<apple80211_rsn_ie_data *>(a2), false);
@@ -676,8 +680,6 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
     metadata->capability = node->ni_capinfo;
     metadata->flags = AirportWCL::SSIDPresent | AirportWCL::RSSIValid;
     memcpy(metadata + 1, ies, length);
-    metadata->ieLength = uint32_t(AirportWCL::selectWPA2TransitionMode(
-        reinterpret_cast<uint8_t *>(metadata + 1), length));
     size_t messageSize = sizeof(*metadata) + metadata->ieLength;
     if (assocNotified && IEEE80211_ADDR_EQ(node->ni_bssid, joinBSSID)) {
         wclBssValid = messageSize <= sizeof(wclBssInfo);
@@ -702,6 +704,11 @@ void AirportItlwmSkywalkInterface::clearWCLPMKSA()
         explicit_bzero(pmk, sizeof(*pmk));
         ::free(pmk);
     }
+}
+
+void AirportItlwmSkywalkInterface::clearWCLDerivedCredential()
+{
+    explicit_bzero(&wclDerivedCredential, sizeof(wclDerivedCredential));
 }
 
 IOReturn AirportItlwmSkywalkInterface::setCLEAR_PMKSA_CACHE(void *)
@@ -781,6 +788,15 @@ IOReturn AirportItlwmSkywalkInterface::beginWCLJoin(apple80211AssocCandidates *r
 IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &join)
 {
     auto auth = AirportWCL::classifyLegacyAuth(join);
+    auto credentialKind = auth == AirportWCL::LegacyAuth::Personal ?
+        AirportWCL::DerivedCredentialKind::Personal : AirportWCL::DerivedCredentialKind::SAE;
+    bool derivedCredential = (auth == AirportWCL::LegacyAuth::Personal && join.keyCipher == 10) ||
+        auth == AirportWCL::LegacyAuth::PersonalSAE;
+    bool cachedCredential = derivedCredential && AirportWCL::matchesDerivedCredential(
+        wclDerivedCredential, credentialKind, join.ssid, join.ssidLength,
+        join.key, join.keyLength);
+    if (!cachedCredential)
+        clearWCLDerivedCredential();
     instance->pciNub->setProperty("AirportItlwm-WCLJoinAuthClass",
         auth == AirportWCL::LegacyAuth::Open ? "open" :
         auth == AirportWCL::LegacyAuth::Wep ? "wep" :
@@ -819,6 +835,7 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
     AirportWCL::ChannelBand joinBand = AirportWCL::ChannelBand::GHz2;
     if (!AirportWCL::decodeChannelSpec20(join.channelSpec, joinChannel, joinBand)) {
         instance->pciNub->setProperty("AirportItlwm-WCLJoinExit", "channel");
+        clearWCLDerivedCredential();
         explicit_bzero(&join, sizeof(join));
         return kIOReturnBadArgument;
     }
@@ -841,6 +858,7 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
     }
     if (!mappedJoinChannels) {
         instance->pciNub->setProperty("AirportItlwm-WCLJoinExit", "channel");
+        clearWCLDerivedCredential();
         explicit_bzero(&join, sizeof(join));
         return kIOReturnUnsupported;
     }
@@ -886,16 +904,29 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
         if (error && error != ENETRESET) {
             instance->pciNub->setProperty("AirportItlwm-WCLJoinExit", "rsn-parameters");
             clearWCLSAE(ic);
+            clearWCLDerivedCredential();
             explicit_bzero(&join, sizeof(join));
             return kIOReturnBadArgument;
         }
         if (sae) {
-            if (ieee80211_sae_password_to_pt(ic->ic_sae_pt, join.key,
+            if (cachedCredential) {
+                memcpy(ic->ic_sae_pt, wclDerivedCredential.result, sizeof(ic->ic_sae_pt));
+            } else if (ieee80211_sae_password_to_pt(ic->ic_sae_pt, join.key,
                 join.keyLength, join.ssid, join.ssidLength) != 0) {
                 instance->pciNub->setProperty("AirportItlwm-WCLJoinExit", "sae-pt");
                 clearWCLSAE(ic);
+                clearWCLDerivedCredential();
                 explicit_bzero(&join, sizeof(join));
                 return kIOReturnBadArgument;
+            } else {
+                wclDerivedCredential.valid = 1;
+                wclDerivedCredential.kind = credentialKind;
+                wclDerivedCredential.ssidLength = join.ssidLength;
+                wclDerivedCredential.credentialLength = join.keyLength;
+                wclDerivedCredential.resultLength = sizeof(ic->ic_sae_pt);
+                memcpy(wclDerivedCredential.ssid, join.ssid, join.ssidLength);
+                memcpy(wclDerivedCredential.credential, join.key, join.keyLength);
+                memcpy(wclDerivedCredential.result, ic->ic_sae_pt, sizeof(ic->ic_sae_pt));
             }
             memcpy(ic->ic_sae_password, join.key, join.keyLength);
             ic->ic_sae_password_len = join.keyLength;
@@ -903,12 +934,25 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
         }
         if (personal) {
             if (join.keyCipher == 10) {
-                join.key[join.keyLength] = 0;
-                if (pbkdf2_sha1(reinterpret_cast<const char *>(join.key), join.ssid,
-                        join.ssidLength, 4096, ic->ic_psk, sizeof(ic->ic_psk)) != 0) {
-                    explicit_bzero(ic->ic_psk, sizeof(ic->ic_psk));
-                    explicit_bzero(&join, sizeof(join));
-                    return kIOReturnBadArgument;
+                if (cachedCredential) {
+                    memcpy(ic->ic_psk, wclDerivedCredential.result, sizeof(ic->ic_psk));
+                } else {
+                    join.key[join.keyLength] = 0;
+                    if (pbkdf2_sha1(reinterpret_cast<const char *>(join.key), join.ssid,
+                            join.ssidLength, 4096, ic->ic_psk, sizeof(ic->ic_psk)) != 0) {
+                        explicit_bzero(ic->ic_psk, sizeof(ic->ic_psk));
+                        clearWCLDerivedCredential();
+                        explicit_bzero(&join, sizeof(join));
+                        return kIOReturnBadArgument;
+                    }
+                    wclDerivedCredential.valid = 1;
+                    wclDerivedCredential.kind = credentialKind;
+                    wclDerivedCredential.ssidLength = join.ssidLength;
+                    wclDerivedCredential.credentialLength = join.keyLength;
+                    wclDerivedCredential.resultLength = sizeof(ic->ic_psk);
+                    memcpy(wclDerivedCredential.ssid, join.ssid, join.ssidLength);
+                    memcpy(wclDerivedCredential.credential, join.key, join.keyLength);
+                    memcpy(wclDerivedCredential.result, ic->ic_psk, sizeof(ic->ic_psk));
                 }
             } else {
                 memcpy(ic->ic_psk, join.key, sizeof(ic->ic_psk));
@@ -971,6 +1015,7 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
         ic->ic_wcl_enterprise = false;
         explicit_bzero(ic->ic_psk, sizeof(ic->ic_psk));
         clearWCLSAE(ic);
+        clearWCLDerivedCredential();
         instance->pciNub->setProperty("AirportItlwm-WCLJoinExit", "newstate-error");
         return kIOReturnError;
     }
@@ -1014,6 +1059,7 @@ void AirportItlwmSkywalkInterface::finishWCLJoin(uint16_t status, uint16_t reaso
         purgeWCLUserEapol();
         portAuthorized = false;
         updateWCLLinkQuality(true);
+        clearWCLDerivedCredential();
         ieee80211com *ic = fHalService->get80211Controller();
         ic->ic_wcl_join_requested = false;
         ic->ic_wcl_peer_is_mlo = false;

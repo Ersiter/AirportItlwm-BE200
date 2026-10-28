@@ -64,6 +64,7 @@ enum apple80211_phymode {
     APPLE80211_MODE_TURBO_G            = 2 << (6 - 1),      // 2GHz, OFDM, 2x clock
     APPLE80211_MODE_11AC               = 2 << (7 - 1),
     APPLE80211_MODE_11AX               = 2 << (8 - 1),
+    APPLE80211_MODE_11BE               = 2 << (9 - 1),
 };
 
 enum apple80211_physubmode {

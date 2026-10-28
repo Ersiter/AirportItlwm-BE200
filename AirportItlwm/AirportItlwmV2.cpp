@@ -1141,6 +1141,9 @@ getCARD_CAPABILITIES(OSObject *object,
     // WCL uses this capability together with the BSS HE IE for PHY reporting.
     if (caps & IEEE80211_C_HE)
         cd->capabilities[17] |= 0x80;
+    // Tahoe WCLDeviceConfiguration::isEhtSupported reads byte 17, bit 4.
+    if (ic->ic_eht_cap_valid)
+        cd->capabilities[17] |= 0x10;
     // Native WCL is6GSupported reads capability byte 11, bit 6.
     for (unsigned i = 1; i <= IEEE80211_CHAN_MAX; ++i)
         if (isset(ic->ic_chan_active, i) &&

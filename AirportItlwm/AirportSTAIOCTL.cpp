@@ -828,6 +828,14 @@ getPHY_MODE(OSObject *object,
     
     if (ic->ic_flags & IEEE80211_F_HEON)
         pd->phy_mode |= APPLE80211_MODE_11AX;
+    if (ic->ic_eht_cap_valid)
+        pd->phy_mode |= APPLE80211_MODE_11BE;
+
+    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss &&
+        (ic->ic_bss->ni_flags & IEEE80211_NODE_EHT)) {
+        pd->active_phy_mode = APPLE80211_MODE_11BE;
+        return kIOReturnSuccess;
+    }
     
     switch (fHalService->get80211Controller()->ic_curmode) {
         case IEEE80211_MODE_AUTO:
