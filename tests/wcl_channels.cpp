@@ -70,6 +70,31 @@ int main()
     join.key[4] = 0;
     assert(AirportWCL::classifyLegacyAuth(join) == AirportWCL::LegacyAuth::Invalid);
 
+    const uint8_t transitionRsn[] = {
+        48, 24, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4,
+        2, 0, 0, 0x0f, 0xac, 2, 0, 0x0f, 0xac, 8, 0xc0, 0
+    };
+    memcpy(join.rsn, transitionRsn, sizeof(transitionRsn));
+    join.rsnLength = sizeof(transitionRsn);
+    memcpy(join.key, "password", 8);
+    join.keyLength = 8;
+    join.keyCipher = 10;
+    join.upperAuth = 1u << 3;
+    assert(AirportWCL::classifyLegacyAuth(join) == AirportWCL::LegacyAuth::Personal);
+    join.upperAuth = 1u << 12;
+    assert(AirportWCL::classifyLegacyAuth(join) == AirportWCL::LegacyAuth::PersonalSAE);
+    join.upperAuth |= 1u << 3;
+    assert(AirportWCL::classifyLegacyAuth(join) == AirportWCL::LegacyAuth::Invalid);
+
+    const uint8_t wpa2OnlyRsn[] = {
+        48, 20, 1, 0, 0, 0x0f, 0xac, 4, 1, 0, 0, 0x0f, 0xac, 4,
+        1, 0, 0, 0x0f, 0xac, 2, 0xc0, 0
+    };
+    memcpy(join.rsn, wpa2OnlyRsn, sizeof(wpa2OnlyRsn));
+    join.rsnLength = sizeof(wpa2OnlyRsn);
+    join.upperAuth = 1u << 3;
+    assert(AirportWCL::classifyLegacyAuth(join) == AirportWCL::LegacyAuth::Personal);
+
     AirportWCL::DerivedCredentialCache cached = {};
     cached.valid = 1;
     cached.kind = AirportWCL::DerivedCredentialKind::Personal;
