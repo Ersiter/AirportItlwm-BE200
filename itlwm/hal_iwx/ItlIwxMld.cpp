@@ -750,20 +750,30 @@ iwx_mld_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
         !in->in_ni.ni_port_valid)
         sta_cmd.mfp = htole32(1);
 
-    if (in->in_ni.ni_flags & IEEE80211_NODE_HT) {
+    const int is_6ghz = IEEE80211_IS_CHAN_6GHZ(in->in_ni.ni_chan);
+    if ((in->in_ni.ni_flags & IEEE80211_NODE_HT) ||
+        (is_6ghz && (in->in_ni.ni_flags &
+            (IEEE80211_NODE_HE | IEEE80211_NODE_EHT)))) {
         if (iwx_mimo_enabled(sc) && in->in_ni.ni_rx_nss > 1)
             sta_cmd.mimo = htole32(1);
 
-        mpdu_dens = (in->in_ni.ni_ampdu_param &
-            IEEE80211_AMPDU_PARAM_SS) >> 2;
-
-        if (in->in_ni.ni_flags & IEEE80211_NODE_VHT) {
-            aggsize = (in->in_ni.ni_vhtcaps &
-                IEEE80211_VHTCAP_MAX_A_MPDU_LENGTH_EXPONENT_MASK) >>
-                IEEE80211_VHTCAP_MAX_A_MPDU_LENGTH_EXPONENT_SHIFT;
+        if (is_6ghz) {
+            mpdu_dens = in->in_ni.ni_he_6ghz_capa &
+                IEEE80211_HE_6GHZ_CAP_MIN_MPDU_START;
+            aggsize = (in->in_ni.ni_he_6ghz_capa &
+                IEEE80211_HE_6GHZ_CAP_MAX_AMPDU_LEN_EXP) >> 3;
         } else {
-            aggsize = (in->in_ni.ni_ampdu_param &
-                IEEE80211_AMPDU_PARAM_LE);
+            mpdu_dens = (in->in_ni.ni_ampdu_param &
+                IEEE80211_AMPDU_PARAM_SS) >> 2;
+
+            if (in->in_ni.ni_flags & IEEE80211_NODE_VHT) {
+                aggsize = (in->in_ni.ni_vhtcaps &
+                    IEEE80211_VHTCAP_MAX_A_MPDU_LENGTH_EXPONENT_MASK) >>
+                    IEEE80211_VHTCAP_MAX_A_MPDU_LENGTH_EXPONENT_SHIFT;
+            } else {
+                aggsize = (in->in_ni.ni_ampdu_param &
+                    IEEE80211_AMPDU_PARAM_LE);
+            }
         }
         if (in->in_ni.ni_flags & IEEE80211_NODE_HE)
             aggsize += (in->in_ni.ni_he_cap_elem.mac_cap_info[3] &

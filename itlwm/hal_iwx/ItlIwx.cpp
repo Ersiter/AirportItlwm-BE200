@@ -4383,6 +4383,43 @@ iwx_fw_valid_rx_ant(struct iwx_softc *sc)
     return rx_ant;
 }
 
+// Intel iwl_get_reg_capa / iwl_nvm_get_regdom_bw_flags, MCC response ABI.
+static uint8_t
+iwx_mcc_channel_restrictions(uint32_t cap, uint8_t version, bool is_2ghz)
+{
+    bool allow40, allow80, allow160, allow320 = false;
+    bool disable_he, disable_eht = false;
+    uint8_t restrictions = 0;
+
+    if (version >= 8) {
+        allow40 = true;
+        allow80 = cap & (1U << 4);
+        allow160 = cap & (1U << 3);
+        allow320 = cap & (1U << 16);
+        disable_he = cap & (1U << 13);
+        disable_eht = cap & (1U << 8);
+    } else if (version >= 6) {
+        allow40 = cap & (1U << 8);
+        allow80 = cap & (1U << 4);
+        allow160 = cap & (1U << 3);
+        disable_he = cap & (1U << 10);
+    } else {
+        allow40 = !(cap & (1U << 7));
+        allow80 = cap & (1U << 3);
+        allow160 = cap & (1U << 2);
+        disable_he = cap & (1U << 10);
+    }
+    if (!is_2ghz) {
+        if (!allow40) restrictions |= IEEE80211_CHAN_NO_40MHZ;
+        if (!allow80) restrictions |= IEEE80211_CHAN_NO_80MHZ;
+        if (!allow160) restrictions |= IEEE80211_CHAN_NO_160MHZ;
+        if (!allow320) restrictions |= IEEE80211_CHAN_NO_320MHZ;
+    }
+    if (disable_he) restrictions |= IEEE80211_CHAN_NO_HE;
+    if (disable_eht) restrictions |= IEEE80211_CHAN_NO_EHT;
+    return restrictions;
+}
+
 void ItlIwx::
 iwx_init_channel_map(struct iwx_softc *sc, uint16_t *channel_profile_v3,
 uint32_t *channel_profile_v4, int nchan_profile)
@@ -4421,8 +4458,6 @@ uint32_t *channel_profile_v4, int nchan_profile)
         if (is_5ghz && !data->sku_cap_band_52GHz_enable)
             ch_flags &= ~IWX_NVM_CHANNEL_VALID;
         
-        if (ch_flags & IWX_NVM_CHANNEL_160MHZ)
-            data->vht160_supported = true;
 
         hw_value = nvm_channels[ch_idx];
         channel = &ic->ic_channels[is_6ghz ?
@@ -4431,8 +4466,19 @@ uint32_t *channel_profile_v4, int nchan_profile)
         if (!(ch_flags & IWX_NVM_CHANNEL_VALID)) {
             channel->ic_freq = 0;
             channel->ic_flags = 0;
+            channel->ic_reg_flags = 0;
             continue;
         }
+
+        channel->ic_reg_flags = is_6ghz ? 0 : IEEE80211_CHAN_NO_320MHZ;
+        if (!(ch_flags & IWX_NVM_CHANNEL_40MHZ))
+            channel->ic_reg_flags |= IEEE80211_CHAN_NO_40MHZ;
+        if (!(ch_flags & IWX_NVM_CHANNEL_80MHZ))
+            channel->ic_reg_flags |= IEEE80211_CHAN_NO_80MHZ;
+        if (!(ch_flags & IWX_NVM_CHANNEL_160MHZ))
+            channel->ic_reg_flags |= IEEE80211_CHAN_NO_160MHZ;
+        else
+            data->vht160_supported = true;
 
         if (is_6ghz) {
             flags = IEEE80211_CHAN_6GHZ;
@@ -4456,7 +4502,9 @@ uint32_t *channel_profile_v4, int nchan_profile)
         if (!is_6ghz && data->sku_cap_11n_enable)
             channel->ic_flags |= IEEE80211_CHAN_HT20;
 
-        if (!is_5ghz && (ch_flags & IWX_NVM_CHANNEL_40MHZ)) {
+        if (is_6ghz && (ch_flags & IWX_NVM_CHANNEL_40MHZ)) {
+            channel->ic_flags |= IEEE80211_CHAN_HT40U | IEEE80211_CHAN_HT40D;
+        } else if (!is_5ghz && (ch_flags & IWX_NVM_CHANNEL_40MHZ)) {
             if (hw_value <= IWX_LAST_2GHZ_HT_PLUS) {
                 channel->ic_flags |= IEEE80211_CHAN_HT40U;
             }
@@ -12240,6 +12288,19 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
 
         iwx_init_channel_map(sc, NULL,
             const_cast<uint32_t *>(response.channels), response.n_channels);
+        for (unsigned i = 1; i <= IEEE80211_CHAN_MAX; i++) {
+            auto channel = &ic->ic_channels[i];
+            if (!channel->ic_freq)
+                continue;
+            channel->ic_reg_flags |= iwx_mcc_channel_restrictions(response.cap,
+                parse_version, IEEE80211_IS_CHAN_2GHZ(channel));
+            if (channel->ic_reg_flags & IEEE80211_CHAN_NO_40MHZ)
+                channel->ic_flags &= ~(IEEE80211_CHAN_HT40 | IEEE80211_CHAN_VHT40);
+            if (channel->ic_reg_flags & IEEE80211_CHAN_NO_80MHZ)
+                channel->ic_flags &= ~IEEE80211_CHAN_VHT80;
+            if (channel->ic_reg_flags & IEEE80211_CHAN_NO_160MHZ)
+                channel->ic_flags &= ~IEEE80211_CHAN_VHT160;
+        }
         if (associatedChannel && associatedIndex > 0 &&
             associatedIndex <= IEEE80211_CHAN_MAX)
             disconnect = ic->ic_channels[associatedIndex].ic_flags == 0;

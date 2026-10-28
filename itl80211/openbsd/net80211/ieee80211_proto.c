@@ -823,7 +823,8 @@ ieee80211_vht_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
 int
 ieee80211_he_supported(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
-    if (!(ic->ic_modecaps & (1 << IEEE80211_MODE_11AX)) ||
+    if ((ni->ni_chan->ic_reg_flags & IEEE80211_CHAN_NO_HE) ||
+        !(ic->ic_modecaps & (1 << IEEE80211_MODE_11AX)) ||
         !(ic->ic_flags & IEEE80211_F_HEON) ||
         (ic->ic_userflags & IEEE80211_F_NOVHT) ||
         (ni->ni_flags & (IEEE80211_NODE_HECAP | IEEE80211_NODE_HEOP)) !=
@@ -859,6 +860,16 @@ ieee80211_he_supported(struct ieee80211com *ic, struct ieee80211_node *ni)
 void
 ieee80211_he_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
+    static const uint8_t widths[] = { IEEE80211_CHAN_WIDTH_20,
+        IEEE80211_CHAN_WIDTH_40, IEEE80211_CHAN_WIDTH_80,
+        IEEE80211_CHAN_WIDTH_160 };
+    uint16_t center = ni->ni_chan->ic_center_freq1;
+    unsigned width = 0;
+    int primary = ni->ni_chan->ic_freq;
+    uint8_t local_widths = ic->ic_he_cap_elem.phy_cap_info[0] &
+        ni->ni_he_cap_elem.phy_cap_info[0];
+    uint8_t restrictions = ni->ni_chan->ic_reg_flags;
+
     ni->ni_flags &= ~IEEE80211_NODE_HE;
     ni->ni_he_txrate_kbps = 0;
     ni->ni_he_tx_nss = 0;
@@ -867,124 +878,182 @@ ieee80211_he_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
          !(ni->ni_flags & IEEE80211_NODE_HT)) ||
         !(ni->ni_flags & IEEE80211_NODE_QOS))
         return;
-    uint16_t tx = ieee80211_he_mcs_intersection(le16toh(ic->ic_he_mcs_nss_supp.tx_mcs_80),
-        le16toh(ni->ni_he_mcs_nss_supp.rx_mcs_80));
-    uint16_t rx = ieee80211_he_mcs_intersection(le16toh(ic->ic_he_mcs_nss_supp.rx_mcs_80),
-        le16toh(ni->ni_he_mcs_nss_supp.tx_mcs_80));
-    /* Start conservatively if the selected width has no common HE rates. */
-    uint8_t widths = ic->ic_he_cap_elem.phy_cap_info[0] & ni->ni_he_cap_elem.phy_cap_info[0];
-    bool width_ok = ni->ni_chw == IEEE80211_CHAN_WIDTH_20;
-    if (ni->ni_chw == IEEE80211_CHAN_WIDTH_40)
-        width_ok = widths & (IEEE80211_IS_CHAN_2GHZ(ni->ni_chan) ?
-            IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G :
-            IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G);
-    if (ni->ni_chw == IEEE80211_CHAN_WIDTH_80)
-        width_ok = widths & IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G;
-    if (ni->ni_chw == IEEE80211_CHAN_WIDTH_160) {
-        uint16_t tx160 = ieee80211_he_mcs_intersection(
-            le16toh(ic->ic_he_mcs_nss_supp.tx_mcs_160), le16toh(ni->ni_he_mcs_nss_supp.rx_mcs_160));
-        uint16_t rx160 = ieee80211_he_mcs_intersection(
-            le16toh(ic->ic_he_mcs_nss_supp.rx_mcs_160), le16toh(ni->ni_he_mcs_nss_supp.tx_mcs_160));
-        width_ok = (widths & IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G) &&
-            (tx160 & 3) != 3 && (rx160 & 3) != 3;
+    if (IEEE80211_IS_CHAN_6GHZ(ni->ni_chan)) {
+        const uint8_t *optional = ni->ni_he_optional;
+        const struct ieee80211_he_6ghz_oper *op;
+        if (!(ni->ni_he_oper_params & IEEE80211_HE_OPERATION_6GHZ_OP_INFO))
+            return;
+        if (ni->ni_he_oper_params & IEEE80211_HE_OPERATION_VHT_OPER_INFO)
+            optional += 3;
+        if (ni->ni_he_oper_params & IEEE80211_HE_OPERATION_CO_HOSTED_BSS)
+            optional++;
+        op = (const struct ieee80211_he_6ghz_oper *)optional;
+        if (op->primary != ieee80211_chan2number(ic, ni->ni_chan))
+            return;
+        width = op->control & IEEE80211_HE_6GHZ_OPER_CTRL_CHANWIDTH;
+        uint8_t center_channel = op->ccfs0;
+        if (width == 3) {
+            if (op->ccfs1 && abs(int(op->ccfs1) - int(op->ccfs0)) == 8)
+                center_channel = op->ccfs1;
+            else
+                width = 2; /* Use the primary 80 MHz segment of 80+80. */
+        }
+        center = ieee80211_ieee2mhz(center_channel, IEEE80211_CHAN_6GHZ);
+    } else {
+        for (unsigned i = 0; i < nitems(widths); i++)
+            if (ni->ni_chw == widths[i])
+                width = i;
     }
-    if (!width_ok) {
-        ni->ni_chw = IEEE80211_CHAN_WIDTH_20;
-        ni->ni_chan->ic_center_freq1 = ni->ni_chan->ic_freq;
-        ni->ni_chan->ic_center_freq2 = 0;
+    unsigned original_width = width;
+    int distance = abs(primary - int(center));
+    if ((width == 0 && center != primary) ||
+        (width != 0 && (distance < 10 || distance > int((20U << width) / 2 - 10) ||
+                       (distance - 10) % 20))) {
+        if (IEEE80211_IS_CHAN_6GHZ(ni->ni_chan))
+            return;
+        width = original_width = 0;
+        center = primary;
     }
+    while (width) {
+        bool allowed = false;
+        if (width == 1)
+            allowed = !(restrictions & IEEE80211_CHAN_NO_40MHZ) &&
+                (local_widths & (IEEE80211_IS_CHAN_2GHZ(ni->ni_chan) ?
+                 IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G :
+                 IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G));
+        if (width == 2)
+            allowed = !IEEE80211_IS_CHAN_2GHZ(ni->ni_chan) &&
+                !(restrictions & IEEE80211_CHAN_NO_80MHZ) &&
+                (local_widths & IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G);
+        if (width == 3) {
+            uint16_t tx160 = ieee80211_he_mcs_intersection(
+                le16toh(ic->ic_he_mcs_nss_supp.tx_mcs_160),
+                le16toh(ni->ni_he_mcs_nss_supp.rx_mcs_160));
+            uint16_t rx160 = ieee80211_he_mcs_intersection(
+                le16toh(ic->ic_he_mcs_nss_supp.rx_mcs_160),
+                le16toh(ni->ni_he_mcs_nss_supp.tx_mcs_160));
+            allowed = !IEEE80211_IS_CHAN_2GHZ(ni->ni_chan) &&
+                !(restrictions & IEEE80211_CHAN_NO_160MHZ) &&
+                (local_widths & IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G) &&
+                (tx160 & 3) != 3 && (rx160 & 3) != 3;
+        }
+        if (allowed)
+            break;
+        width--;
+    }
+    if (width < original_width) {
+        int low = center - (20U << original_width) / 2 + 10;
+        unsigned index = (primary - low) / 20;
+        center = low + (index >> width) * (20U << width) + (20U << width) / 2 - 10;
+    }
+    ni->ni_chw = widths[width];
+    ni->ni_chan->ic_center_freq1 = center;
+    ni->ni_chan->ic_center_freq2 = 0;
     ni->ni_flags |= IEEE80211_NODE_HE;
-    XYLog("HE negotiated: width=%s tx80=%04x rx80=%04x color=%u\n",
-        ieee80211_chan_width_name[ni->ni_chw], tx, rx,
+    XYLog("HE negotiated: width=%s center1=%u color=%u\n",
+        ieee80211_chan_width_name[ni->ni_chw], center,
         (ni->ni_he_oper_params >> 24) & 0x3f);
 }
 
 void
 ieee80211_eht_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
-    uint8_t center_channel;
-    uint8_t local_widths, peer_widths;
-    int supported = 0;
+    static const uint8_t widths[] = { IEEE80211_CHAN_WIDTH_20,
+        IEEE80211_CHAN_WIDTH_40, IEEE80211_CHAN_WIDTH_80,
+        IEEE80211_CHAN_WIDTH_160, IEEE80211_CHAN_WIDTH_320 };
+    uint8_t local_widths = ic->ic_he_cap_elem.phy_cap_info[0] &
+        ni->ni_he_cap_elem.phy_cap_info[0];
+    uint8_t restrictions = ni->ni_chan->ic_reg_flags;
+    uint16_t center, puncture = ni->ni_eht_puncture;
+    unsigned width;
+    int primary = ni->ni_chan->ic_freq;
 
     ni->ni_flags &= ~IEEE80211_NODE_EHT;
     ni->ni_eht_center_freq1 = 0;
     if (!ni->ni_eht_requested || !ic->ic_eht_cap_valid ||
+        (restrictions & IEEE80211_CHAN_NO_EHT) ||
         !(ni->ni_flags & IEEE80211_NODE_HE) ||
         (ni->ni_flags & (IEEE80211_NODE_EHTCAP | IEEE80211_NODE_EHTOP)) !=
             (IEEE80211_NODE_EHTCAP | IEEE80211_NODE_EHTOP))
         return;
 
-    local_widths = ic->ic_he_cap_elem.phy_cap_info[0] &
-        ni->ni_he_cap_elem.phy_cap_info[0];
-    peer_widths = ni->ni_eht_oper_width;
-    switch (peer_widths) {
-    case IEEE80211_EHT_OPER_CHAN_WIDTH_20MHZ:
-        ni->ni_chw = IEEE80211_CHAN_WIDTH_20;
-        supported = 1;
-        break;
-    case IEEE80211_EHT_OPER_CHAN_WIDTH_40MHZ:
-        supported = (local_widths &
-            (IEEE80211_IS_CHAN_2GHZ(ni->ni_chan) ?
-             IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G :
-             IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G)) != 0;
-        if (supported)
-            ni->ni_chw = IEEE80211_CHAN_WIDTH_40;
-        break;
-    case IEEE80211_EHT_OPER_CHAN_WIDTH_80MHZ:
-        supported = (local_widths &
-            IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G) != 0;
-        if (supported)
-            ni->ni_chw = IEEE80211_CHAN_WIDTH_80;
-        break;
-    case IEEE80211_EHT_OPER_CHAN_WIDTH_160MHZ: {
-        uint16_t tx160 = ieee80211_he_mcs_intersection(
-            le16toh(ic->ic_he_mcs_nss_supp.tx_mcs_160),
-            le16toh(ni->ni_he_mcs_nss_supp.rx_mcs_160));
-        uint16_t rx160 = ieee80211_he_mcs_intersection(
-            le16toh(ic->ic_he_mcs_nss_supp.rx_mcs_160),
-            le16toh(ni->ni_he_mcs_nss_supp.tx_mcs_160));
-        supported = (local_widths &
-            IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G) &&
-            (tx160 & 3) != 3 && (rx160 & 3) != 3;
-        if (supported)
-            ni->ni_chw = IEEE80211_CHAN_WIDTH_160;
-        break;
-    }
-    case IEEE80211_EHT_OPER_CHAN_WIDTH_320MHZ:
-        supported = IEEE80211_IS_CHAN_6GHZ(ni->ni_chan) &&
-            (ic->ic_eht_cap_elem.phy_cap_info[0] &
-                IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ) &&
-            (ni->ni_eht_cap_elem.phy_cap_info[0] &
-                IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ) &&
-            ((ic->ic_eht_mcs_nss_supp.bw._320.rx_tx_mcs9_max_nss >> 4) & 0x0f) &&
-            (ni->ni_eht_mcs_nss[6] & 0x0f);
-        if (supported)
-            ni->ni_chw = IEEE80211_CHAN_WIDTH_320;
-        break;
-    default:
-        break;
-    }
-    if (!supported)
-        return;
-
-    if (ni->ni_chw == IEEE80211_CHAN_WIDTH_160 ||
-        ni->ni_chw == IEEE80211_CHAN_WIDTH_320) {
-        center_channel = ni->ni_eht_ccfs1;
-        if (center_channel == 0)
+    if (ni->ni_eht_oper[0] & IEEE80211_EHT_OPER_INFO_PRESENT) {
+        width = ni->ni_eht_oper_width;
+        if (width >= nitems(widths))
             return;
+        uint8_t center_channel = width >= 3 ? ni->ni_eht_ccfs1 : ni->ni_eht_ccfs0;
+        if (!center_channel)
+            return;
+        center = ieee80211_ieee2mhz(center_channel, ni->ni_chan->ic_flags &
+            (IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_5GHZ | IEEE80211_CHAN_6GHZ));
     } else {
-        center_channel = ni->ni_eht_ccfs0;
+        /* With no EHT Operation Information, retain the HE channel definition. */
+        for (width = 0; width < nitems(widths); width++)
+            if (ni->ni_chw == widths[width])
+                break;
+        if (width == nitems(widths))
+            return;
+        center = ni->ni_chan->ic_center_freq1;
     }
-    if (center_channel != 0) {
-        u_int flags = ni->ni_chan->ic_flags &
-            (IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_5GHZ |
-             IEEE80211_CHAN_6GHZ);
-        ni->ni_eht_center_freq1 = ieee80211_ieee2mhz(
-            center_channel, flags);
+    unsigned original_width = width;
+    int distance = abs(primary - int(center));
+    if ((width == 0 && center != primary) ||
+        (width != 0 && (distance < 10 || distance > int((20U << width) / 2 - 10) ||
+                       (distance - 10) % 20)))
+        return;
+    unsigned primary_index = (primary - (center - (20U << width) / 2 + 10)) / 20;
+    if ((puncture & ~((1U << (1U << width)) - 1)) ||
+        (puncture & (1U << primary_index)))
+        return;
+    while (width) {
+        bool allowed = false;
+        if (width == 1)
+            allowed = !(restrictions & IEEE80211_CHAN_NO_40MHZ) &&
+                (local_widths & (IEEE80211_IS_CHAN_2GHZ(ni->ni_chan) ?
+                 IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G :
+                 IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G));
+        if (width == 2)
+            allowed = !IEEE80211_IS_CHAN_2GHZ(ni->ni_chan) &&
+                !(restrictions & IEEE80211_CHAN_NO_80MHZ) &&
+                (local_widths & IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G);
+        if (width == 3)
+            allowed = !IEEE80211_IS_CHAN_2GHZ(ni->ni_chan) &&
+                !(restrictions & IEEE80211_CHAN_NO_160MHZ) &&
+                (local_widths & IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G);
+        if (width == 4)
+            allowed = IEEE80211_IS_CHAN_6GHZ(ni->ni_chan) &&
+                !(restrictions & IEEE80211_CHAN_NO_320MHZ) &&
+                (ic->ic_eht_cap_elem.phy_cap_info[0] & IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ) &&
+                (ni->ni_eht_cap_elem.phy_cap_info[0] & IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ);
+        unsigned bw = width > 2 ? width - 2 : 0;
+        unsigned peer_offset = ni->ni_eht_mcs_nss_len == 4 ? 0 : bw * 3;
+        const uint8_t *local = (const uint8_t *)&ic->ic_eht_mcs_nss_supp;
+        if (peer_offset >= ni->ni_eht_mcs_nss_len ||
+            !(ni->ni_eht_mcs_nss[peer_offset] & 0x0f) ||
+            !(ni->ni_eht_mcs_nss[peer_offset] >> 4) ||
+            !(local[bw * 3] & 0x0f) || !(local[bw * 3] >> 4))
+            allowed = false;
+        if (allowed)
+            break;
+        width--;
     }
+    if (width < original_width) {
+        int low = center - (20U << original_width) / 2 + 10;
+        unsigned start_index = (primary_index >> width) << width;
+        center = low + start_index * 20 + (20U << width) / 2 - 10;
+        puncture = (puncture >> start_index) & ((1U << (1U << width)) - 1);
+    }
+    if (width < 2 && puncture)
+        return;
+    if (!(ni->ni_eht_mcs_nss[0] & 0x0f) ||
+        !(ni->ni_eht_mcs_nss[0] >> 4))
+        return;
+    ni->ni_chw = widths[width];
+    ni->ni_eht_center_freq1 = center;
+    ni->ni_eht_puncture = puncture;
     ni->ni_flags |= IEEE80211_NODE_EHT;
-    XYLog("EHT negotiated: width=%s center1=%u\n",
-        ieee80211_chan_width_name[ni->ni_chw], ni->ni_eht_center_freq1);
+    XYLog("EHT negotiated: width=%s center1=%u puncture=%04x\n",
+        ieee80211_chan_width_name[ni->ni_chw], center, puncture);
 }
 
 void
@@ -992,6 +1061,24 @@ ieee80211_sta_set_rx_nss(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
     uint8_t ht_rx_nss = 0, vht_rx_nss = 0, rx_nss;
 
+    if (ni->ni_flags & IEEE80211_NODE_EHT) {
+        unsigned bw = ni->ni_chw == IEEE80211_CHAN_WIDTH_320 ? 2 :
+            (ni->ni_chw == IEEE80211_CHAN_WIDTH_160 ? 1 : 0);
+        const uint8_t *local = (const uint8_t *)&ic->ic_eht_mcs_nss_supp;
+        unsigned groups = ni->ni_eht_mcs_nss_len == 4 ? 4 : 3;
+        ni->ni_rx_nss = 1;
+        for (unsigned group = 0; group < groups; group++) {
+            unsigned peer_offset = groups == 4 ? group : bw * 3 + group;
+            unsigned local_offset = bw * 3 + (groups == 4 && group ? group - 1 : group);
+            if (peer_offset >= ni->ni_eht_mcs_nss_len)
+                break;
+            unsigned nss = min(unsigned(ni->ni_eht_mcs_nss[peer_offset] & 0x0f),
+                unsigned(local[local_offset] >> 4));
+            if (nss > ni->ni_rx_nss)
+                ni->ni_rx_nss = nss;
+        }
+        return;
+    }
     if (ni->ni_flags & IEEE80211_NODE_HE) {
         uint16_t map = ieee80211_he_mcs_intersection(
             le16toh(ni->ni_chw == IEEE80211_CHAN_WIDTH_160 ? ni->ni_he_mcs_nss_supp.rx_mcs_160 : ni->ni_he_mcs_nss_supp.rx_mcs_80),

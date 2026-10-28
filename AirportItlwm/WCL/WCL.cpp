@@ -1597,8 +1597,10 @@ IOReturn AirportItlwmSkywalkInterface::copyWCLChannels(void *data)
         AirportWCL::appendChannel(*info, ieee80211_chan2number(ic, channel), wclChannelBand(channel),
             channel->ic_flags & IEEE80211_CHAN_DFS,
             channel->ic_flags & IEEE80211_CHAN_PASSIVE,
-            IEEE80211_IS_CHAN_HT40(channel) || IEEE80211_IS_CHAN_VHT40(channel),
-            IEEE80211_IS_CHAN_VHT80(channel));
+            !(channel->ic_reg_flags & IEEE80211_CHAN_NO_40MHZ) &&
+                (IEEE80211_IS_CHAN_HT40(channel) || IEEE80211_IS_CHAN_VHT40(channel)),
+            !(channel->ic_reg_flags & IEEE80211_CHAN_NO_80MHZ) &&
+                (IEEE80211_IS_CHAN_VHT80(channel) || IEEE80211_IS_CHAN_6GHZ(channel)));
     }
     apple80211_country_code_data country = {};
     if (instance->getCOUNTRY_CODE(static_cast<OSObject *>(this), &country) == kIOReturnSuccess)

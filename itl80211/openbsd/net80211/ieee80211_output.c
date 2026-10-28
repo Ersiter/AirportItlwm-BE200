@@ -1396,8 +1396,13 @@ ieee80211_add_hecaps(uint8_t *frm, struct ieee80211com *ic,
     struct ieee80211_he_cap_elem he_cap = ic->ic_he_cap_elem;
     if (IEEE80211_IS_CHAN_2GHZ(ni->ni_chan))
         he_cap.phy_cap_info[0] &=
-            ~(IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G |
+            ~(IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G |
+              IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G |
               IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_80PLUS80_MHZ_IN_5G);
+    else
+        he_cap.phy_cap_info[0] &= ~IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G;
+    if (ni->ni_chan->ic_reg_flags & IEEE80211_CHAN_NO_160MHZ)
+        he_cap.phy_cap_info[0] &= ~IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G;
     *frm++ = IEEE80211_ELEMID_EXTENSION;
     frm++;
     *frm++ = IEEE80211_ELEMID_EXT_HE_CAPABILITY;
@@ -1452,9 +1457,15 @@ ieee80211_add_ehtcaps(uint8_t *frm, struct ieee80211com *ic,
     struct ieee80211_eht_cap_elem_fixed eht_cap = ic->ic_eht_cap_elem;
     if (IEEE80211_IS_CHAN_2GHZ(ni->ni_chan))
         he_cap.phy_cap_info[0] &=
-            ~(IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G |
+            ~(IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G |
+              IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G |
               IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_80PLUS80_MHZ_IN_5G);
-    if (!IEEE80211_IS_CHAN_6GHZ(ni->ni_chan))
+    else
+        he_cap.phy_cap_info[0] &= ~IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G;
+    if (ni->ni_chan->ic_reg_flags & IEEE80211_CHAN_NO_160MHZ)
+        he_cap.phy_cap_info[0] &= ~IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G;
+    if (!IEEE80211_IS_CHAN_6GHZ(ni->ni_chan) ||
+        (ni->ni_chan->ic_reg_flags & IEEE80211_CHAN_NO_320MHZ))
         eht_cap.phy_cap_info[0] &= ~IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ;
     uint8_t mcs_len = ieee80211_eht_mcs_nss_size(&he_cap, &eht_cap, 0);
 
@@ -1463,8 +1474,24 @@ ieee80211_add_ehtcaps(uint8_t *frm, struct ieee80211com *ic,
     *frm++ = IEEE80211_ELEMID_EXT_EHT_CAPABILITY;
     memcpy(frm, &eht_cap, sizeof(eht_cap));
     frm += sizeof(eht_cap);
-    memcpy(frm, &ic->ic_eht_mcs_nss_supp, mcs_len);
-    frm += mcs_len;
+    const uint8_t *mcs = (const uint8_t *)&ic->ic_eht_mcs_nss_supp;
+    if (mcs_len == 4) {
+        *frm++ = mcs[0];
+        *frm++ = mcs[0];
+        *frm++ = mcs[1];
+        *frm++ = mcs[2];
+    } else {
+        memcpy(frm, mcs, 3);
+        frm += 3;
+        if (he_cap.phy_cap_info[0] & IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G) {
+            memcpy(frm, mcs + 3, 3);
+            frm += 3;
+        }
+        if (eht_cap.phy_cap_info[0] & IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ) {
+            memcpy(frm, mcs + 6, 3);
+            frm += 3;
+        }
+    }
     start[1] = frm - start - 2;
     return frm;
 }

@@ -281,6 +281,7 @@ enum ieee80211_protmode {
 struct ieee80211_channel {
 	u_int16_t	ic_freq;	/* setting in MHz */
 	u_int32_t	ic_flags;	/* see below */
+    uint8_t ic_reg_flags; /* per-channel bandwidth and PHY restrictions */
     u_int16_t   ic_center_freq1;
     u_int16_t   ic_center_freq2;
 };
@@ -311,6 +312,13 @@ struct ieee80211_channel {
 #define IEEE80211_CHAN_VHT160    0x10000000 /* VHT160 channel */
 #define IEEE80211_CHAN_VHT80_80    0x20000000 /* VHT80+80 channel */
 #define IEEE80211_CHAN_6GHZ    0x40000000 /* 6 GHz spectrum channel */
+
+#define IEEE80211_CHAN_NO_40MHZ  0x01
+#define IEEE80211_CHAN_NO_80MHZ  0x02
+#define IEEE80211_CHAN_NO_160MHZ 0x04
+#define IEEE80211_CHAN_NO_320MHZ 0x08
+#define IEEE80211_CHAN_NO_HE     0x10
+#define IEEE80211_CHAN_NO_EHT    0x20
 
 #define IEEE80211_CHAN_HT40    (IEEE80211_CHAN_HT40U | IEEE80211_CHAN_HT40D)
 #define IEEE80211_CHAN_HT    (IEEE80211_CHAN_HT20 | IEEE80211_CHAN_HT40)

@@ -50,6 +50,7 @@ response_view = declaration(source, "struct iwx_mcc_response_view {")
 parser = function(source, "static int\niwx_parse_mcc_update_response(")
 apply_response = function(source, "static int\niwx_apply_mcc_update_response(")
 version_normalizer = function(source, "static uint8_t\niwx_mcc_response_version_for_parse(")
+restrictions = function(source, "static uint8_t\niwx_mcc_channel_restrictions(")
 lookup_notif = function(source, "uint8_t ItlIwx::\niwx_lookup_notif_ver(")
 fw_cmd_version = declaration(registers, "struct iwx_fw_cmd_version {")
 rx_packet_len = function(registers, "static uint32_t\niwx_rx_packet_len(")
@@ -62,6 +63,9 @@ channel_arrays = "\n".join(
     )
 )
 channel_map = function(source, "void ItlIwx::\niwx_init_channel_map(")
+proto_source = (root / "itl80211/openbsd/net80211/ieee80211_proto.c").read_text(encoding="utf-8")
+he_negotiate = function(proto_source, "void\nieee80211_he_negotiate(")
+eht_negotiate = function(proto_source, "void\nieee80211_eht_negotiate(")
 
 program = r'''
 #include <cstddef>
@@ -71,6 +75,7 @@ program = r'''
 #include <iostream>
 #include <limits>
 #include <vector>
+#include <algorithm>
 #define __packed __attribute__((packed))
 #define nitems(array) (sizeof(array) / sizeof((array)[0]))
 #define IWX_NUM_2GHZ_CHANNELS 14
@@ -101,6 +106,12 @@ program = r'''
 #define IEEE80211_CHAN_VHT160 (1u << 11)
 #define IEEE80211_CHAN_DFS (1u << 12)
 #define IEEE80211_CHAN_6GHZ (1u << 13)
+#define IEEE80211_CHAN_NO_40MHZ (1u << 0)
+#define IEEE80211_CHAN_NO_80MHZ (1u << 1)
+#define IEEE80211_CHAN_NO_160MHZ (1u << 2)
+#define IEEE80211_CHAN_NO_320MHZ (1u << 3)
+#define IEEE80211_CHAN_NO_HE (1u << 4)
+#define IEEE80211_CHAN_NO_EHT (1u << 5)
 #define IEEE80211_IS_CHAN_2GHZ(channel) (((channel)->ic_flags & IEEE80211_CHAN_2GHZ) != 0)
 #define IWX_UCODE_TLV_API_SCAN_EXT_CHAN_VER 58
 #define IWX_UCODE_TLV_API_BAND_IN_RX_DATA 59
@@ -118,7 +129,7 @@ struct iwx_rx_packet {
 } __packed;
 RX_PACKET_LEN
 RX_PAYLOAD_LEN
-struct ieee80211_channel { int ic_freq = 0; uint32_t ic_flags = 0; };
+struct ieee80211_channel { int ic_freq = 0; uint32_t ic_flags = 0; uint8_t ic_reg_flags = 0; };
 struct ieee80211com { ieee80211_channel ic_channels[256]; };
 struct iwx_nvm_data {
     bool sku_cap_band_52GHz_enable = true;
@@ -146,6 +157,7 @@ RESPONSE_VIEW
 ARRAYS
 LOOKUP_NOTIF
 VERSION_NORMALIZER
+RESTRICTIONS
 PARSER
 APPLY_RESPONSE
 CHANNEL_MAP
@@ -299,14 +311,272 @@ static void test_bad_lengths() {
     delete oversized;
 }
 
+static void test_mcc_channel_restrictions() {
+    const uint8_t v4 = iwx_mcc_channel_restrictions((1u << 7) | (1u << 3) | (1u << 2) | (1u << 10), 4, false);
+    require((v4 & (IEEE80211_CHAN_NO_40MHZ | IEEE80211_CHAN_NO_320MHZ | IEEE80211_CHAN_NO_HE)) ==
+            (IEEE80211_CHAN_NO_40MHZ | IEEE80211_CHAN_NO_320MHZ | IEEE80211_CHAN_NO_HE),
+            "v4 legacy width and HE bits decode");
+    require(!(v4 & (IEEE80211_CHAN_NO_80MHZ | IEEE80211_CHAN_NO_160MHZ | IEEE80211_CHAN_NO_EHT)),
+            "v4 width permissions and EHT default decode");
+
+    const uint8_t v6 = iwx_mcc_channel_restrictions((1u << 8) | (1u << 4) | (1u << 3) | (1u << 10), 6, false);
+    require((v6 & (IEEE80211_CHAN_NO_320MHZ | IEEE80211_CHAN_NO_HE)) ==
+            (IEEE80211_CHAN_NO_320MHZ | IEEE80211_CHAN_NO_HE),
+            "v6 wide-channel and HE restrictions decode");
+    require(!(v6 & (IEEE80211_CHAN_NO_40MHZ | IEEE80211_CHAN_NO_80MHZ | IEEE80211_CHAN_NO_160MHZ | IEEE80211_CHAN_NO_EHT)),
+            "v6 width permissions and EHT default decode");
+
+    const uint8_t v8 = iwx_mcc_channel_restrictions((1u << 4) | (1u << 3) | (1u << 16) | (1u << 13) | (1u << 8), 8, false);
+    require((v8 & (IEEE80211_CHAN_NO_HE | IEEE80211_CHAN_NO_EHT)) ==
+            (IEEE80211_CHAN_NO_HE | IEEE80211_CHAN_NO_EHT),
+            "v8 HE and EHT disable bits decode");
+    require(!(v8 & (IEEE80211_CHAN_NO_40MHZ | IEEE80211_CHAN_NO_80MHZ | IEEE80211_CHAN_NO_160MHZ | IEEE80211_CHAN_NO_320MHZ)),
+            "v8 width permissions including 320 MHz decode");
+    require(iwx_mcc_channel_restrictions(0, 8, true) == 0,
+            "2 GHz exempts global width restrictions");
+}
+
+static void test_6ghz_nvm_width_mapping() {
+    iwx_softc sc{};
+    sc.sc_uhb_supported = true;
+    sc.sc_ucode_api[IWX_UCODE_TLV_API_SCAN_EXT_CHAN_VER / 8] |= 1u << (IWX_UCODE_TLV_API_SCAN_EXT_CHAN_VER % 8);
+    sc.sc_ucode_api[IWX_UCODE_TLV_API_BAND_IN_RX_DATA / 8] |= 1u << (IWX_UCODE_TLV_API_BAND_IN_RX_DATA % 8);
+    ItlIwx driver;
+    std::vector<uint32_t> profile(IWX_NUM_CHANNELS);
+    profile[51] = IWX_NVM_CHANNEL_VALID | IWX_NVM_CHANNEL_40MHZ |
+                  IWX_NVM_CHANNEL_80MHZ | IWX_NVM_CHANNEL_160MHZ;
+    driver.iwx_init_channel_map(&sc, nullptr, profile.data(), profile.size());
+    const auto &valid = sc.sc_ic.ic_channels[182];
+    require((valid.ic_flags & (IEEE80211_CHAN_6GHZ | IEEE80211_CHAN_HT40U | IEEE80211_CHAN_HT40D)) ==
+            (IEEE80211_CHAN_6GHZ | IEEE80211_CHAN_HT40U | IEEE80211_CHAN_HT40D),
+            "valid 6 GHz NVM channel enables 40 MHz directions");
+    require(!(valid.ic_reg_flags & (IEEE80211_CHAN_NO_40MHZ | IEEE80211_CHAN_NO_80MHZ | IEEE80211_CHAN_NO_160MHZ | IEEE80211_CHAN_NO_320MHZ)) &&
+            sc.sc_nvm.vht160_supported,
+            "valid 6 GHz NVM widths map without restrictions and enable 160 MHz");
+
+    std::fill(profile.begin(), profile.end(), 0);
+    profile[52] = IWX_NVM_CHANNEL_160MHZ;
+    driver.iwx_init_channel_map(&sc, nullptr, profile.data(), profile.size());
+    require(sc.sc_ic.ic_channels[183].ic_freq == 0 && !sc.sc_nvm.vht160_supported,
+            "invalid 6 GHz NVM channel cannot enable 160 MHz");
+}
+
 int main() {
+    test_mcc_channel_restrictions();
+    test_6ghz_nvm_width_mapping();
     test_v8_response_maps_real_channels();
     test_v4_capability_layout();
     test_v3_layout();
     test_bad_lengths();
     std::cout << "production MCC response/channel-map checks passed\n";
 }
-'''.replace("FW_CMD_VERSION", fw_cmd_version).replace("STRUCTURES", structures).replace("RESPONSE_VIEW", response_view).replace("ARRAYS", channel_arrays).replace("LOOKUP_NOTIF", lookup_notif).replace("VERSION_NORMALIZER", version_normalizer).replace("RX_PACKET_LEN", rx_packet_len).replace("RX_PAYLOAD_LEN", rx_payload_len).replace("PARSER", parser).replace("APPLY_RESPONSE", apply_response).replace("CHANNEL_MAP", channel_map)
+'''.replace("FW_CMD_VERSION", fw_cmd_version).replace("STRUCTURES", structures).replace("RESPONSE_VIEW", response_view).replace("ARRAYS", channel_arrays).replace("LOOKUP_NOTIF", lookup_notif).replace("VERSION_NORMALIZER", version_normalizer).replace("RESTRICTIONS", restrictions).replace("RX_PACKET_LEN", rx_packet_len).replace("RX_PAYLOAD_LEN", rx_payload_len).replace("PARSER", parser).replace("APPLY_RESPONSE", apply_response).replace("CHANNEL_MAP", channel_map)
+
+bandwidth_program = r'''
+#include <cstdint>
+#include <cstdlib>
+#include <iostream>
+#define nitems(array) (sizeof(array) / sizeof((array)[0]))
+#define XYLog(...) do {} while (0)
+#define IEEE80211_CHAN_2GHZ 0x00000001
+#define IEEE80211_CHAN_6GHZ 0x40000000
+#define IEEE80211_CHAN_NO_40MHZ 0x01
+#define IEEE80211_CHAN_NO_80MHZ 0x02
+#define IEEE80211_CHAN_NO_160MHZ 0x04
+#define IEEE80211_CHAN_NO_320MHZ 0x08
+#define IEEE80211_CHAN_NO_HE 0x10
+#define IEEE80211_CHAN_NO_EHT 0x20
+#define IEEE80211_CHAN_WIDTH_20 0
+#define IEEE80211_CHAN_WIDTH_40 1
+#define IEEE80211_CHAN_WIDTH_80 2
+#define IEEE80211_CHAN_WIDTH_160 3
+#define IEEE80211_CHAN_WIDTH_320 4
+#define IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_IN_2G 0x02
+#define IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_40MHZ_80MHZ_IN_5G 0x04
+#define IEEE80211_HE_PHY_CAP0_CHANNEL_WIDTH_SET_160MHZ_IN_5G 0x08
+#define IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ 0x02
+#define IEEE80211_HE_OPERATION_TWT_REQUIRED 0x00000008
+#define IEEE80211_HE_OPERATION_VHT_OPER_INFO 0x00004000
+#define IEEE80211_HE_OPERATION_CO_HOSTED_BSS 0x00008000
+#define IEEE80211_HE_OPERATION_6GHZ_OP_INFO 0x00020000
+#define IEEE80211_HE_6GHZ_OPER_CTRL_CHANWIDTH 0x03
+#define IEEE80211_EHT_OPER_INFO_PRESENT 0x01
+#define IEEE80211_NODE_QOS 0x0002
+#define IEEE80211_NODE_HT 0x0400
+#define IEEE80211_NODE_HE 0x200000
+#define IEEE80211_NODE_HECAP 0x400000
+#define IEEE80211_NODE_HEOP 0x800000
+#define IEEE80211_NODE_EHTCAP 0x4000000
+#define IEEE80211_NODE_EHTOP 0x8000000
+#define IEEE80211_NODE_EHT 0x10000000
+#define IEEE80211_IS_CHAN_2GHZ(channel) (((channel)->ic_flags & IEEE80211_CHAN_2GHZ) != 0)
+#define IEEE80211_IS_CHAN_6GHZ(channel) (((channel)->ic_flags & IEEE80211_CHAN_6GHZ) != 0)
+#define abs(value) std::abs(value)
+static uint16_t le16toh(uint16_t value) { return value; }
+static const char *ieee80211_chan_width_name[] = {"20", "40", "80", "160", "320"};
+struct ieee80211_channel { int ic_freq = 0; uint32_t ic_flags = 0; uint8_t ic_reg_flags = 0; uint16_t ic_center_freq1 = 0, ic_center_freq2 = 0; };
+struct ieee80211_he_cap_elem { uint8_t phy_cap_info[11]{}; };
+struct ieee80211_he_mcs_nss_supp { uint16_t tx_mcs_160 = 0, rx_mcs_160 = 0; };
+struct ieee80211_eht_cap_elem { uint8_t phy_cap_info[9]{}; };
+struct ieee80211_eht_mcs_nss_supp { uint8_t data[9]{}; };
+struct ieee80211_he_6ghz_oper { uint8_t primary, control, ccfs0, ccfs1; };
+struct ieee80211_node {
+    ieee80211_channel *ni_chan = nullptr;
+    uint32_t ni_flags = 0, ni_he_oper_params = 0;
+    uint8_t ni_he_optional[8]{}, ni_eht_oper[8]{}, ni_eht_oper_width = 0;
+    uint8_t ni_eht_ccfs0 = 0, ni_eht_ccfs1 = 0, ni_eht_mcs_nss_len = 0;
+    uint8_t ni_eht_mcs_nss[9]{}, ni_chw = IEEE80211_CHAN_WIDTH_20;
+    uint16_t ni_eht_center_freq1 = 0, ni_eht_puncture = 0;
+    uint32_t ni_he_txrate_kbps = 0, ni_he_tx_nss = 0;
+    bool ni_he_requested = false, ni_eht_requested = false, he_cap_valid = false;
+    ieee80211_he_cap_elem ni_he_cap_elem{};
+    ieee80211_he_mcs_nss_supp ni_he_mcs_nss_supp{};
+    ieee80211_eht_cap_elem ni_eht_cap_elem{};
+};
+struct ieee80211com {
+    ieee80211_he_cap_elem ic_he_cap_elem{};
+    ieee80211_he_mcs_nss_supp ic_he_mcs_nss_supp{};
+    bool ic_eht_cap_valid = false;
+    ieee80211_eht_cap_elem ic_eht_cap_elem{};
+    ieee80211_eht_mcs_nss_supp ic_eht_mcs_nss_supp{};
+};
+static int ieee80211_he_supported(ieee80211com *, ieee80211_node *ni) {
+    return ni->he_cap_valid && !(ni->ni_chan->ic_reg_flags & IEEE80211_CHAN_NO_HE);
+}
+static uint16_t ieee80211_he_mcs_intersection(uint16_t, uint16_t) { return 0; }
+static int ieee80211_chan2number(ieee80211com *, ieee80211_channel *channel) {
+    return (channel->ic_freq - 5950) / 5;
+}
+static int ieee80211_ieee2mhz(int channel, int band) {
+    return channel * 5 + ((band & IEEE80211_CHAN_6GHZ) ? 5950 : 0);
+}
+HE_NEGOTIATION
+EHT_NEGOTIATION
+static void require(bool ok, const char *message) {
+    if (!ok) { std::cerr << "FAIL: " << message << "\n"; std::exit(1); }
+}
+static void setup_6ghz(ieee80211com &ic, ieee80211_node &ni, ieee80211_channel &channel) {
+    channel.ic_freq = 5975;
+    channel.ic_flags = IEEE80211_CHAN_6GHZ;
+    ni.ni_chan = &channel;
+    ni.ni_flags = IEEE80211_NODE_QOS | IEEE80211_NODE_HECAP | IEEE80211_NODE_HEOP |
+                  IEEE80211_NODE_EHTCAP | IEEE80211_NODE_EHTOP;
+    ni.ni_he_requested = true;
+    ni.ni_eht_requested = true;
+    ni.he_cap_valid = true;
+    ni.ni_he_cap_elem.phy_cap_info[0] = 0x0c;
+    ic.ic_he_cap_elem.phy_cap_info[0] = 0x0c;
+    ni.ni_he_oper_params = IEEE80211_HE_OPERATION_6GHZ_OP_INFO;
+    ni.ni_he_optional[0] = 5;
+    ni.ni_he_optional[1] = 3;
+    ni.ni_he_optional[2] = 7;
+    ni.ni_he_optional[3] = 15;
+    ic.ic_eht_cap_valid = true;
+    ni.ni_eht_cap_elem.phy_cap_info[0] = IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ;
+    ic.ic_eht_cap_elem.phy_cap_info[0] = IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ;
+    ni.ni_eht_mcs_nss_len = sizeof(ni.ni_eht_mcs_nss);
+    for (unsigned i = 0; i < 9; i += 3) {
+        ni.ni_eht_mcs_nss[i] = 0x11;
+        ic.ic_eht_mcs_nss_supp.data[i] = 0x11;
+    }
+}
+static void set_eht_320(ieee80211_node &ni) {
+    ni.ni_eht_oper[0] = IEEE80211_EHT_OPER_INFO_PRESENT;
+    ni.ni_eht_oper_width = 4;
+    ni.ni_eht_ccfs0 = 15;
+    ni.ni_eht_ccfs1 = 31;
+}
+static void test_he_160_and_no160_fallback() {
+    ieee80211com ic{}; ieee80211_node ni{}; ieee80211_channel channel{};
+    setup_6ghz(ic, ni, channel);
+    ieee80211_he_negotiate(&ic, &ni);
+    require((ni.ni_flags & IEEE80211_NODE_HE) && ni.ni_chw == IEEE80211_CHAN_WIDTH_160 &&
+            channel.ic_center_freq1 == 6025, "HE 6 GHz 160 MHz operation center");
+
+    ieee80211com no160_ic{}; ieee80211_node no160_ni{}; ieee80211_channel no160_channel{};
+    setup_6ghz(no160_ic, no160_ni, no160_channel);
+    no160_ni.ni_chan->ic_reg_flags = IEEE80211_CHAN_NO_160MHZ;
+    ieee80211_he_negotiate(&no160_ic, &no160_ni);
+    require((no160_ni.ni_flags & IEEE80211_NODE_HE) &&
+            no160_ni.ni_chw == IEEE80211_CHAN_WIDTH_80 && no160_channel.ic_center_freq1 == 5985,
+            "NO160 falls back to HE 80 MHz center");
+}
+static void test_eht_320_no320_and_he_fallback() {
+    ieee80211com ic{}; ieee80211_node ni{}; ieee80211_channel channel{};
+    setup_6ghz(ic, ni, channel);
+    ni.ni_he_optional[1] = 2; ni.ni_he_optional[2] = 7;
+    ieee80211_he_negotiate(&ic, &ni);
+    set_eht_320(ni);
+    ieee80211_eht_negotiate(&ic, &ni);
+    require((ni.ni_flags & IEEE80211_NODE_EHT) && ni.ni_chw == IEEE80211_CHAN_WIDTH_320 &&
+            ni.ni_eht_center_freq1 == 6105, "EHT operation selects 320 MHz center");
+
+    ieee80211com limited_ic{}; ieee80211_node limited_ni{}; ieee80211_channel limited_channel{};
+    setup_6ghz(limited_ic, limited_ni, limited_channel);
+    limited_ni.ni_he_optional[1] = 2; limited_ni.ni_he_optional[2] = 7;
+    limited_channel.ic_reg_flags = IEEE80211_CHAN_NO_320MHZ;
+    ieee80211_he_negotiate(&limited_ic, &limited_ni);
+    set_eht_320(limited_ni);
+    ieee80211_eht_negotiate(&limited_ic, &limited_ni);
+    require((limited_ni.ni_flags & IEEE80211_NODE_EHT) &&
+            limited_ni.ni_chw == IEEE80211_CHAN_WIDTH_160 && limited_ni.ni_eht_center_freq1 == 6025,
+            "NO320 falls back to EHT 160 MHz center");
+}
+static void test_eht_no_info_and_invalid_centers() {
+    ieee80211com ic{}; ieee80211_node ni{}; ieee80211_channel channel{};
+    setup_6ghz(ic, ni, channel);
+    ni.ni_he_optional[1] = 2; ni.ni_he_optional[2] = 7;
+    ieee80211_he_negotiate(&ic, &ni);
+    ni.ni_eht_oper[0] = 0;
+    ieee80211_eht_negotiate(&ic, &ni);
+    require((ni.ni_flags & IEEE80211_NODE_EHT) && ni.ni_chw == IEEE80211_CHAN_WIDTH_80 &&
+            ni.ni_eht_center_freq1 == 5985, "EHT without operation info retains HE 80 MHz");
+
+    ieee80211com bad_ic{}; ieee80211_node bad_ni{}; ieee80211_channel bad_channel{};
+    setup_6ghz(bad_ic, bad_ni, bad_channel);
+    bad_ni.ni_he_optional[1] = 2; bad_ni.ni_he_optional[2] = 7;
+    ieee80211_he_negotiate(&bad_ic, &bad_ni);
+    set_eht_320(bad_ni); bad_ni.ni_eht_ccfs1 = 29;
+    ieee80211_eht_negotiate(&bad_ic, &bad_ni);
+    require(!(bad_ni.ni_flags & IEEE80211_NODE_EHT) && bad_ni.ni_chw == IEEE80211_CHAN_WIDTH_80 &&
+            bad_channel.ic_center_freq1 == 5985, "invalid EHT center leaves negotiated HE width intact");
+}
+static void test_eht_primary_puncture_and_phy_restrictions() {
+    ieee80211com puncture_ic{}; ieee80211_node puncture_ni{}; ieee80211_channel puncture_channel{};
+    setup_6ghz(puncture_ic, puncture_ni, puncture_channel);
+    puncture_ni.ni_he_optional[1] = 2; puncture_ni.ni_he_optional[2] = 7;
+    ieee80211_he_negotiate(&puncture_ic, &puncture_ni);
+    set_eht_320(puncture_ni); puncture_ni.ni_eht_puncture = 1u << 1;
+    ieee80211_eht_negotiate(&puncture_ic, &puncture_ni);
+    require(!(puncture_ni.ni_flags & IEEE80211_NODE_EHT) &&
+            puncture_ni.ni_chw == IEEE80211_CHAN_WIDTH_80, "primary 20 MHz puncture rejects EHT");
+
+    ieee80211com nohe_ic{}; ieee80211_node nohe_ni{}; ieee80211_channel nohe_channel{};
+    setup_6ghz(nohe_ic, nohe_ni, nohe_channel);
+    nohe_channel.ic_reg_flags = IEEE80211_CHAN_NO_HE;
+    ieee80211_he_negotiate(&nohe_ic, &nohe_ni);
+    ieee80211_eht_negotiate(&nohe_ic, &nohe_ni);
+    require(!(nohe_ni.ni_flags & (IEEE80211_NODE_HE | IEEE80211_NODE_EHT)),
+            "NO_HE prevents HE and EHT negotiation");
+
+    ieee80211com noeht_ic{}; ieee80211_node noeht_ni{}; ieee80211_channel noeht_channel{};
+    setup_6ghz(noeht_ic, noeht_ni, noeht_channel);
+    noeht_ni.ni_he_optional[1] = 2; noeht_ni.ni_he_optional[2] = 7;
+    noeht_channel.ic_reg_flags = IEEE80211_CHAN_NO_EHT;
+    ieee80211_he_negotiate(&noeht_ic, &noeht_ni);
+    set_eht_320(noeht_ni);
+    ieee80211_eht_negotiate(&noeht_ic, &noeht_ni);
+    require((noeht_ni.ni_flags & IEEE80211_NODE_HE) && !(noeht_ni.ni_flags & IEEE80211_NODE_EHT),
+            "NO_EHT retains HE and prevents EHT negotiation");
+}
+int main() {
+    test_he_160_and_no160_fallback();
+    test_eht_320_no320_and_he_fallback();
+    test_eht_no_info_and_invalid_centers();
+    test_eht_primary_puncture_and_phy_restrictions();
+    std::cout << "production HE/EHT bandwidth checks passed\n";
+}
+'''.replace("HE_NEGOTIATION", he_negotiate).replace("EHT_NEGOTIATION", eht_negotiate)
 
 with tempfile.TemporaryDirectory(prefix="itlwm-mcc-response-") as folder:
     folder = Path(folder)
@@ -317,3 +587,12 @@ with tempfile.TemporaryDirectory(prefix="itlwm-mcc-response-") as folder:
         "-std=c++14", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror", str(test), "-o", str(binary)
     ], check=True)
     subprocess.run([str(binary)], check=True)
+
+    bandwidth_test = folder / "he_eht_bandwidth.cpp"
+    bandwidth_test.write_text(bandwidth_program)
+    bandwidth_binary = folder / "he_eht_bandwidth"
+    subprocess.run(shlex.split(os.environ.get("CXX", "c++")) + [
+        "-std=c++14", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror",
+        str(bandwidth_test), "-o", str(bandwidth_binary)
+    ], check=True)
+    subprocess.run([str(bandwidth_binary)], check=True)
