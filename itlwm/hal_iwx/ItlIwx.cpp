@@ -3970,6 +3970,10 @@ int ItlIwx::
 iwx_tvqm_alloc_txq(struct iwx_softc *sc, int tid, int ssn)
 {
     int queue, generation = sc->sc_generation;
+    if (sc->sc_use_mld_api &&
+        sc->sc_tid_data[tid].qid != IWX_INVALID_QUEUE)
+        return sc->sc_tid_data[tid].qid;
+
     //TODO: Here is a bug, for gen3 devices which support 256 frame aggregate into 1 A-MPDU like ax210, if the TfDs count larger than 256 than it would trigger system freeze on macOS, don't know why but Linux can do this. Still need to dig deep into the code or optimize the DMA memory allocation, here I just limit the size to 256 as the temporary solution.
 #ifdef notyet
     int size = sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210 ? IWX_MIN_256_BA_QUEUE_SIZE_GEN3 : IWX_DEFAULT_QUEUE_SIZE;
@@ -5380,7 +5384,8 @@ iwx_ampdu_tx_stop(struct ieee80211com *ic, struct ieee80211_node *ni, uint8_t ti
         return;
     }
 
-    sc->sc_tid_data[tid].qid = IWX_INVALID_QUEUE;
+    if (!sc->sc_use_mld_api)
+        sc->sc_tid_data[tid].qid = IWX_INVALID_QUEUE;
     ic->ic_stats.is_ht_tx_ba_agreements--;
 }
 
@@ -14021,7 +14026,7 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                 
                 baid_data = &sc->sc_rxba_data[baid];
                 
-                if (!baid_data) {
+                if (baid_data->baid != baid) {
                     DPRINTFN(1, ("Got valid BAID %d but not allocated, invalid BAR release!\n",
                      baid));
                     break;

@@ -1160,12 +1160,19 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
         for (int tid = 0; tid <= IWX_MGMT_TID; tid++) {
             if (!(sc->sc_mld_txq_tidmask & (1U << tid)))
                 continue;
-            err = iwx_mld_queue_cmd(sc, sc->sc_mld_sta_mask, tid, 1, 0, 0, 0, NULL, NULL);
+            err = iwx_mld_queue_cmd(sc, sc->sc_mld_active_sta_mask, tid, 1, 0, 0, 0, NULL, NULL);
             if (err) {
                 iwx_mld_record_state_failure(sc, "deauth", "station-queue-remove",
                     err, IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
                         IWX_MLD_SCD_QUEUE_CONFIG_CMD), tid);
                 return err;
+            }
+            if (tid < IWX_MAX_TID_COUNT) {
+                const uint16_t qid = sc->sc_tid_data[tid].qid;
+                if (qid != IWX_INVALID_QUEUE && qid < nitems(sc->txq)) {
+                    iwx_free_tx_ring(sc, &sc->txq[qid]);
+                    sc->sc_tid_data[tid].qid = IWX_INVALID_QUEUE;
+                }
             }
         }
         for (int i = 0; i < IEEE80211_GROUP_NKID; i++) {
