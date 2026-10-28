@@ -28,6 +28,17 @@ inline uint16_t channelSpec20(unsigned channel, ChannelBand band) {
     return validChannel(channel, band) ? uint16_t(channel | 0x1000 | uint16_t(band)) : 0;
 }
 
+inline bool decodeChannelSpec20(uint16_t spec, unsigned &channel, ChannelBand &band) {
+    uint16_t bandBits = spec & 0xc000;
+    band = bandBits == 0xc000 ? ChannelBand::GHz5 :
+        bandBits == 0x4000 ? ChannelBand::GHz6 : ChannelBand::GHz2;
+    unsigned number = spec & 0xff;
+    if (channelSpec20(number, band) != spec)
+        return false;
+    channel = number;
+    return true;
+}
+
 enum class MacUpdate { Invalid, Unchanged, Busy, Change };
 inline MacUpdate planMacUpdate(const uint8_t *current, const uint8_t *requested,
                                size_t length, bool initializing) {

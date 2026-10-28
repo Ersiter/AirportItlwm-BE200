@@ -569,7 +569,7 @@ IOReturn AirportItlwmSkywalkInterface::beginWCLScan(apple80211ScanRequest *reque
             instance->pciNub->setProperty("AirportItlwm-WCLScanExit", "bgscan-unavailable");
             return kIOReturnBusy;
         }
-    } else if (ic->ic_state != IEEE80211_S_SCAN) {
+    } else {
         int error = ic->ic_newstate(ic, IEEE80211_S_SCAN, -1);
         if (error) {
             scanPending = false;
@@ -814,6 +814,35 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
         explicit_bzero(&join, sizeof(join));
         return !supported ? kIOReturnUnsupported : kIOReturnBusy;
     }
+    unsigned joinChannel = 0;
+    AirportWCL::ChannelBand joinBand = AirportWCL::ChannelBand::GHz2;
+    if (!AirportWCL::decodeChannelSpec20(join.channelSpec, joinChannel, joinBand)) {
+        instance->pciNub->setProperty("AirportItlwm-WCLJoinExit", "channel");
+        explicit_bzero(&join, sizeof(join));
+        return kIOReturnBadArgument;
+    }
+    uint8_t joinChannels[sizeof(ic->ic_wcl_scan_channels)] = {};
+    unsigned mappedJoinChannels = 0;
+    for (unsigned index = 1; index <= IEEE80211_CHAN_MAX; ++index) {
+        const auto channel = &ic->ic_channels[index];
+        if (!channel->ic_freq || !isset(ic->ic_chan_active, index))
+            continue;
+        if (!IEEE80211_IS_CHAN_6GHZ(channel) && !IEEE80211_IS_CHAN_5GHZ(channel) &&
+            !IEEE80211_IS_CHAN_2GHZ(channel))
+            continue;
+        auto band = IEEE80211_IS_CHAN_6GHZ(channel) ? AirportWCL::ChannelBand::GHz6 :
+            IEEE80211_IS_CHAN_5GHZ(channel) ? AirportWCL::ChannelBand::GHz5 :
+            AirportWCL::ChannelBand::GHz2;
+        if (band != joinBand || ieee80211_chan2number(ic, channel) != joinChannel)
+            continue;
+        setbit(joinChannels, index);
+        ++mappedJoinChannels;
+    }
+    if (!mappedJoinChannels) {
+        instance->pciNub->setProperty("AirportItlwm-WCLJoinExit", "channel");
+        explicit_bzero(&join, sizeof(join));
+        return kIOReturnUnsupported;
+    }
     if (ic->ic_state == IEEE80211_S_RUN || ic->ic_state == IEEE80211_S_AUTH || ic->ic_state == IEEE80211_S_ASSOC)
         leaveWCLNetwork();
     ieee80211_disable_rsn(ic);
@@ -906,6 +935,8 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
         memcpy(ic->ic_wcl_peer_mld_addr, join.peerMldAddress, sizeof(ic->ic_wcl_peer_mld_addr));
     else
         bzero(ic->ic_wcl_peer_mld_addr, sizeof(ic->ic_wcl_peer_mld_addr));
+    ic->ic_wcl_scan_restricted = true;
+    memcpy(ic->ic_wcl_scan_channels, joinChannels, sizeof(joinChannels));
     ic->ic_wcl_join_requested = true;
     ic->ic_wcl_scan_requested = false;
     current_authtype_lower = join.lowerAuth;
@@ -919,7 +950,7 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
     disassocIsVoluntary = false;
     joinTimer->setTimeoutMS(30000);
     wclJoinTimeoutMS = 30000;
-    if (ic->ic_state != IEEE80211_S_SCAN && ic->ic_newstate(ic, IEEE80211_S_SCAN, -1)) {
+    if (ic->ic_newstate(ic, IEEE80211_S_SCAN, -1)) {
         joinPending = false;
         joinTimer->cancelTimeout();
         ic->ic_wcl_join_requested = false;

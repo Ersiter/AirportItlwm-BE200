@@ -154,7 +154,8 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
             continue;
 #ifdef AIRPORT_WCL
         if (!AirportWCL::scanChannelSelected(ic->ic_wcl_scan_channels,
-                ic->ic_wcl_scan_requested && ic->ic_wcl_scan_restricted,
+                ic->ic_wcl_scan_restricted && (ic->ic_wcl_scan_requested ||
+                    (ic->ic_wcl_join_requested && !bgscan)),
                 ieee80211_chan2ieee(ic, c)))
             continue;
 #endif

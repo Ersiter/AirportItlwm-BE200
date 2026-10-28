@@ -755,6 +755,7 @@ struct iwx_softc {
 	uint8_t sc_scan_batch_pending;
 	uint8_t sc_scan_bgscan;
 	uint8_t sc_scan_wcl_owned;
+	uint8_t sc_scan_wcl_join;
 
 	uint32_t sc_fh_init_mask;
 	uint32_t sc_hw_init_mask;

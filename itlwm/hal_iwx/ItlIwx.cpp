@@ -146,6 +146,7 @@ iwx_scan_state_reset(struct iwx_softc *sc)
     sc->sc_scan_batch_pending = 0;
     sc->sc_scan_bgscan = 0;
     sc->sc_scan_wcl_owned = 0;
+    sc->sc_scan_wcl_join = 0;
 }
 
 struct iwx_deferred_eapol {
@@ -5706,6 +5707,23 @@ iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
         return ENOTSUP;
     }
 
+    if (sc->sc_device_family >= IWX_DEVICE_FAMILY_BZ) {
+        struct ieee80211com *ic = &sc->sc_ic;
+        int sec_key_ver = iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP,
+            IWX_MLD_SEC_KEY_CMD);
+        // Firmware command versions are available only after the ALIVE load.
+        ic->ic_mld_gmac = sc->sc_use_mld_api && sec_key_ver == 1;
+        ic->ic_beacon_prot = ic->ic_mld_gmac &&
+            isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_BIGTK_SUPPORT);
+        if (ic->ic_mld_gmac)
+            ic->ic_caps |= IEEE80211_C_MFP;
+        else
+            ic->ic_caps &= ~IEEE80211_C_MFP;
+        sc->sc_pcitag->setProperty("AirportItlwm-MLDKeyCommandVersion", sec_key_ver, 32);
+        sc->sc_pcitag->setProperty("AirportItlwm-MFPCapable",
+            (ic->ic_caps & IEEE80211_C_MFP) != 0, 32);
+    }
+
     /*
      * Send init config command to mark that we are sending NVM
      * access commands
@@ -8551,7 +8569,8 @@ iwx_umac_scan_fill_channels(struct iwx_softc *sc,
             continue;
 #ifdef AIRPORT_WCL
         if (!AirportWCL::scanChannelSelected(ic->ic_wcl_scan_channels,
-                ic->ic_wcl_scan_requested && ic->ic_wcl_scan_restricted,
+                ic->ic_wcl_scan_restricted && (ic->ic_wcl_scan_requested ||
+                    (ic->ic_wcl_join_requested && !bgscan)),
                 ieee80211_chan2ieee(ic, c)))
             continue;
 #endif
@@ -8939,7 +8958,10 @@ iwx_umac_scan(struct iwx_softc *sc, int bgscan)
             sc->sc_scan_next_channel = 1;
             sc->sc_scan_bgscan = bgscan;
 #ifdef AIRPORT_WCL
-            sc->sc_scan_wcl_owned = sc->sc_ic.ic_wcl_scan_requested;
+            sc->sc_scan_wcl_owned = sc->sc_ic.ic_wcl_scan_requested ||
+                (sc->sc_ic.ic_wcl_join_requested && !bgscan);
+            sc->sc_scan_wcl_join = sc->sc_ic.ic_wcl_join_requested && !bgscan &&
+                !sc->sc_ic.ic_wcl_scan_requested;
 #endif
         }
         int err = iwx_umac_scan_v17(sc, bgscan);
@@ -8949,6 +8971,12 @@ iwx_umac_scan(struct iwx_softc *sc, int bgscan)
         }
         return 0;
     }
+#ifdef AIRPORT_WCL
+    sc->sc_scan_wcl_owned = sc->sc_ic.ic_wcl_scan_requested ||
+        (sc->sc_ic.ic_wcl_join_requested && !bgscan);
+    sc->sc_scan_wcl_join = sc->sc_ic.ic_wcl_join_requested && !bgscan &&
+        !sc->sc_ic.ic_wcl_scan_requested;
+#endif
     XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
     int scanSSIDLength = ic->ic_des_esslen;
@@ -9400,7 +9428,8 @@ iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
     sc->sc_pcitag->setProperty("AirportItlwm-HWScanChannels", (uint32_t)cp->count, 32);
     sc->sc_pcitag->setProperty("AirportItlwm-HWScanPassive", scanActive ? 0 : 1, 32);
     sc->sc_pcitag->setProperty("AirportItlwm-HWScanRestricted",
-                               ic->ic_wcl_scan_requested && ic->ic_wcl_scan_restricted ? 1 : 0, 32);
+        ic->ic_wcl_scan_restricted && (ic->ic_wcl_scan_requested ||
+            (ic->ic_wcl_join_requested && !bgscan)) ? 1 : 0, 32);
     {
         bool extended = isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_SCAN_EXT_CHAN_VER);
         const struct iwx_scan_channel_cfg_umac *cfg =
@@ -11354,12 +11383,20 @@ iwx_newstate_task(void *psc)
     if (ostate == IEEE80211_S_SCAN) {
         if (nstate == ostate) {
             if (sc->sc_flags & IWX_FLAG_SCANNING) {
-                //                refcnt_rele_wake(&sc->task_refs);
-                splx(s);
-                return;
+#ifdef AIRPORT_WCL
+                if (ic->ic_wcl_join_requested && !ic->ic_wcl_scan_requested &&
+                    !sc->sc_scan_wcl_join) {
+                    err = that->iwx_scan_abort(sc);
+                    if (err)
+                        goto out;
+                } else
+#endif
+                {
+                    //                refcnt_rele_wake(&sc->task_refs);
+                    splx(s);
+                    return;
+                }
             }
-            /* Firmware is no longer scanning. Do another scan. */
-            goto next_scan;
         }
     }
     
@@ -11408,7 +11445,6 @@ iwx_newstate_task(void *psc)
             break;
             
         case IEEE80211_S_SCAN:
-        next_scan:
             if (initial_scan) {
                 sc->sc_pcitag->setProperty("AirportItlwm-InitInitialScanFunction", "iwx_scan");
                 sc->sc_pcitag->setProperty("AirportItlwm-InitInitialScanError", UINT32_MAX, 32);
@@ -11688,7 +11724,9 @@ iwx_scan_task(void *psc)
         goto out;
 
 #ifdef AIRPORT_WCL
-    if (sc->sc_scan_wcl_owned && !ic->ic_wcl_scan_requested) {
+    if (sc->sc_scan_wcl_owned &&
+        (sc->sc_scan_wcl_join ? !ic->ic_wcl_join_requested :
+                                !ic->ic_wcl_scan_requested)) {
         that->iwx_scan_abort(sc);
         goto out;
     }
@@ -11736,7 +11774,9 @@ iwx_endscan(struct iwx_softc *sc, uint8_t status, bool allowContinuation)
         sc->sc_scan_batch_pending = 0;
         bool wclRequestActive = true;
 #ifdef AIRPORT_WCL
-        wclRequestActive = !sc->sc_scan_wcl_owned || ic->ic_wcl_scan_requested;
+        wclRequestActive = !sc->sc_scan_wcl_owned ||
+            (sc->sc_scan_wcl_join ? ic->ic_wcl_join_requested :
+                                    ic->ic_wcl_scan_requested);
 #endif
         if (allowContinuation && status == IWX_SCAN_OFFLOAD_COMPLETED &&
             sc->sc_scan_next_channel <= IEEE80211_CHAN_MAX &&
@@ -15860,15 +15900,6 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     ic->ic_mld_gmac = 0;
     if (sc->sc_device_family >= IWX_DEVICE_FAMILY_BZ) {
         ic->ic_caps &= ~(IEEE80211_C_WEP | IEEE80211_C_MONITOR);
-        int sec_key_ver = iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP,
-            IWX_MLD_SEC_KEY_CMD);
-        ic->ic_mld_gmac = sc->sc_use_mld_api && sec_key_ver == 1;
-        ic->ic_beacon_prot = sc->sc_use_mld_api && sec_key_ver == 1 &&
-            isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_BIGTK_SUPPORT);
-        if (sc->sc_use_mld_api && sec_key_ver == 1)
-            ic->ic_caps |= IEEE80211_C_MFP;
-        else
-            ic->ic_caps &= ~IEEE80211_C_MFP;
     }
     
     ic->ic_htcaps = IEEE80211_HTCAP_SGI20;

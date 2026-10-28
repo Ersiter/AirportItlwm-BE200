@@ -37,6 +37,18 @@ int main()
     assert(AirportWCL::channelSpec20(149, ChannelBand::GHz6) == 0x5095);
     assert(AirportWCL::channelSpec20(233, ChannelBand::GHz6) == 0x50e9);
 
+    unsigned channel = 0;
+    ChannelBand band = ChannelBand::GHz2;
+    assert(AirportWCL::decodeChannelSpec20(0x1001, channel, band));
+    assert(channel == 1 && band == ChannelBand::GHz2);
+    assert(AirportWCL::decodeChannelSpec20(0xd095, channel, band));
+    assert(channel == 149 && band == ChannelBand::GHz5);
+    assert(AirportWCL::decodeChannelSpec20(0x5095, channel, band));
+    assert(channel == 149 && band == ChannelBand::GHz6);
+    assert(!AirportWCL::decodeChannelSpec20(0x3001, channel, band));
+    assert(!AirportWCL::decodeChannelSpec20(0x9001, channel, band));
+    assert(!AirportWCL::decodeChannelSpec20(0x5096, channel, band));
+
     uint8_t requestBuffer[0x58 + 4 * 12] = {};
     write32(requestBuffer + 0x40, 1);
     write32(requestBuffer + 0x54, 4);

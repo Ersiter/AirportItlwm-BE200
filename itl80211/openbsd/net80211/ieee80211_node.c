@@ -1422,6 +1422,12 @@ ieee80211_node_choose_bss(struct ieee80211com *ic, int bgscan,
             DPRINTF(("%s ieee80211_match_bss==FALSE, ssid=%s, bssid=%s, %d\n", __FUNCTION__, ni->ni_essid, ether_sprintf(ni->ni_bssid), fail));
             continue;
         }
+
+#ifdef AIRPORT_WCL
+        // WCL already chose the BSSID; legacy band ranking omits 6 GHz.
+        if (ic->ic_flags & IEEE80211_F_DESBSSID)
+            return ni;
+#endif
         
         if (ic->ic_caps & IEEE80211_C_SCANALLBAND) {
             if (IEEE80211_IS_CHAN_2GHZ(ni->ni_chan) &&
