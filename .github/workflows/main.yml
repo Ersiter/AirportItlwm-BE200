@@ -64,7 +64,7 @@ jobs:
           xcodebuild -project itlwm.xcodeproj -scheme AirportItlwm-Tahoe \
             -configuration "$CONFIGURATION" -jobs 3 ARCHS=x86_64 \
             SYMROOT="$PWD/build/products" OBJROOT="$PWD/build/obj" \
-            CODE_SIGNING_ALLOWED=NO GIT_COMMIT="_$(git rev-parse --short HEAD)" \
+            CODE_SIGNING_ALLOWED=NO \
             build > logs/build.txt 2>&1 || { tail -100 logs/build.txt; exit 1; }
           product="$PWD/build/products/$CONFIGURATION/Tahoe/AirportItlwm.kext"
           shasum -a 256 "$product/Contents/MacOS/AirportItlwm" > artifacts/SHA256.txt
