@@ -1342,6 +1342,8 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
         ni->ni_sae.sae_state = SAE_STATE_NOTHING;
         if (ieee80211_node_allow_wpa3(ic, ni)) {
             int error;
+            ni->ni_sae.sae_h2e =
+                (ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) ? 1 : 0;
             if (ic->ic_sae_defer_active)
                 error = ic->ic_sae_pwe_valid ? 0 : -1;
             else if (ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E)

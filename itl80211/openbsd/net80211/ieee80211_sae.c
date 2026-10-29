@@ -476,8 +476,13 @@ ieee80211_sae_verify_commit_elem(const uint8_t **scalar,
 	*element_x = NULL;
 	*element_y = NULL;
 
-	/* We do not support any of the optional elements yet. */
-	if (remain != IEEE80211_SAE_COMMIT_MIN_LEN)
+	/*
+	 * Optional elements may follow the fixed part; H2E peers commonly send
+	 * rejected-groups or token-container elements there. Parse what is
+	 * fixed and ignore the rest, as the reference implementation does
+	 * (it only hexdumps whatever trails the element).
+	 */
+	if (remain < IEEE80211_SAE_COMMIT_MIN_LEN)
 		goto done;
 
 	fc_group = LE_READ_2(frm);

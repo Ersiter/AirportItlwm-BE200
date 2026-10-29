@@ -494,9 +494,14 @@ struct ieee80211com {
     uint32_t ic_wcl_sae_commit_retries;
     uint32_t ic_wcl_sae_confirm_replays;
     uint32_t ic_wcl_sae_failures;
+    uint32_t ic_wcl_rsnxe_mismatch;
     uint16_t ic_wcl_sae_last_seq;
     uint16_t ic_wcl_sae_last_status;
     uint8_t ic_wcl_sae_last_state;
+    uint16_t ic_wcl_sae_last_len;
+    uint8_t ic_wcl_sae_last_h2e;
+    uint8_t ic_wcl_sae_last_pt_valid;
+    uint8_t ic_wcl_sae_last_pwe_valid;
     uint32_t ic_wcl_scan_away_time_ms;
     uint64_t ic_wcl_tx_packets[4];
     uint64_t ic_wcl_rx_packets[4];

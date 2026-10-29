@@ -394,7 +394,7 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
     struct ieee80211_ptk tptk;
     struct ieee80211_key *k;
     const u_int8_t *frm, *efrm;
-    const u_int8_t *rsnie1, *rsnie2, *gtk, *igtk, *bigtk;
+    const u_int8_t *rsnie1, *rsnie2, *rsnxe, *gtk, *igtk, *bigtk;
     u_int16_t info, reason = 0;
     int keylen, deferlink = 0;
     
@@ -457,7 +457,7 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
      * RSN IEs in message 3/4.  We only take into account the IE of the
      * version of the protocol we negotiated at association time.
      */
-    rsnie1 = rsnie2 = gtk = igtk = bigtk = NULL;
+    rsnie1 = rsnie2 = rsnxe = gtk = igtk = bigtk = NULL;
     while (frm + 2 <= efrm) {
         if (frm + 2 + frm[1] > efrm)
             break;
@@ -470,6 +470,9 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
                 else if (rsnie2 == NULL)
                     rsnie2 = frm;
                 /* ignore others if more than two RSN IEs */
+                break;
+            case IEEE80211_ELEMID_RSNXE:
+                rsnxe = frm;
                 break;
             case IEEE80211_ELEMID_VENDOR:
                 if (frm[1] < 4)
@@ -519,6 +522,19 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         return;
     }
     if (ieee80211_node_allow_wpa3(ic, ni) && igtk == NULL) {
+        reason = IEEE80211_REASON_AUTH_LEAVE;
+        goto deauth;
+    }
+    /*
+     * A WPA3 AP echoes, in message 3, the RSNXE it received in the
+     * association request. Message 3 is MIC-protected, so its presence
+     * here proves the peer actually saw ours. A missing or different
+     * element is the H2E downgrade this check exists to catch.
+     */
+    if (ieee80211_node_allow_wpa3(ic, ni) &&
+        (rsnxe == NULL || rsnxe[1] != 1 ||
+         rsnxe[2] != IEEE80211_RSNXECAP_H2E)) {
+        ic->ic_wcl_rsnxe_mismatch++;
         reason = IEEE80211_REASON_AUTH_LEAVE;
         goto deauth;
     }

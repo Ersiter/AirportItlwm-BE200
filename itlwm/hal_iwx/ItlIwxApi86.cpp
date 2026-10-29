@@ -35,6 +35,7 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
 {
     XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
+    sc->sc_scan_batch_sent = 0;
     int scanSSIDLength = ic->ic_des_esslen;
     const uint8_t *scanSSID = ic->ic_des_essid;
     bool scanActive = scanSSIDLength != 0 && !bgscan;
@@ -138,10 +139,37 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
     cp = &req->scan_params.channel_params;
     cp->flags = IWX_SCAN_CHANNEL_FLAG_ENABLE_CHAN_ORDER;
 #ifdef AIRPORT_WCL
-    const bool explicitWclChannels = ic->ic_wcl_scan_restricted &&
+    bool explicitWclChannels = ic->ic_wcl_scan_restricted &&
         (ic->ic_wcl_scan_requested || (ic->ic_wcl_join_requested && !bgscan));
     if (scanSSIDLength == 0)
         cp->flags |= IWX_SCAN_CHANNEL_FLAG_6G_PSC_NO_FILTER;
+    if (explicitWclChannels) {
+        /*
+         * A restricted request whose channels are all missing from the
+         * active set would program an empty scan. iwx_umac_scan() reads
+         * that as a failure, and the caller answers it by restarting the
+         * firmware, which takes the interface away from every join issued
+         * in the following seconds. Scan the full set instead: its results
+         * are a superset of what was requested.
+         */
+        bool selected = false;
+        for (int i = 1; !selected && i <= IEEE80211_CHAN_MAX; i++) {
+            const auto c = &ic->ic_channels[i];
+            if (!isset(ic->ic_chan_active, i) || !c->ic_freq || !c->ic_flags)
+                continue;
+            if (!IEEE80211_IS_CHAN_2GHZ(c) && !IEEE80211_IS_CHAN_5GHZ(c) &&
+                !IEEE80211_IS_CHAN_6GHZ(c))
+                continue;
+            selected = AirportWCL::scanChannelSelected(ic->ic_wcl_scan_channels,
+                ic->ic_wcl_scan_channels6GHz, IEEE80211_IS_CHAN_6GHZ(c), true,
+                ieee80211_chan2number(ic, c));
+        }
+        if (!selected) {
+            explicitWclChannels = false;
+            sc->sc_pcitag->setProperty("AirportItlwm-HWScanUnrestrictedFallback",
+                ++sc->sc_scan_unrestricted_fallback, 32);
+        }
+    }
 #endif
     const uint8_t channelLimit = MIN(nitems(cp->channel_config),
                                      sc->sc_capa_n_scan_channels);
@@ -166,10 +194,8 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
             continue;
 #ifdef AIRPORT_WCL
         if (!AirportWCL::scanChannelSelected(ic->ic_wcl_scan_channels,
-                ic->ic_wcl_scan_channels6GHz, is6GHz,
-                ic->ic_wcl_scan_restricted && (ic->ic_wcl_scan_requested ||
-                    (ic->ic_wcl_join_requested && !bgscan)),
-                ieee80211_chan2number(ic, c)))
+                ic->ic_wcl_scan_channels6GHz, is6GHz, explicitWclChannels,
+                channelNumber))
             continue;
 #endif
         int channelBand = is6GHz ? 1 : 0;
@@ -257,6 +283,7 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
         cp->channel_config, cp->count * sizeof(cp->channel_config[0]));
     sc->sc_pcitag->setProperty("AirportItlwm-HWScanSendStatus", UINT32_MAX, 32);
 #endif
+    sc->sc_scan_batch_sent = 1;
     sc->sc_scan_batch_pending = 1;
     err = iwx_send_cmd(sc, &hcmd);
     if (err)

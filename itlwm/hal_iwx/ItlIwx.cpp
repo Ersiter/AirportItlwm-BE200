@@ -4430,7 +4430,7 @@ iwx_mcc_channel_restrictions(uint32_t cap, uint8_t version, bool is_2ghz)
 
 void ItlIwx::
 iwx_init_channel_map(struct iwx_softc *sc, uint16_t *channel_profile_v3,
-uint32_t *channel_profile_v4, int nchan_profile)
+uint32_t *channel_profile_v4, int nchan_profile, const char *source)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_nvm_data *data = &sc->sc_nvm;
@@ -4589,7 +4589,10 @@ uint32_t *channel_profile_v4, int nchan_profile)
             channel_profile_v4 != NULL ? 1 : 0, p6nonzero, p6valid,
             channel_profile_v4 && nchan_profile > 51 ? le32toh(channel_profile_v4[51]) : 0,
             channel_profile_v4 && nchan_profile > 53 ? le32toh(channel_profile_v4[53]) : 0);
-        sc->sc_pcitag->setProperty("AirportItlwm-ChannelTableBuilt", summary);
+        char key[64];
+        snprintf(key, sizeof(key), "AirportItlwm-ChannelTableBuilt-%s",
+            source ? source : "unknown");
+        sc->sc_pcitag->setProperty(key, summary);
     }
 #endif
 }
@@ -5583,11 +5586,11 @@ iwx_nvm_get(struct iwx_softc *sc)
     
     if (v4) {
         iwx_init_channel_map(sc, NULL,
-                             rsp->regulatory.channel_profile, IWX_NUM_CHANNELS);
+                             rsp->regulatory.channel_profile, IWX_NUM_CHANNELS, "nvm");
     } else {
         rsp_v3 = (struct iwx_nvm_get_info_rsp_v3 *)rsp;
         iwx_init_channel_map(sc, rsp_v3->regulatory.channel_profile,
-                             NULL, IWX_NUM_CHANNELS_V1);
+                             NULL, IWX_NUM_CHANNELS_V1, "nvm");
     }
 out:
     iwx_free_resp(sc, &hcmd);
@@ -9084,7 +9087,28 @@ iwx_umac_scan(struct iwx_softc *sc, int bgscan)
 #endif
         }
         int err = iwx_umac_scan_v17(sc, bgscan);
-        if (err || (start && !sc->sc_scan_batch_pending)) {
+        if (err || (start && !sc->sc_scan_batch_sent)) {
+            if (!err) {
+                /*
+                 * Nothing was programmed into firmware because no channel
+                 * survived the selection. iwx_newstate_task() answers this
+                 * with iwx_schedule_recovery(), so record what the selection
+                 * was made from before the firmware goes down.
+                 */
+                int active = 0;
+                for (int i = 1; i <= IEEE80211_CHAN_MAX; i++)
+                    if (isset(sc->sc_ic.ic_chan_active, i))
+                        active++;
+                char detail[128];
+                snprintf(detail, sizeof(detail),
+                    "state=%d if=0x%x active=%d restricted=%d scan=%d join=%d fallback=%u",
+                    sc->sc_ic.ic_state, (unsigned)sc->sc_ic.ic_if.if_flags,
+                    active, sc->sc_ic.ic_wcl_scan_restricted,
+                    sc->sc_ic.ic_wcl_scan_requested,
+                    sc->sc_ic.ic_wcl_join_requested,
+                    sc->sc_scan_unrestricted_fallback);
+                sc->sc_pcitag->setProperty("AirportItlwm-HWScanEmpty", detail);
+            }
             iwx_scan_state_reset(sc);
             return err ? err : ENOENT;
         }
@@ -10045,7 +10069,7 @@ iwx_scan(struct iwx_softc *sc)
         XYLog("%s: could not initiate scan\n", DEVNAME(sc));
         return err;
     }
-    
+
     /*
      * The current mode might have been fixed during association.
      * Ensure all channels get scanned.
@@ -11866,7 +11890,7 @@ iwx_scan_task(void *psc)
 #endif
 
     err = that->iwx_umac_scan_v17(sc, sc->sc_scan_bgscan);
-    if (!err && !sc->sc_scan_batch_pending) {
+    if (!err && !sc->sc_scan_batch_sent) {
         that->iwx_endscan(sc, IWX_SCAN_OFFLOAD_COMPLETED, false);
     } else if (err) {
 #ifdef AIRPORT_WCL
@@ -12371,7 +12395,7 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
             (associatedIndex < 0 || associatedIndex > IEEE80211_CHAN_MAX);
 
         iwx_init_channel_map(sc, NULL,
-            const_cast<uint32_t *>(response.channels), response.n_channels);
+            const_cast<uint32_t *>(response.channels), response.n_channels, "mcc");
         for (unsigned i = 1; i <= IEEE80211_CHAN_MAX; i++) {
             auto channel = &ic->ic_channels[i];
             if (!channel->ic_freq)
@@ -13346,14 +13370,22 @@ iwx_nic_umac_error(struct iwx_softc *sc)
     if (base < (sc->sc_device_family >= IWX_DEVICE_FAMILY_BZ ? 0xd0000U : 0x400000U)) {
         XYLog("%s: Invalid error log pointer 0x%08x\n",
               DEVNAME(sc), base);
+#ifdef AIRPORT_WCL
+        sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorUm",
+            "invalid-pointer");
+#endif
         return;
     }
-    
+
     if (iwx_read_mem(sc, base, &table, sizeof(table)/sizeof(uint32_t))) {
         XYLog("%s: reading errlog failed\n", DEVNAME(sc));
+#ifdef AIRPORT_WCL
+        sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorUm",
+            "read-failed");
+#endif
         return;
     }
-    
+
     if (ERROR_START_OFFSET <= table.valid * ERROR_ELEM_SIZE) {
         XYLog("%s: Start UMAC Error Log Dump:\n", DEVNAME(sc));
         XYLog("%s: Status: 0x%x, count: %d\n", DEVNAME(sc),
@@ -13378,6 +13410,19 @@ iwx_nic_umac_error(struct iwx_softc *sc)
     XYLog("%s: 0x%08X | last host cmd\n", DEVNAME(sc), table.cmd_header);
     XYLog("%s: 0x%08X | isr status reg\n", DEVNAME(sc),
           table.nic_isr_pref);
+#ifdef AIRPORT_WCL
+    char error_umac[384];
+    snprintf(error_umac, sizeof(error_umac),
+        "id=0x%08x name=%s data1=0x%08x data2=0x%08x data3=0x%08x "
+        "blink1=0x%08x blink2=0x%08x ilink1=0x%08x ilink2=0x%08x "
+        "last_hcmd=0x%08x fp=0x%08x sp=0x%08x isr=0x%08x ucode=%u.%08x",
+        table.error_id, iwx_desc_lookup(table.error_id),
+        table.data1, table.data2, table.data3, table.blink1, table.blink2,
+        table.ilink1, table.ilink2, table.cmd_header, table.frame_pointer,
+        table.stack_pointer, table.nic_isr_pref, table.umac_major,
+        table.umac_minor);
+    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorUm", error_umac);
+#endif
 }
 
 #define IWX_FW_SYSASSERT_CPU_MASK 0xf0000000
@@ -13435,23 +13480,51 @@ iwx_nic_error(struct iwx_softc *sc)
     uint32_t base;
     
     XYLog("%s: dumping device error log\n", DEVNAME(sc));
+#ifdef AIRPORT_WCL
+    /*
+     * dmesg is a ring buffer: the dump below survives only until the next
+     * few seconds of output, and a fatal assert usually arrives together
+     * with a flood of recovery traffic. Mirror the fields that identify the
+     * assert into ioreg so a later capture still has them.
+     */
+    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorCount",
+        ++sc->sc_fw_error_count, 32);
+    char error_driver[96];
+    snprintf(error_driver, sizeof(error_driver),
+        "flags=0x%x state=%d ifflags=0x%x gen=%d",
+        (unsigned)sc->sc_flags, sc->sc_ic.ic_state,
+        (unsigned)sc->sc_ic.ic_if.if_flags, sc->sc_generation);
+    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorDriver", error_driver);
+#endif
     base = sc->sc_uc.uc_lmac_error_event_table[0];
     if (base < (sc->sc_device_family >= IWX_DEVICE_FAMILY_BZ ? 0xd0000U : 0x400000U)) {
         XYLog("%s: Invalid error log pointer 0x%08x\n",
               DEVNAME(sc), base);
+#ifdef AIRPORT_WCL
+        sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorLmac",
+            "invalid-pointer");
+#endif
         return;
     }
-    
+
     if (iwx_read_mem(sc, base, &table, sizeof(table)/sizeof(uint32_t))) {
         XYLog("%s: reading errlog failed\n", DEVNAME(sc));
+#ifdef AIRPORT_WCL
+        sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorLmac",
+            "read-failed");
+#endif
         return;
     }
-    
+
     if (!table.valid) {
         XYLog("%s: errlog not found, skipping\n", DEVNAME(sc));
+#ifdef AIRPORT_WCL
+        sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorLmac",
+            "no-errlog");
+#endif
         return;
     }
-    
+
     if (ERROR_START_OFFSET <= table.valid * ERROR_ELEM_SIZE) {
         XYLog("%s: Start Error Log Dump:\n", DEVNAME(sc));
         XYLog("%s: Status: 0x%x, count: %d\n", DEVNAME(sc),
@@ -13498,7 +13571,20 @@ iwx_nic_error(struct iwx_softc *sc)
     XYLog("%s: %08X | lmpm_pmg_sel\n", DEVNAME(sc), table.lmpm_pmg_sel);
     XYLog("%s: %08X | timestamp\n", DEVNAME(sc), table.u_timestamp);
     XYLog("%s: %08X | flow_handler\n", DEVNAME(sc), table.flow_handler);
-    
+#ifdef AIRPORT_WCL
+    char error_lmac[384];
+    snprintf(error_lmac, sizeof(error_lmac),
+        "id=0x%08x name=%s data1=0x%08x data2=0x%08x hcmd=0x%08x "
+        "last_cmd=0x%08x wait=0x%08x isr=%08x/%08x/%08x/%08x/%08x "
+        "rtype=0x%x ucode=%u.%08x hw=0x%08x brd=0x%08x",
+        table.error_id, iwx_desc_lookup(table.error_id),
+        table.data1, table.data2, table.hcmd, table.last_cmd_id,
+        table.wait_event, table.isr0, table.isr1, table.isr2, table.isr3,
+        table.isr4, table.fw_rev_type, table.major, table.minor,
+        table.hw_ver, table.brd_ver);
+    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorLmac", error_lmac);
+#endif
+
     if (sc->sc_uc.uc_umac_error_event_table)
         iwx_nic_umac_error(sc);
 }

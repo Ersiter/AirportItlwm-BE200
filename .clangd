@@ -1,0 +1,7 @@
+Diagnostics:
+  UnusedIncludes: None
+  MissingIncludes: None
+  ClangTidy:
+    Remove: ["*"]
+Index:
+  Background: Build

@@ -1237,8 +1237,7 @@ ieee80211_add_sae_commit(u_int8_t *frm, const struct ieee80211_node *ni)
 {
 	LE_WRITE_2(frm, IEEE80211_SAE_CURVE_ID_P256);
 	frm += 2;
-	if (ni->ni_sae.sae_token_len != 0 &&
-	    (ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) == 0) {
+	if (ni->ni_sae.sae_token_len != 0 && ni->ni_sae.sae_h2e == 0) {
 		memcpy(frm, ni->ni_sae.sae_token, ni->ni_sae.sae_token_len);
 		frm += ni->ni_sae.sae_token_len;
 	}
@@ -1248,13 +1247,22 @@ ieee80211_add_sae_commit(u_int8_t *frm, const struct ieee80211_node *ni)
 	frm += sizeof(ni->ni_sae.sae_element_x);
 	memcpy(frm, ni->ni_sae.sae_element_y, sizeof(ni->ni_sae.sae_element_y));
 	frm += sizeof(ni->ni_sae.sae_element_y);
-	if (ni->ni_sae.sae_token_len != 0 &&
-	    (ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E)) {
+	if (ni->ni_sae.sae_token_len != 0 && ni->ni_sae.sae_h2e) {
 		*frm++ = IEEE80211_ELEMID_EXTENSION;
 		*frm++ = ni->ni_sae.sae_token_len + 1;
 		*frm++ = IEEE80211_EID_EXT_ANTI_CLOGGING_TOKEN;
 		memcpy(frm, ni->ni_sae.sae_token, ni->ni_sae.sae_token_len);
 		frm += ni->ni_sae.sae_token_len;
+	}
+	/*
+	 * An H2E Commit must carry the RSNXE so the peer can tell which PWE
+	 * method produced the element; without it an H2E-only AP rejects the
+	 * Commit with status 126.
+	 */
+	if (ni->ni_sae.sae_h2e) {
+		*frm++ = IEEE80211_ELEMID_RSNXE;
+		*frm++ = 1;
+		*frm++ = IEEE80211_RSNXECAP_H2E;
 	}
 	return frm;
 }
@@ -2006,12 +2014,14 @@ ieee80211_get_auth(struct ieee80211com *ic, struct ieee80211_node *ni,
 	}
 
 	if (sae_commit) {
-		status = (ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) ?
+		status = ni->ni_sae.sae_h2e ?
 		    IEEE80211_STATUS_H2E : IEEE80211_STATUS_SUCCESS;
 		sae_len = 2 + sizeof(scalar) + sizeof(element_x) + sizeof(element_y);
 		if (ni->ni_sae.sae_token_len != 0)
 			sae_len += ni->ni_sae.sae_token_len +
-			    ((ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) ? 3 : 0);
+			    (ni->ni_sae.sae_h2e ? 3 : 0);
+		if (ni->ni_sae.sae_h2e)
+			sae_len += 3;	/* RSNXE declaring H2E */
 	} else if (sae_confirm) {
 		sae_len = 2 + SHA256_DIGEST_LENGTH;
 	}

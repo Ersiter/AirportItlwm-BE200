@@ -222,6 +222,7 @@ struct ieee80211_sae {
 	uint8_t sae_token[IEEE80211_SAE_TOKEN_MAX_LEN];
 	size_t sae_token_len;
 	int sae_state;
+	int sae_h2e;		/* PWE derived with hash-to-element */
 	uint16_t sae_send_confirm;
 	uint16_t sae_peer_send_confirm;
 };

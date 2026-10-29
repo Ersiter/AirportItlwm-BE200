@@ -309,7 +309,7 @@ public:
     void    iwx_unprotect_session(struct iwx_softc *, struct iwx_node *);
     uint8_t iwx_fw_valid_tx_ant(struct iwx_softc *sc);
     uint8_t iwx_fw_valid_rx_ant(struct iwx_softc *sc);
-    void    iwx_init_channel_map(struct iwx_softc *, uint16_t *, uint32_t *, int);
+    void    iwx_init_channel_map(struct iwx_softc *, uint16_t *, uint32_t *, int, const char *);
     void    iwx_setup_ht_rates(struct iwx_softc *);
     void    iwx_setup_vht_rates(struct iwx_softc *);
     void    iwx_setup_he_rates(struct iwx_softc *);

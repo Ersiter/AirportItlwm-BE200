@@ -65,9 +65,9 @@ void AirportItlwmSkywalkInterface::publishWCLAuthDiagnostic(const char *event, m
     uint8_t eapIdentifier = packetType == 0 && packetLength >= 20 ? eapol[5] : 0xff;
     uint16_t eapolLength = packetLength >= 18 ? (uint16_t(eapol[2]) << 8) | eapol[3] : 0;
     auto ic = fHalService ? fHalService->get80211Controller() : nullptr;
-    char value[1024];
+    char value[1280];
     snprintf(value, sizeof(value),
-        "seq=%u join_attempt=%u event=%s ic_state=%u assoc=%u first_beacon=%u native_link_ready=%u user_eapol_gate_ready=%u user_eapol_queued=%u wcl_link_up=%u assoc_events=%u first_beacon_events=%u link_events=%u join_timeouts=%u join_timeout_ms=%u user_eapol_rx_deferred=%u user_eapol_rx_delivered=%u user_eapol_rx_dropped=%u user_eapol_rx_direct=%u user_eapol_gate_drops=%u user_eapol_len=%u user_eapol_type=%u eap_code=%u eap_id=%u auth_rx=%u sae_rx=%u sae_token_retries=%u sae_commit_retries=%u sae_confirm_replays=%u sae_failures=%u sae_last_seq=%u sae_last_status=%u sae_last_rx_state=%u sae_state=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x src=%02x:%02x:%02x:%02x:%02x:%02x dst=%02x:%02x:%02x:%02x:%02x:%02x",
+        "seq=%u join_attempt=%u event=%s ic_state=%u assoc=%u first_beacon=%u native_link_ready=%u user_eapol_gate_ready=%u user_eapol_queued=%u wcl_link_up=%u assoc_events=%u first_beacon_events=%u link_events=%u join_timeouts=%u join_timeout_ms=%u user_eapol_rx_deferred=%u user_eapol_rx_delivered=%u user_eapol_rx_dropped=%u user_eapol_rx_direct=%u user_eapol_gate_drops=%u user_eapol_len=%u user_eapol_type=%u eap_code=%u eap_id=%u auth_rx=%u sae_rx=%u sae_token_retries=%u sae_commit_retries=%u sae_confirm_replays=%u sae_failures=%u sae_last_seq=%u sae_last_status=%u sae_last_rx_state=%u sae_state=%u sae_h2e=%u sae_rx_len=%u sae_rx_h2e=%u sae_pt_valid=%u sae_pwe_valid=%u rsnxe_mismatch=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x src=%02x:%02x:%02x:%02x:%02x:%02x dst=%02x:%02x:%02x:%02x:%02x:%02x",
         ++wclAuthDiagnosticSequence, ic ? ic->ic_wcl_join_attempt : 0, event,
         ic ? static_cast<unsigned>(ic->ic_state) : UINT32_MAX,
         unsigned(assocNotified), unsigned(firstBeaconNotified), unsigned(wclNativeLinkReady),
@@ -84,6 +84,12 @@ void AirportItlwmSkywalkInterface::publishWCLAuthDiagnostic(const char *event, m
         ic ? ic->ic_wcl_sae_last_seq : 0, ic ? ic->ic_wcl_sae_last_status : 0,
         ic ? ic->ic_wcl_sae_last_state : 0,
         ic && ic->ic_bss ? ic->ic_bss->ni_sae.sae_state : 0,
+        ic && ic->ic_bss ? ic->ic_bss->ni_sae.sae_h2e : 0,
+        ic ? ic->ic_wcl_sae_last_len : 0,
+        ic ? ic->ic_wcl_sae_last_h2e : 0,
+        ic ? ic->ic_wcl_sae_last_pt_valid : 0,
+        ic ? ic->ic_wcl_sae_last_pwe_valid : 0,
+        ic ? ic->ic_wcl_rsnxe_mismatch : 0,
         joinBSSID[0], joinBSSID[1], joinBSSID[2], joinBSSID[3], joinBSSID[4], joinBSSID[5],
         ethernet[6], ethernet[7], ethernet[8], ethernet[9], ethernet[10], ethernet[11],
         ethernet[0], ethernet[1], ethernet[2], ethernet[3], ethernet[4], ethernet[5]);
@@ -842,9 +848,12 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
         return kIOReturnSuccess;
     }
     if (!supported || !(ic->ic_if.if_flags & IFF_RUNNING) || joinPending || scanPending) {
-        instance->pciNub->setProperty("AirportItlwm-WCLJoinExit",
+        char detail[64];
+        snprintf(detail, sizeof(detail), "%s(flags=0x%x,state=%d)",
             !supported ? "unsupported" : (!(ic->ic_if.if_flags & IFF_RUNNING) ? "not-running" :
-                                          (joinPending ? "join-busy" : "scan-busy")));
+                                          (joinPending ? "join-busy" : "scan-busy")),
+            (unsigned)ic->ic_if.if_flags, ic->ic_state);
+        instance->pciNub->setProperty("AirportItlwm-WCLJoinExit", detail);
         explicit_bzero(&join, sizeof(join));
         return !supported ? kIOReturnUnsupported : kIOReturnBusy;
     }

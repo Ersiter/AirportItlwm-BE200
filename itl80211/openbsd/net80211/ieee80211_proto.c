@@ -1524,11 +1524,43 @@ ieee80211_auth_sae(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 	if (ic->ic_state != IEEE80211_S_AUTH)
 		goto discard;
 
+	/*
+	 * An H2E-only AP answers a hunting-and-pecking Commit with status 126
+	 * (SAE HASH TO ELEMENT) instead of accepting the element. Re-derive the
+	 * PWE with H2E, restart the exchange and send the Commit again carrying
+	 * the RSNXE that tells the peer which method produced the element.
+	 */
+	if (seq == IEEE80211_AUTH_OPEN_REQUEST &&
+	    status == IEEE80211_STATUS_H2E &&
+	    ni->ni_sae.sae_state == SAE_STATE_COMMITTED &&
+	    ni->ni_sae.sae_h2e == 0) {
+		if (ieee80211_sae_derive_password_elem(ic->ic_sae_pwe,
+		    ic->ic_sae_pt, ic->ic_myaddr, ni->ni_macaddr) != 0)
+			goto discard;
+		ni->ni_sae.sae_h2e = 1;
+		ni->ni_sae.sae_state = SAE_STATE_NOTHING;
+		explicit_bzero(ni->ni_sae.sae_peer_scalar,
+		    sizeof(ni->ni_sae.sae_peer_scalar));
+		explicit_bzero(ni->ni_sae.sae_peer_element_x,
+		    sizeof(ni->ni_sae.sae_peer_element_x));
+		explicit_bzero(ni->ni_sae.sae_peer_element_y,
+		    sizeof(ni->ni_sae.sae_peer_element_y));
+		ic->ic_mgt_timer = 0;
+#ifdef AIRPORT_WCL
+		if (ic->ic_wcl_join_requested)
+			ic->ic_wcl_sae_commit_retries++;
+#endif
+		if (ieee80211_send_mgmt(ic, ni, IEEE80211_FC0_SUBTYPE_AUTH,
+		    IEEE80211_AUTH_OPEN_REQUEST, 0) != 0)
+			ieee80211_auth_sae_failure(ic, ni);
+		return;
+	}
+
 	if (seq == IEEE80211_AUTH_OPEN_REQUEST &&
 	    ni->ni_sae.sae_state == SAE_STATE_CONFIRMED) {
-		if (status == ((ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) ?
+		if (status == (ni->ni_sae.sae_h2e ?
 		    IEEE80211_STATUS_H2E : IEEE80211_STATUS_SUCCESS) &&
-		    sae_len == IEEE80211_SAE_COMMIT_MIN_LEN &&
+		    sae_len >= IEEE80211_SAE_COMMIT_MIN_LEN &&
 		    ieee80211_sae_verify_commit_elem(&scalar, &element_x,
 		    &element_y, sae_data, sae_len, ni->ni_sae.sae_scalar,
 		    ni->ni_sae.sae_element_x, ni->ni_sae.sae_element_y) ==
@@ -1565,7 +1597,7 @@ ieee80211_auth_sae(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 			goto token_failure;
 		token = sae_data + 2;
 		token_len = sae_len - 2;
-		if (ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) {
+		if (ni->ni_sae.sae_h2e) {
 			if (token_len < 3 || token[0] != IEEE80211_ELEMID_EXTENSION ||
 			    token[1] < 2 || token[1] != token_len - 2 ||
 			    token[2] != IEEE80211_EID_EXT_ANTI_CLOGGING_TOKEN)
@@ -1601,9 +1633,9 @@ ieee80211_auth_sae(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 
 	if (seq == IEEE80211_AUTH_OPEN_REQUEST &&
 	    ni->ni_sae.sae_state == SAE_STATE_COMMITTED &&
-	    status == ((ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) ?
+	    status == (ni->ni_sae.sae_h2e ?
 		IEEE80211_STATUS_H2E : IEEE80211_STATUS_SUCCESS) &&
-	    sae_len == IEEE80211_SAE_COMMIT_MIN_LEN &&
+	    sae_len >= IEEE80211_SAE_COMMIT_MIN_LEN &&
 	    LE_READ_2(sae_data) == IEEE80211_SAE_CURVE_ID_P256 &&
 	    (timingsafe_bcmp(sae_data + 2, ni->ni_sae.sae_scalar,
 	    IEEE80211_SAE_MAX_ECC_PRIME_LEN) == 0 ||
@@ -1615,9 +1647,9 @@ ieee80211_auth_sae(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 
 	if (seq == IEEE80211_AUTH_OPEN_REQUEST) {
 		if (ni->ni_sae.sae_state != SAE_STATE_COMMITTED ||
-		    status != ((ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) ?
+		    status != (ni->ni_sae.sae_h2e ?
 			IEEE80211_STATUS_H2E : IEEE80211_STATUS_SUCCESS) ||
-		    sae_len != IEEE80211_SAE_COMMIT_MIN_LEN ||
+		    sae_len < IEEE80211_SAE_COMMIT_MIN_LEN ||
 		    ieee80211_sae_verify_commit_elem(&scalar, &element_x,
 		    &element_y, sae_data, sae_len, ni->ni_sae.sae_scalar,
 		    ni->ni_sae.sae_element_x, ni->ni_sae.sae_element_y) !=

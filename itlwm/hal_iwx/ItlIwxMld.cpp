@@ -122,8 +122,9 @@ iwx_mld_record_state_failure(struct iwx_softc *sc, const char *operation,
 
     char value[192];
     snprintf(value, sizeof(value),
-        "operation=%s stage=%s error=%d cmd=0x%08x detail=%d gen=%d",
-        operation, stage, error, command, detail, sc->sc_generation);
+        "operation=%s stage=%s error=%d cmd=0x%08x detail=%d gen=%d flags=0x%x init=0x%x",
+        operation, stage, error, command, detail, sc->sc_generation,
+        (unsigned)sc->sc_flags, (unsigned)sc->sc_init_complete);
     sc->sc_pcitag->setProperty("AirportItlwm-MLDStateFailure", value);
     sc->sc_pcitag->setProperty("AirportItlwm-MLDStateFailureGeneration",
         sc->sc_generation, 32);

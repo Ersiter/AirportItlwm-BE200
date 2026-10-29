@@ -759,9 +759,11 @@ struct iwx_softc {
 	uint8_t sc_scan_batch;
 	uint8_t sc_scan_active;
 	uint8_t sc_scan_batch_pending;
+	uint8_t sc_scan_batch_sent;
 	uint8_t sc_scan_bgscan;
 	uint8_t sc_scan_wcl_owned;
 	uint8_t sc_scan_wcl_join;
+	uint32_t sc_scan_unrestricted_fallback;
 
 	uint32_t sc_fh_init_mask;
 	uint32_t sc_hw_init_mask;
@@ -769,6 +771,7 @@ struct iwx_softc {
 	uint32_t sc_hw_mask;
 
 	int sc_generation;
+	uint32_t sc_fw_error_count;
 #ifdef AIRPORT_WCL
     volatile uint32_t sc_diagnostic_sequence;
     struct iwx_diagnostic sc_diagnostics[32];

@@ -2822,6 +2822,11 @@ ieee80211_recv_auth(struct ieee80211com *ic, mbuf_t m,
             ic->ic_wcl_sae_last_seq = seq;
             ic->ic_wcl_sae_last_status = status;
             ic->ic_wcl_sae_last_state = ni->ni_sae.sae_state;
+            ic->ic_wcl_sae_last_len =
+                (uint16_t)(mbuf_len(m) - sizeof(*wh) - 6);
+            ic->ic_wcl_sae_last_h2e = ni->ni_sae.sae_h2e;
+            ic->ic_wcl_sae_last_pt_valid = ic->ic_sae_pt_valid;
+            ic->ic_wcl_sae_last_pwe_valid = ic->ic_sae_pwe_valid;
         }
     }
 #endif

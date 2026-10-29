@@ -1,0 +1,7 @@
+-DAIRPORT_WCL
+-DIEEE80211_STA_ONLY
+-DDEBUG=1
+-Iitl80211/openbsd
+-Iitl80211
+-Iinclude
+-Iitlwm/hal_iwx
