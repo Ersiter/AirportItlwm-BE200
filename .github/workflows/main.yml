@@ -10,6 +10,7 @@ on:
       - 'include/**'
       - 'itlwm.xcodeproj/**'
       - 'scripts/**'
+      - 'tests/**'
       - '.github/workflows/main.yml'
   workflow_dispatch:
     inputs:
@@ -53,7 +54,12 @@ jobs:
         run: python3 scripts/check_mcc_response.py
       - name: Check startup power diagnostics
         run: python3 scripts/check_startup_power.py
-      - name: Build Tahoe x86_64 kext
+      - name: Check WCL channel and authentication behavior
+        run: |
+          c++ -std=c++14 -Wall -Wextra -Wno-unused-parameter -Werror tests/wcl_channels.cpp -o "$RUNNER_TEMP/wcl_channels"
+          "$RUNNER_TEMP/wcl_channels"
+          bash -n scripts/Collect-WiFi-Community.command
+      - name: Build Tahoe and Sequoia x86_64 kexts
         env:
           CONFIGURATION: ${{ inputs.configuration || 'Debug' }}
         run: |
@@ -61,17 +67,18 @@ jobs:
           mkdir -p logs artifacts
           xcodebuild -version > logs/toolchain.txt
           git rev-parse HEAD > logs/source-commit.txt
-          xcodebuild -project itlwm.xcodeproj -scheme AirportItlwm-Tahoe \
-            -configuration "$CONFIGURATION" -jobs 3 ARCHS=x86_64 \
-            SYMROOT="$PWD/build/products" OBJROOT="$PWD/build/obj" \
-            CODE_SIGNING_ALLOWED=NO \
-            build > logs/build.txt 2>&1 || { tail -100 logs/build.txt; exit 1; }
-          product="$PWD/build/products/$CONFIGURATION/Tahoe/AirportItlwm.kext"
-          shasum -a 256 "$product/Contents/MacOS/AirportItlwm" > artifacts/SHA256.txt
-          dwarfdump --uuid "$product/Contents/MacOS/AirportItlwm" > artifacts/UUID.txt
+          for platform in Tahoe Sequoia; do
+            xcodebuild -project itlwm.xcodeproj -target "AirportItlwm-$platform" \
+              -configuration "$CONFIGURATION" -jobs 3 ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO \
+              SYMROOT="$PWD/build/products" OBJROOT="$PWD/build/obj" \
+              CODE_SIGNING_ALLOWED=NO \
+              build > "logs/build-$platform.txt" 2>&1 || { tail -100 "logs/build-$platform.txt"; exit 1; }
+            product="$PWD/build/products/$CONFIGURATION/$platform/AirportItlwm.kext"
+            dwarfdump --uuid "$product/Contents/MacOS/AirportItlwm" > "artifacts/UUID-$platform.txt"
+            ditto -c -k --keepParent "$product" "artifacts/AirportItlwm-$platform.zip"
+          done
           cp logs/source-commit.txt artifacts/
           cp LICENSE iwlwifi-firmware-license BE200.md artifacts/
-          ditto -c -k --keepParent "$product" artifacts/AirportItlwm-Tahoe.zip
       - name: Upload compiler logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -82,7 +89,7 @@ jobs:
       - name: Upload experimental build
         uses: actions/upload-artifact@v4
         with:
-          name: AirportItlwm-Tahoe-${{ inputs.configuration || 'Debug' }}-${{ github.sha }}
+          name: AirportItlwm-Tahoe-Sequoia-${{ inputs.configuration || 'Debug' }}-${{ github.sha }}
           path: artifacts/
           retention-days: 7
           if-no-files-found: error
