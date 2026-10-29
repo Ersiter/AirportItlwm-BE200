@@ -234,7 +234,7 @@ ieee80211_parse_mld_basic(const uint8_t *data, size_t data_len,
 #ifdef AIRPORT_WCL
 static void
 ieee80211_mld_assoc_response_links(struct ieee80211com *ic,
-    const uint8_t *data, size_t data_len)
+    const uint8_t *data, size_t data_len, uint16_t assoc_id)
 {
     uint8_t profile_data[MCLBYTES];
     size_t offset, common_end;
@@ -249,7 +249,7 @@ ieee80211_mld_assoc_response_links(struct ieee80211com *ic,
     if (data == NULL || data_len < 4 ||
         data[0] != IEEE80211_ELEMID_EXT_MULTI_LINK)
         return;
-    common_end = 4 + data[3];
+    common_end = 3 + data[3];
     if (common_end > data_len)
         return;
     offset = common_end;
@@ -292,7 +292,7 @@ ieee80211_mld_assoc_response_links(struct ieee80211com *ic,
             continue;
         }
         fixed_offset = 2 + profile[2];
-        if (profile[2] < 1 || fixed_offset + 6 > profile_len) {
+        if (profile[2] < 1 || fixed_offset + 4 > profile_len) {
             continue;
         }
         if (control & IEEE80211_MLE_STA_CONTROL_STA_MAC_ADDR_PRESENT) {
@@ -302,7 +302,6 @@ ieee80211_mld_assoc_response_links(struct ieee80211com *ic,
         }
         uint8_t ap_link_id = control & IEEE80211_MLE_STA_CONTROL_LINK_ID;
         uint16_t status = LE_READ_2(profile + fixed_offset + 2);
-        uint16_t assoc_id = LE_READ_2(profile + fixed_offset + 4);
         for (i = 1; i < ic->ic_mld_link_count; i++) {
             if (ic->ic_mld_links[i].ap_link_id == ap_link_id) {
                 struct ieee80211_mld_link_info *link =
@@ -314,7 +313,7 @@ ieee80211_mld_assoc_response_links(struct ieee80211com *ic,
                 const uint8_t *hecap = NULL, *heop = NULL;
                 const uint8_t *he6ghzcap = NULL, *he_mu_edca = NULL;
                 const uint8_t *ehtcap = NULL, *ehtop = NULL;
-                size_t ie_offset = fixed_offset + 6;
+                size_t ie_offset = fixed_offset + 4;
                 int profile_ies_valid = 1;
 
                 if (link_ni == NULL)
@@ -3396,14 +3395,14 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
             (ni->ni_mld_eml_capa & IEEE80211_EML_CAP_EMLSR_SUPP) != 0;
         if (ic->ic_mld_link_count != 0) {
             ic->ic_mld_links[0].assoc_accepted = 1;
-            ieee80211_mld_assoc_response_links(ic, mle_data, mle_len);
+            ieee80211_mld_assoc_response_links(ic, mle_data, mle_len, associd);
         }
 #endif
     } else {
         ni->ni_mld_valid = 0;
 #ifdef AIRPORT_WCL
         ic->ic_mld_emlsr_peer_supported = false;
-        ieee80211_mld_assoc_response_links(ic, NULL, 0);
+        ieee80211_mld_assoc_response_links(ic, NULL, 0, 0);
 #endif
     }
     rate = ieee80211_setup_rates(ic, ni, rates, xrates,

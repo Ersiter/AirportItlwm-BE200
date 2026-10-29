@@ -1638,7 +1638,7 @@ ieee80211_add_mld_assoc_req(uint8_t *frm, struct ieee80211com *ic,
 
     uint16_t mle_control = IEEE80211_ML_CONTROL_TYPE_BASIC |
         IEEE80211_MLC_BASIC_PRES_MLD_CAPA_OP;
-    uint8_t common_info_len = IEEE80211_ADDR_LEN + 2;
+    uint8_t common_info_len = 1 + IEEE80211_ADDR_LEN + 2;
     if (ic->ic_mld_emlsr_supported && ic->ic_mld_link_count > 1) {
         mle_control |= IEEE80211_MLC_BASIC_PRES_EML_CAPA;
         common_info_len += 2;

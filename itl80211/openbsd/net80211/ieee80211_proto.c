@@ -955,6 +955,54 @@ ieee80211_he_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
         (ni->ni_he_oper_params >> 24) & 0x3f);
 }
 
+static bool
+ieee80211_eht_puncturing_valid(unsigned width, uint16_t puncture,
+    unsigned primary_index)
+{
+    static const uint16_t valid80[] = {0x8, 0x4, 0x2, 0x1};
+    static const uint16_t valid160[] = {
+        0x80, 0x40, 0x20, 0x10, 0x8, 0x4, 0x2, 0x1,
+        0xc0, 0x30, 0xc, 0x3
+    };
+    static const uint16_t valid320[] = {
+        0xc000, 0x3000, 0xc00, 0x300, 0xc0, 0x30, 0xc, 0x3,
+        0xf000, 0xf00, 0xf0, 0xf, 0xfc00, 0xf300, 0xf0c0, 0xf030,
+        0xf00c, 0xf003, 0xc00f, 0x300f, 0xc0f, 0x30f, 0xcf, 0x3f
+    };
+    const uint16_t *valid;
+    size_t valid_count, i;
+    unsigned n20;
+
+    if (width > 4)
+        return false;
+    n20 = 1U << width;
+    if (primary_index >= n20 ||
+        (puncture & ~((1U << n20) - 1)))
+        return false;
+    if (width < 2 || puncture == 0)
+        return puncture == 0;
+    if (puncture & (1U << primary_index))
+        return false;
+    switch (width) {
+    case 2:
+        valid = valid80;
+        valid_count = nitems(valid80);
+        break;
+    case 3:
+        valid = valid160;
+        valid_count = nitems(valid160);
+        break;
+    default:
+        valid = valid320;
+        valid_count = nitems(valid320);
+        break;
+    }
+    for (i = 0; i < valid_count; i++)
+        if (valid[i] == puncture)
+            return true;
+    return false;
+}
+
 void
 ieee80211_eht_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
@@ -1002,8 +1050,8 @@ ieee80211_eht_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
                        (distance - 10) % 20)))
         return;
     unsigned primary_index = (primary - (center - (20U << width) / 2 + 10)) / 20;
-    if ((puncture & ~((1U << (1U << width)) - 1)) ||
-        (puncture & (1U << primary_index)))
+    unsigned narrowed_primary_index = primary_index;
+    if (!ieee80211_eht_puncturing_valid(width, puncture, primary_index))
         return;
     while (width) {
         bool allowed = false;
@@ -1042,8 +1090,10 @@ ieee80211_eht_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
         unsigned start_index = (primary_index >> width) << width;
         center = low + start_index * 20 + (20U << width) / 2 - 10;
         puncture = (puncture >> start_index) & ((1U << (1U << width)) - 1);
+        narrowed_primary_index = primary_index - start_index;
     }
-    if (width < 2 && puncture)
+    if (!ieee80211_eht_puncturing_valid(width, puncture,
+        narrowed_primary_index))
         return;
     if (!(ni->ni_eht_mcs_nss[0] & 0x0f) ||
         !(ni->ni_eht_mcs_nss[0] >> 4))
@@ -1552,6 +1602,7 @@ ieee80211_auth_sae(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 			ieee80211_auth_sae_failure(ic, ni);
 		return;
 	}
+#endif
 
 	if (seq == IEEE80211_AUTH_OPEN_REQUEST &&
 	    ni->ni_sae.sae_state == SAE_STATE_CONFIRMED) {

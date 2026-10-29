@@ -10933,7 +10933,8 @@ iwx_phy_ctxt_update(struct iwx_softc *sc, struct iwx_phy_ctxt *phyctxt,
                     struct ieee80211_channel *chan, uint8_t chains_static,
                     uint8_t chains_dynamic, uint32_t apply_time)
 {
-    uint16_t band_flags = (IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_5GHZ);
+    uint32_t band_flags = (IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_5GHZ |
+        IEEE80211_CHAN_6GHZ);
     int err;
     
     if (isset(sc->sc_enabled_capa,

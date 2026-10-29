@@ -68,7 +68,14 @@ channel_map = function(source, "void ItlIwx::\niwx_init_channel_map(")
 proto_source = (root / "itl80211/openbsd/net80211/ieee80211_proto.c").read_text(encoding="utf-8")
 vht_negotiate = function(proto_source, "void\nieee80211_vht_negotiate(")
 he_negotiate = function(proto_source, "void\nieee80211_he_negotiate(")
+eht_puncturing_valid = function(proto_source, "static bool\nieee80211_eht_puncturing_valid(")
 eht_negotiate = function(proto_source, "void\nieee80211_eht_negotiate(")
+input_source = (root / "itl80211/openbsd/net80211/ieee80211_input.c").read_text(encoding="utf-8")
+mld_assoc_response_links = function(input_source, "static void\nieee80211_mld_assoc_response_links(")
+output_source = (root / "itl80211/openbsd/net80211/ieee80211_output.c").read_text(encoding="utf-8")
+if ("uint8_t common_info_len = 1 + IEEE80211_ADDR_LEN + 2;" not in output_source or
+        "*frm++ = common_info_len;" not in output_source):
+    raise SystemExit("MLE CommonInfoLength must include its own length byte")
 
 program = r'''
 #include <cstddef>
@@ -517,9 +524,27 @@ static int ieee80211_ieee2mhz(int channel, int band) {
 }
 VHT_NEGOTIATION
 HE_NEGOTIATION
+EHT_PUNCTURING_VALID
 EHT_NEGOTIATION
 static void require(bool ok, const char *message) {
     if (!ok) { std::cerr << "FAIL: " << message << "\n"; std::exit(1); }
+}
+static void test_eht_puncturing_bitmap() {
+    require(ieee80211_eht_puncturing_valid(2, 0, 0), "80 MHz unpunctured bitmap is valid");
+    require(ieee80211_eht_puncturing_valid(2, 0x8, 0), "80 MHz single puncture is valid");
+    require(!ieee80211_eht_puncturing_valid(2, 0x3, 0), "80 MHz adjacent pair is invalid");
+    require(!ieee80211_eht_puncturing_valid(2, 0x1, 0), "80 MHz primary puncture is invalid");
+    require(ieee80211_eht_puncturing_valid(3, 0xc0, 0), "160 MHz adjacent pair is valid");
+    require(!ieee80211_eht_puncturing_valid(3, 0x1f, 8), "160 MHz unsupported pattern is invalid");
+    require(!ieee80211_eht_puncturing_valid(3, 0x100, 0), "160 MHz out-of-range bit is invalid");
+    require(ieee80211_eht_puncturing_valid(4, 0xc000, 0), "320 MHz adjacent pair is valid");
+    require(ieee80211_eht_puncturing_valid(4, 0xc00f, 4), "320 MHz supported mixed pattern is valid");
+    require(!ieee80211_eht_puncturing_valid(4, 0x1, 2), "320 MHz single puncture is invalid");
+    require(!ieee80211_eht_puncturing_valid(4, 0xc000, 14), "320 MHz primary puncture is invalid");
+    require(ieee80211_eht_puncturing_valid(0, 0, 0) &&
+            ieee80211_eht_puncturing_valid(1, 0, 1), "20 and 40 MHz allow only no puncturing");
+    require(!ieee80211_eht_puncturing_valid(0, 1, 0) &&
+            !ieee80211_eht_puncturing_valid(1, 1, 0), "20 and 40 MHz reject puncturing");
 }
 static void setup_5ghz(ieee80211com &ic, ieee80211_node &ni, ieee80211_channel &channel,
     uint8_t op_width, uint8_t seg0, uint8_t seg1) {
@@ -692,7 +717,35 @@ static void test_eht_primary_puncture_and_phy_restrictions() {
     require((noeht_ni.ni_flags & IEEE80211_NODE_HE) && !(noeht_ni.ni_flags & IEEE80211_NODE_EHT),
             "NO_EHT retains HE and prevents EHT negotiation");
 }
+static void test_eht_puncturing_after_width_narrowing() {
+    ieee80211com valid_ic{}; ieee80211_node valid_ni{}; ieee80211_channel valid_channel{};
+    setup_6ghz(valid_ic, valid_ni, valid_channel);
+    valid_ni.ni_he_optional[1] = 2; valid_ni.ni_he_optional[2] = 7;
+    ieee80211_he_negotiate(&valid_ic, &valid_ni);
+    set_eht_320(valid_ni); valid_ni.ni_eht_puncture = 0xc0;
+    valid_channel.ic_reg_flags = IEEE80211_CHAN_NO_320MHZ;
+    ieee80211_eht_negotiate(&valid_ic, &valid_ni);
+    require((valid_ni.ni_flags & IEEE80211_NODE_EHT) &&
+            valid_ni.ni_chw == IEEE80211_CHAN_WIDTH_160 &&
+            valid_ni.ni_eht_puncture == 0xc0 && valid_ni.ni_eht_center_freq1 == 6025,
+            "320 MHz bitmap remains legal after narrowing to 160 MHz");
+
+    ieee80211com invalid_ic{}; ieee80211_node invalid_ni{}; ieee80211_channel invalid_channel{};
+    setup_6ghz(invalid_ic, invalid_ni, invalid_channel);
+    invalid_ni.ni_he_optional[1] = 2; invalid_ni.ni_he_optional[2] = 7;
+    ieee80211_he_negotiate(&invalid_ic, &invalid_ni);
+    invalid_channel.ic_freq = 6035;
+    set_eht_320(invalid_ni); invalid_ni.ni_eht_puncture = 0x00cf;
+    invalid_channel.ic_reg_flags = IEEE80211_CHAN_NO_320MHZ;
+    ieee80211_eht_negotiate(&invalid_ic, &invalid_ni);
+    require(!(invalid_ni.ni_flags & IEEE80211_NODE_EHT) &&
+            invalid_ni.ni_chw == IEEE80211_CHAN_WIDTH_80 &&
+            invalid_channel.ic_center_freq1 == 5985,
+            "illegal projected bitmap rejects EHT without reducing HE width");
+}
 int main() {
+    test_eht_puncturing_bitmap();
+    test_eht_puncturing_after_width_narrowing();
     test_5ghz_vht_operation_and_he_width_fallback();
     test_he_160_and_no160_fallback();
     test_eht_320_no320_and_he_fallback();
@@ -700,7 +753,177 @@ int main() {
     test_eht_primary_puncture_and_phy_restrictions();
     std::cout << "production VHT/HE/EHT bandwidth checks passed\n";
 }
-'''.replace("VHT_NEGOTIATION", vht_negotiate).replace("HE_NEGOTIATION", he_negotiate).replace("EHT_NEGOTIATION", eht_negotiate)
+'''.replace("VHT_NEGOTIATION", vht_negotiate).replace("HE_NEGOTIATION", he_negotiate).replace("EHT_PUNCTURING_VALID", eht_puncturing_valid).replace("EHT_NEGOTIATION", eht_negotiate)
+
+mld_program = r'''
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <vector>
+
+#define MCLBYTES 256
+#define IEEE80211_ADDR_LEN 6
+#define IEEE80211_ELEMID_EXT_MULTI_LINK 255
+#define IEEE80211_ELEMID_EXTENSION 255
+#define IEEE80211_ELEMID_RATES 1
+#define IEEE80211_ELEMID_XRATES 50
+#define IEEE80211_ELEMID_HTCAPS 45
+#define IEEE80211_ELEMID_HTOP 61
+#define IEEE80211_ELEMID_VHT_CAP 191
+#define IEEE80211_ELEMID_VHT_OPMODE 199
+#define IEEE80211_ELEMID_EXT_HE_CAPABILITY 35
+#define IEEE80211_ELEMID_EXT_HE_OPERATION 36
+#define IEEE80211_ELEMID_EXT_HE_6GHZ_CAPA 59
+#define IEEE80211_ELEMID_EXT_HE_MU_EDCA 38
+#define IEEE80211_ELEMID_EXT_EHT_CAPABILITY 108
+#define IEEE80211_ELEMID_EXT_EHT_OPERATION 109
+#define IEEE80211_MLE_SUBELEM_PER_STA_PROFILE 0
+#define IEEE80211_MLE_SUBELEM_FRAGMENT 254
+#define IEEE80211_MLE_STA_CONTROL_LINK_ID 0x000f
+#define IEEE80211_MLE_STA_CONTROL_COMPLETE_PROFILE 0x0010
+#define IEEE80211_MLE_STA_CONTROL_STA_MAC_ADDR_PRESENT 0x0020
+#define IEEE80211_STATUS_SUCCESS 0
+#define IEEE80211_RATE_MAXSIZE 15
+#define IEEE80211_RATE_BASIC 0x80
+#define IEEE80211_F_DOSORT 1
+#define IEEE80211_F_DOFRATE 2
+#define IEEE80211_F_DONEGO 4
+#define IEEE80211_F_DODEL 8
+#define IEEE80211_AID(aid) ((aid) & ~0xc000)
+#define LE_READ_2(p) ((uint16_t)((p)[0] | ((p)[1] << 8)))
+#define LE_READ_4(p) ((uint32_t)((p)[0] | ((p)[1] << 8) | ((p)[2] << 16) | ((p)[3] << 24)))
+
+struct ieee80211_node {
+    uint8_t ni_bssid[IEEE80211_ADDR_LEN]{};
+    uint16_t ni_associd = 0;
+    uint16_t ni_capinfo = 0;
+    bool ni_he_requested = false;
+    bool ni_eht_requested = false;
+    uint8_t test_rate_value = 0;
+};
+struct ieee80211_mld_link_info {
+    uint8_t ap_link_id = 0;
+    ieee80211_node *ni = nullptr;
+    uint16_t assoc_id = 0;
+    bool assoc_accepted = false;
+};
+struct ieee80211com {
+    uint8_t ic_mld_link_count = 2;
+    ieee80211_mld_link_info ic_mld_links[2]{};
+    ieee80211_node *ic_bss = nullptr;
+};
+
+static uint8_t first_rate_value;
+static int ieee80211_setup_rates(ieee80211com *, ieee80211_node *ni,
+    const uint8_t *rates, const uint8_t *, int) {
+    if (rates != nullptr) {
+        first_rate_value = rates[2];
+        ni->test_rate_value = rates[2];
+    }
+    return 0;
+}
+static void ieee80211_setup_he_6ghz_capa(ieee80211_node *, const uint8_t *, size_t) {}
+static void ieee80211_setup_htcaps(ieee80211_node *, const uint8_t *, size_t) {}
+static void ieee80211_setup_htop(ieee80211_node *, const uint8_t *, size_t, int) {}
+static void ieee80211_setup_vhtcaps(ieee80211com *, ieee80211_node *, const uint8_t *) {}
+static void ieee80211_setup_vhtopmode(ieee80211_node *, const uint8_t *) {}
+static void ieee80211_update_he_params(ieee80211com *, ieee80211_node *,
+    const uint8_t *, const uint8_t *, const uint8_t *) {}
+static void ieee80211_update_eht_params(ieee80211com *, ieee80211_node *,
+    const uint8_t *, const uint8_t *) {}
+static void ieee80211_ht_negotiate(ieee80211com *, ieee80211_node *) {}
+static void ieee80211_vht_negotiate(ieee80211com *, ieee80211_node *) {}
+static void ieee80211_he_negotiate(ieee80211com *, ieee80211_node *) {}
+static void ieee80211_eht_negotiate(ieee80211com *, ieee80211_node *) {}
+static void ieee80211_sta_set_rx_nss(ieee80211com *, ieee80211_node *) {}
+
+MLD_ASSOC_RESPONSE_LINKS
+
+static void require(bool ok, const char *message) {
+    if (!ok) { std::cerr << "FAIL: " << message << "\n"; std::exit(1); }
+}
+
+static std::vector<uint8_t> make_mle(uint16_t status, const uint8_t *bssid,
+    bool wrong_mac = false, int truncation = 0) {
+    std::vector<uint8_t> profile = {
+        0x33, 0x00, 7,
+        static_cast<uint8_t>(bssid[0] ^ (wrong_mac ? 0x40 : 0)),
+        bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
+        0x34, 0x12,
+        static_cast<uint8_t>(status & 0xff),
+        static_cast<uint8_t>(status >> 8),
+        IEEE80211_ELEMID_RATES, 1, 0x82
+    };
+    if (truncation == 1)
+        profile.resize(12);
+    else if (truncation == 2)
+        profile.pop_back();
+
+    std::vector<uint8_t> mle = {
+        IEEE80211_ELEMID_EXTENSION, 0, IEEE80211_ELEMID_EXT_MULTI_LINK,
+        9, 0x02, 0x10, 0x20, 0x30, 0x40, 0x50, 0x00, 0x00,
+        IEEE80211_MLE_SUBELEM_PER_STA_PROFILE,
+        static_cast<uint8_t>(profile.size())
+    };
+    mle.insert(mle.end(), profile.begin(), profile.end());
+    mle[1] = static_cast<uint8_t>(mle.size() - 2);
+    return mle;
+}
+
+static void init_fixture(ieee80211com &ic, ieee80211_node &bss,
+    ieee80211_node &link) {
+    const uint8_t bssid[IEEE80211_ADDR_LEN] = {0x02, 0xaa, 0xbb, 0xcc, 0xdd, 0xee};
+    std::memcpy(link.ni_bssid, bssid, sizeof(bssid));
+    ic.ic_bss = &bss;
+    ic.ic_mld_links[1].ap_link_id = 3;
+    ic.ic_mld_links[1].ni = &link;
+}
+
+static void test_standard_common_info_profile_fixed_fields_and_aid() {
+    ieee80211com ic{};
+    ieee80211_node bss{}, link{};
+    init_fixture(ic, bss, link);
+    const uint16_t assoc_id = 0x0123;
+    std::vector<uint8_t> mle = make_mle(IEEE80211_STATUS_SUCCESS, link.ni_bssid);
+    first_rate_value = 0;
+
+    require(mle[3] == 9, "CommonInfoLength includes its own length octet");
+    require(mle[12] == IEEE80211_MLE_SUBELEM_PER_STA_PROFILE,
+        "standard CommonInfoLength places the profile after the 9-byte common info");
+    ieee80211_mld_assoc_response_links(&ic, mle.data(), mle.size(), assoc_id);
+    require(ic.ic_mld_links[1].assoc_accepted, "valid per-STA profile accepted");
+    require(ic.ic_mld_links[1].assoc_id == assoc_id && link.ni_associd == assoc_id,
+        "profile inherits the main association AID");
+    require(first_rate_value == 0x82 && link.test_rate_value == 0x82,
+        "IE immediately after capability and status is parsed as Supported Rates");
+}
+
+static void test_invalid_profile_responses_are_not_accepted() {
+    const uint16_t assoc_id = 0x0123;
+    for (int failure = 0; failure < 3; failure++) {
+        ieee80211com ic{};
+        ieee80211_node bss{}, link{};
+        init_fixture(ic, bss, link);
+        std::vector<uint8_t> mle = make_mle(
+            failure == 0 ? 1 : IEEE80211_STATUS_SUCCESS,
+            link.ni_bssid, failure == 2, failure == 1 ? 1 : 0);
+        ieee80211_mld_assoc_response_links(&ic, mle.data(), mle.size(), assoc_id);
+        require(!ic.ic_mld_links[1].assoc_accepted && ic.ic_mld_links[1].assoc_id == 0 &&
+            link.ni_associd == 0,
+            failure == 0 ? "failed link status rejected" :
+            failure == 1 ? "truncated fixed profile rejected" :
+                           "profile with a different link MAC rejected");
+    }
+}
+
+int main() {
+    test_standard_common_info_profile_fixed_fields_and_aid();
+    test_invalid_profile_responses_are_not_accepted();
+    std::cout << "production MLO association response checks passed\n";
+}
+'''.replace("MLD_ASSOC_RESPONSE_LINKS", mld_assoc_response_links)
 
 with tempfile.TemporaryDirectory(prefix="itlwm-mcc-response-") as folder:
     folder = Path(folder)
@@ -720,3 +943,12 @@ with tempfile.TemporaryDirectory(prefix="itlwm-mcc-response-") as folder:
         str(bandwidth_test), "-o", str(bandwidth_binary)
     ], check=True)
     subprocess.run([str(bandwidth_binary)], check=True)
+
+    mld_test = folder / "mld_assoc_response.cpp"
+    mld_test.write_text(mld_program)
+    mld_binary = folder / "mld_assoc_response"
+    subprocess.run(shlex.split(os.environ.get("CXX", "c++")) + [
+        "-std=c++14", "-Wall", "-Wextra", "-Wno-unused-parameter", "-Werror",
+        str(mld_test), "-o", str(mld_binary)
+    ], check=True)
+    subprocess.run([str(mld_binary)], check=True)
