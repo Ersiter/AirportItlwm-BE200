@@ -69,6 +69,25 @@ dhcp_state() {
     done
 }
 
+# Every property published under the "AirportItlwm-" prefix, one "key<TAB>value"
+# row each. Names are discovered at run time: Fix12 renamed several of them
+# (user_eapol_rx_delivered and neighbours), so matching a fixed key list returns
+# nothing on a newer driver and hides the regression.
+dump_prefix() {
+    /usr/sbin/ioreg -p IOService -l -w 0 2>/dev/null | /usr/bin/awk '
+        /"AirportItlwm-/ {
+            line = $0
+            sub(/^[ \t]+/, "", line)
+            if (!match(line, /"AirportItlwm-[^"]*"/))
+                next
+            key = substr(line, RSTART + 1, RLENGTH - 2)
+            rest = substr(line, RSTART + RLENGTH)
+            sub(/^[ \t]*=[ \t]*/, "", rest)
+            printf "%s\t%s\n", key, rest
+        }
+    '
+}
+
 framework_layout() {
     local framework='/System/Library/PrivateFrameworks/IO80211.framework/Versions/A'
     /bin/ls -la "$framework"
@@ -106,6 +125,7 @@ snapshot() {
     capture "$phase-wifi-interface" /usr/sbin/ioreg -p IOService -r -c IO80211Interface -l -w 0
     capture "$phase-wifi-infra" /usr/sbin/ioreg -p IOService -r -c IO80211InfraInterface -l -w 0
     capture "$phase-wifi-driver" /usr/sbin/ioreg -p IOService -r -c AirportItlwm -l -w 0
+    capture "$phase-airport-prefix" dump_prefix
     capture "$phase-ifconfig" /sbin/ifconfig -a
     capture "$phase-wifi-status" /usr/bin/wdutil info
     capture "$phase-dhcp-state" dhcp_state
@@ -161,25 +181,30 @@ for interface in $wifi_interfaces; do
         'ether proto 0x888e or (udp and (port 67 or port 68))' > "$out/$interface-eapol-dhcp.txt" 2>&1 &
     packet_pids="$packet_pids $!"
 done
+: > "$out/property-timeline.tsv"
 (
     trap - EXIT INT TERM
     while :; do
-        date '+%Y-%m-%d %H:%M:%S %z'
-        /usr/sbin/ioreg -p IOService -r -c IOPCIDevice -d 2 -l -w 0 | /usr/bin/awk '
-            /\+-o / { node=$0; shown=0 }
-            /"AirportItlwm-/ { if (!shown) { print node; shown=1 }; print }
-        '
-        printf 'pci-query-status=%s\n' "$?"
-        /sbin/ifconfig -a | /usr/bin/awk '
-            /^[[:alnum:]_.-]+:/ { print; next }
-            /^[[:space:]]+status:/ { print }
-        '
-        for interface in $wifi_interfaces; do
-            /usr/sbin/netstat -I "$interface" -b
-        done
+        stamp="$(date '+%Y-%m-%d %H:%M:%S %z')"
+        dump_prefix > "$out/.sample-properties"
+        sample_status=$?
+        /usr/bin/awk -v s="$stamp" '{ printf "%s\t%s\n", s, $0 }' \
+            "$out/.sample-properties" >> "$out/property-timeline.tsv"
+        {
+            printf '%s\n' "$stamp"
+            /bin/cat "$out/.sample-properties"
+            printf 'property-query-status=%s\n' "$sample_status"
+            /sbin/ifconfig -a | /usr/bin/awk '
+                /^[[:alnum:]_.-]+:/ { print; next }
+                /^[[:space:]]+status:/ { print }
+            '
+            for interface in $wifi_interfaces; do
+                /usr/sbin/netstat -I "$interface" -b
+            done
+        } >> "$out/state-timeline.txt"
         sleep 1
     done
-) > "$out/state-timeline.txt" 2>&1 &
+) 2>&1 &
 sample_pid=$!
 
 echo
@@ -194,6 +219,34 @@ sleep 20
 stop_live
 snapshot after
 capture recent-log /usr/bin/log show --last 15m --info --debug --style compact --predicate "$predicate"
+
+/bin/rm -f "$out/.sample-properties"
+
+# Key inventory plus the keys that only showed up during the attempt window. A
+# field renamed by a newer driver appears as a new key instead of vanishing.
+/usr/bin/awk -F'\t' '
+    NF < 3 { next }
+    {
+        key = $2
+        if (!(key in first)) { first[key] = $1; order[++n] = key }
+        last[key] = $1
+        count[key]++
+        value[key] = $3
+    }
+    END {
+        printf "%-44s %7s  %-24s %-24s %s\n", "key", "samples", "first", "last", "lastvalue"
+        for (i = 1; i <= n; i++) {
+            key = order[i]
+            printf "%-44s %7d  %-24s %-24s %s\n", key, count[key], first[key], last[key], value[key]
+        }
+    }
+' "$out/property-timeline.tsv" > "$out/key-inventory.txt"
+
+for phase in before after; do
+    /usr/bin/awk -F'\t' '$1 ~ /^AirportItlwm-/ { print $1 }' \
+        "$out/$phase-airport-prefix.txt" | /usr/bin/sort > "$out/keys-$phase.txt"
+done
+/usr/bin/comm -13 "$out/keys-before.txt" "$out/keys-after.txt" > "$out/keys-new-after-attempt.txt"
 
 archive="$out.tar.gz"
 if /usr/bin/tar -czf "$archive" -C "$base" "$(basename "$out")"; then
