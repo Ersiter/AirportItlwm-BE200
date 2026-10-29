@@ -1152,6 +1152,15 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
         err = wait_txq(sc->first_data_qid);
         for (int tid = 0; !err && tid < IWX_MAX_TID_COUNT; tid++)
             err = wait_txq(sc->sc_tid_data[tid].qid);
+        if (err == EWOULDBLOCK) {
+            /*
+             * Every queue is torn down right below, so frames still pending
+             * here are dropped either way. Failing the deauth instead leaves
+             * the station half-removed and escalates to a whole-card reset.
+             */
+            sc->sc_pcitag->setProperty("AirportItlwm-MLDTxDrainTimeout", 1, 32);
+            err = 0;
+        }
         if (err) {
             iwx_mld_record_state_failure(sc, "deauth", "station-tx-drain",
                 err, IWX_TXPATH_FLUSH, -1);
