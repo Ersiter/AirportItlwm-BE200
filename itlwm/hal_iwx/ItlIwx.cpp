@@ -4556,6 +4556,42 @@ uint32_t *channel_profile_v4, int nchan_profile)
               IEEE80211_IS_CHAN_6GHZ(channel) ? "6" :
               (!IEEE80211_IS_CHAN_2GHZ(channel)) ? "5.2" : "2.4"));
     }
+
+#ifdef AIRPORT_WCL
+    {
+        int built2 = 0, built5 = 0, built6 = 0;
+        for (int i = 0; i <= IEEE80211_CHAN_MAX; i++) {
+            const struct ieee80211_channel *c = &ic->ic_channels[i];
+            if (!c->ic_freq)
+                continue;
+            if (IEEE80211_IS_CHAN_6GHZ(c))
+                built6++;
+            else if (IEEE80211_IS_CHAN_5GHZ(c))
+                built5++;
+            else if (IEEE80211_IS_CHAN_2GHZ(c))
+                built2++;
+        }
+        int p6nonzero = 0, p6valid = 0;
+        if (channel_profile_v4) {
+            for (int i = IWX_NUM_2GHZ_CHANNELS + 37; i < nchan_profile &&
+                 i < IWX_NUM_CHANNELS; i++) {
+                const uint32_t word = le32toh(channel_profile_v4[i]);
+                if (word)
+                    p6nonzero++;
+                if (word & IWX_NVM_CHANNEL_VALID)
+                    p6valid++;
+            }
+        }
+        char summary[160];
+        snprintf(summary, sizeof(summary),
+            "2g=%d 5g=%d 6g=%d nchan=%d profile=%d uhb=%d v4=%d p6nz=%d p6v=%d w51=0x%x w53=0x%x",
+            built2, built5, built6, nchan, nchan_profile, sc->sc_uhb_supported,
+            channel_profile_v4 != NULL ? 1 : 0, p6nonzero, p6valid,
+            channel_profile_v4 && nchan_profile > 51 ? le32toh(channel_profile_v4[51]) : 0,
+            channel_profile_v4 && nchan_profile > 53 ? le32toh(channel_profile_v4[53]) : 0);
+        sc->sc_pcitag->setProperty("AirportItlwm-ChannelTableBuilt", summary);
+    }
+#endif
 }
 
 int ItlIwx::
@@ -9029,9 +9065,6 @@ iwx_get_scan_req_umac_data(struct iwx_softc *sc, struct iwx_scan_req_umac *req)
 #define IWX_SCAN_ADWELL_N_APS_GO_FRIENDLY 10
 /* adaptive dwell number of APs override for social channels */
 #define IWX_SCAN_ADWELL_N_APS_SOCIAL_CHS 2
-
-/* minimal number of 2GHz and 5GHz channels in the regular scan request */
-#define IWX_MVM_6GHZ_PASSIVE_SCAN_MIN_CHANS 4
 
 int ItlIwx::
 iwx_umac_scan(struct iwx_softc *sc, int bgscan)
