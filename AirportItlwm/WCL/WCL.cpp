@@ -662,6 +662,10 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
         return;
     }
     unsigned channel = ieee80211_chan2number(ic, node->ni_chan);
+    bool sixGHz = IEEE80211_IS_CHAN_6GHZ(node->ni_chan);
+    if (sixGHz)
+        instance->pciNub->setProperty("AirportItlwm-WCL6GHzBssReceived",
+            ++wcl6GHzReceived, 32);
     uint16_t spec = AirportWCL::channelSpec20(channel, wclChannelBand(node->ni_chan));
     if (!spec) {
         instance->pciNub->setProperty("AirportItlwm-WCLBeaconDrops", ++wclBeaconDrops, 32);
@@ -671,8 +675,7 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
     instance->pciNub->setProperty("AirportItlwm-WCLScanResults", ++wclScanResults, 32);
     instance->pciNub->setProperty("AirportItlwm-WCLScanLastChannel", channel, 32);
     instance->pciNub->setProperty("AirportItlwm-WCLScanLastBand",
-        IEEE80211_IS_CHAN_6GHZ(node->ni_chan) ? 6 :
-            (IEEE80211_IS_CHAN_5GHZ(node->ni_chan) ? 5 : 2), 32);
+        sixGHz ? 6 : (IEEE80211_IS_CHAN_5GHZ(node->ni_chan) ? 5 : 2), 32);
     {
         size_t ssidLength = node->ni_esslen > sizeof(wclResultRing[0].ssid) ?
             sizeof(wclResultRing[0].ssid) : node->ni_esslen;
@@ -722,6 +725,18 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
                                                        metadata, messageSize, true);
     instance->pciNub->setProperty("AirportItlwm-WCLScanResultPostStatus",
                                   uint32_t(scanResultStatus), 32);
+    if (sixGHz) {
+        /*
+         * Received counts what reached this function, published counts the
+         * messages handed to WCL. Equal counts mean the loss is behind the
+         * driver; unequal means a filter here dropped it.
+         */
+        instance->pciNub->setProperty("AirportItlwm-WCL6GHzBssPublished",
+            ++wcl6GHzPublished, 32);
+        instance->pciNub->setProperty("AirportItlwm-WCL6GHzLastSpec", spec, 32);
+        instance->pciNub->setProperty("AirportItlwm-WCL6GHzLastPostStatus",
+            uint32_t(scanResultStatus), 32);
+    }
     IOFree(metadata, size);
 }
 
