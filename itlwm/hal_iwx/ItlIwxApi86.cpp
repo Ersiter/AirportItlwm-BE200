@@ -184,6 +184,7 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
     uint8_t sixGHzCount = 0;
     bool hasLegacyChannel = false;
     int batchBand = -1;
+    int batchBandValue = 0;
     for (; channelIndex <= IEEE80211_CHAN_MAX; channelIndex++) {
         auto c = &ic->ic_channels[channelIndex];
         if (!isset(ic->ic_chan_active, channelIndex) || !c->ic_freq || !c->ic_flags)
@@ -212,6 +213,7 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
                                  : channelLimit))
             break;
         batchBand = channelBand;
+        batchBandValue = is6GHz ? 6 : (is5GHz ? 5 : 2);
         auto channel = &cp->channel_config[cp->count++];
         uint32_t band = is6GHz ? IWX_PHY_BAND_6 :
             is2GHz ? IWX_PHY_BAND_24 : IWX_PHY_BAND_5;
@@ -285,6 +287,7 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
 
 #ifdef AIRPORT_WCL
     sc->sc_pcitag->setProperty("AirportItlwm-HWScanBatch", ++sc->sc_scan_batch, 32);
+    sc->sc_pcitag->setProperty("AirportItlwm-WCLScanLastBatchBand", batchBandValue, 32);
     sc->sc_pcitag->setProperty("AirportItlwm-HWScan6GHzCount", sixGHzCount, 32);
     sc->sc_pcitag->setProperty("AirportItlwm-HWScanChannelCount", cp->count, 32);
     sc->sc_pcitag->setProperty("AirportItlwm-HWScanChannelMap",
