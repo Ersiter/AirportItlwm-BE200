@@ -150,6 +150,7 @@ public:
     int iwx_mld_mac_ctxt_cmd(iwx_softc *, iwx_node *, uint32_t, int);
     int iwx_mld_add_sta_cmd(iwx_softc *, iwx_node *, int);
     int iwx_mld_rm_sta_cmd(iwx_softc *, iwx_node *);
+    void iwx_mld_rm_sta_local(iwx_softc *, iwx_node *);
     int iwx_mld_auth(iwx_softc *);
     int iwx_mld_run(iwx_softc *);
     int iwx_mld_run_stop(iwx_softc *);

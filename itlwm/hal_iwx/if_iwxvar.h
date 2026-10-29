@@ -714,6 +714,7 @@ struct iwx_softc {
 	uint8_t sc_mld_disconnect_pending;
 	int sc_mld_pending_generation;
     uint16_t sc_mld_txq_tidmask;
+    uint32_t sc_mld_local_teardown;
     uint8_t sc_mld_sta_ids[IWX_MLD_MAX_LINKS];
     uint32_t sc_mld_sta_mask;
 	uint32_t sc_mld_active_sta_mask;

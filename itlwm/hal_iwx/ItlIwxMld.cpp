@@ -1099,6 +1099,47 @@ iwx_mld_set_key(struct iwx_softc *sc, struct ieee80211_node *ni,
     return 0;
 }
 
+/*
+ * Linux iwlwifi waits IWL_FLUSH_WAIT_MS per queue in
+ * iwl_trans_pcie_wait_txq_empty(); iwl_mvm_rm_sta() then aborts the removal
+ * when that wait fails, before the queues are disabled and their rings freed.
+ */
+static constexpr int IWX_FLUSH_WAIT_MS = 2000;
+
+void ItlIwx::
+iwx_mld_rm_sta_local(struct iwx_softc *sc, struct iwx_node *in)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+
+    for (int tid = 0; tid < IWX_MAX_TID_COUNT; tid++) {
+        const uint16_t qid = sc->sc_tid_data[tid].qid;
+        if (qid == IWX_INVALID_QUEUE || qid >= nitems(sc->txq))
+            continue;
+        iwx_free_tx_ring(sc, &sc->txq[qid]);
+        sc->sc_tid_data[tid].qid = IWX_INVALID_QUEUE;
+    }
+    for (int i = 0; i < IEEE80211_GROUP_NKID; i++) {
+        struct ieee80211_key *key = &ic->ic_nw_keys[i];
+        if (key->k_cipher != IEEE80211_CIPHER_CCMP &&
+            !ieee80211_is_bip_cipher(key->k_cipher))
+            continue;
+        if (ieee80211_is_bip_cipher(key->k_cipher))
+            ieee80211_delete_key(ic, &in->in_ni, key);
+        explicit_bzero(key, sizeof(*key));
+    }
+    explicit_bzero(&in->in_ni.ni_pairwise_key, sizeof(in->in_ni.ni_pairwise_key));
+
+    sc->sc_flags &= ~IWX_FLAG_STA_ACTIVE;
+    sc->sc_mld_sta_mask = 0;
+    sc->sc_mld_active_sta_mask = 0;
+    sc->sc_mld_link_active = 0;
+    sc->sc_mld_active_links = 0;
+    sc->sc_mld_primary_link = 0;
+    sc->sc_mld_emlsr_active = 0;
+    sc->sc_mld_tx_link_seq = 0;
+    sc->sc_mld_txq_tidmask = 0;
+}
+
 int ItlIwx::
 iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
 {
@@ -1107,6 +1148,29 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
     struct ieee80211com *ic = &sc->sc_ic;
     int err;
     int generation = sc->sc_generation;
+
+    /*
+     * A firmware that is not running cannot service the flushes, the MLD
+     * queue removal or the key removal below, so each attempt would fail and
+     * schedule another recovery on top of the one already coming. iwl_mvm
+     * skips the queue wait outright in that state (CVE-2024-47672); with
+     * nothing on the device left to remove, the removal is done locally.
+     * A generation change means iwx_stop already owns the rings.
+     */
+    if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) ||
+        !(sc->sc_init_complete & IWX_INIT_COMPLETE)) {
+        if (generation != sc->sc_generation) {
+            sc->sc_pcitag->setProperty("AirportItlwm-MLDRemoveSkipped", "generation");
+            return ENXIO;
+        }
+        sc->sc_pcitag->setProperty("AirportItlwm-MLDLocalTeardown",
+            ++sc->sc_mld_local_teardown, 32);
+        sc->sc_pcitag->setProperty("AirportItlwm-MLDLocalTeardownReason",
+            (sc->sc_flags & IWX_FLAG_SHUTDOWN) ? "shutdown" : "fw-not-running");
+        iwx_mld_rm_sta_local(sc, in);
+        return 0;
+    }
+
     int version = iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP, IWX_MLD_STA_REMOVE_CMD);
     if (version != 1 && version != IWX_FW_CMD_VER_UNKNOWN) {
         iwx_mld_record_state_failure(sc, "deauth", "station-remove-version",
@@ -1132,35 +1196,45 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
                 return err;
             }
         }
-        AbsoluteTime deadline;
-        clock_interval_to_deadline(1, kSecondScale,
-            reinterpret_cast<uint64_t *>(&deadline));
+        /*
+         * One deadline per queue, matching iwl_trans_pcie_wait_txq_empty().
+         * A timeout ends the removal: the queues below are freed and their
+         * rings released, which must not happen while firmware may still be
+         * reading them.
+         */
         auto wait_txq = [&](uint16_t qid) {
             if (qid == IWX_INVALID_QUEUE || qid >= nitems(sc->txq))
                 return 0;
             struct iwx_tx_ring *ring = &sc->txq[qid];
-            while (ring->queued != 0) {
+            AbsoluteTime deadline;
+            clock_interval_to_deadline(IWX_FLUSH_WAIT_MS, kMillisecondScale,
+                reinterpret_cast<uint64_t *>(&deadline));
+            /*
+             * Compare the ring's read and write pointers, as
+             * iwl_trans_pcie_wait_txq_empty() compares read_ptr and write_ptr.
+             * The read pointer only moves in iwx_ampdu_txq_advance(), driven by
+             * block-ack notifications and by read_after_flush from the
+             * TXPATH_FLUSH response, so it carries the firmware's own view of
+             * what has been retired rather than a driver-side count.
+             */
+            while (ring->tail != ring->cur) {
                 int result = getMainCommandGate()->commandSleep(
                     &ring->queued, deadline, THREAD_UNINT);
                 if (generation != sc->sc_generation)
                     return ENXIO;
-                if (result != THREAD_AWAKENED && ring->queued != 0)
+                if (result != THREAD_AWAKENED && ring->tail != ring->cur)
                     return result == THREAD_TIMED_OUT ? EWOULDBLOCK : EINTR;
             }
             return 0;
         };
-        err = wait_txq(sc->first_data_qid);
+        /*
+         * iwl_mvm_wait_sta_queues_empty() walks only the station's own TID
+         * queues. first_data_qid is the shared management queue and its ring
+         * is not released here, so waiting on it would only stall the deauth
+         * behind unrelated traffic.
+         */
         for (int tid = 0; !err && tid < IWX_MAX_TID_COUNT; tid++)
             err = wait_txq(sc->sc_tid_data[tid].qid);
-        if (err == EWOULDBLOCK) {
-            /*
-             * Every queue is torn down right below, so frames still pending
-             * here are dropped either way. Failing the deauth instead leaves
-             * the station half-removed and escalates to a whole-card reset.
-             */
-            sc->sc_pcitag->setProperty("AirportItlwm-MLDTxDrainTimeout", 1, 32);
-            err = 0;
-        }
         if (err) {
             iwx_mld_record_state_failure(sc, "deauth", "station-tx-drain",
                 err, IWX_TXPATH_FLUSH, -1);
