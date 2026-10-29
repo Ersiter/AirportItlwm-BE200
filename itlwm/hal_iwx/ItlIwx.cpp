@@ -11941,6 +11941,16 @@ iwx_endscan(struct iwx_softc *sc, uint8_t status, bool allowContinuation)
             sc->sc_scan_task_generation = sc->sc_scan_generation;
             sc->sc_scan_task_device_generation = sc->sc_generation;
             iwx_add_task(sc, sc->sc_nswq, &sc->sc_scan_task);
+#ifdef AIRPORT_WCL
+            /*
+             * Each batch is a separate firmware command, so the host's
+             * deadline restarts here. Sharing one budget across every band
+             * let a slow band time out the whole request and discard the
+             * results the earlier bands had already delivered.
+             */
+            if (ic->ic_event_handler)
+                (*ic->ic_event_handler)(ic, IEEE80211_EVT_SCAN_BATCH, NULL);
+#endif
             return;
         }
     }
@@ -12470,6 +12480,17 @@ iwx_process_mcc_request(struct iwx_softc *sc, const char *alpha2,
         sc->sc_ic.ic_state == IEEE80211_S_RUN)
         return 0;
 
+    /*
+     * A boot argument pins the country. While it is set, a request for a
+     * different one is dropped rather than letting the firmware apply a
+     * narrower profile; otherwise a radio cycle starts from ZZ and 6 GHz
+     * stays unavailable until the OS reports a country of its own.
+     */
+    if (sc->sc_mcc_override_valid &&
+        (alpha2 == NULL || alpha2[0] != sc->sc_mcc_override[0] ||
+         alpha2[1] != sc->sc_mcc_override[1]))
+        return 0;
+
     return iwx_send_update_mcc_cmd(sc, alpha2, sourceId);
 }
 
@@ -12671,6 +12692,11 @@ iwx_init_hw(struct iwx_softc *sc)
         if (hasOverride) {
             memcpy(requestedMcc, overrideMcc, sizeof(requestedMcc));
             sourceId = IWX_MCC_SOURCE_ME;
+            memcpy(sc->sc_mcc_override, overrideMcc,
+                sizeof(sc->sc_mcc_override));
+            sc->sc_mcc_override_valid = 1;
+            sc->sc_pcitag->setProperty("AirportItlwm-MCCOverride",
+                overrideMcc[0] == 0 ? "" : overrideMcc);
         }
         err = iwx_send_update_mcc_cmd(sc, requestedMcc, sourceId);
         if (err) {

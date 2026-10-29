@@ -40,6 +40,13 @@ static void clearWCLSAE(ieee80211com *ic)
 
 enum { WCL_USER_EAPOL_DEFER, WCL_USER_EAPOL_SET_LINK, WCL_USER_EAPOL_TAKE, WCL_USER_EAPOL_PURGE, WCL_USER_EAPOL_INPUT_RESULT };
 
+/*
+ * Deadline for one scan batch. A request that spans several bands arms this
+ * again as each batch completes, so the budget covers how long a single
+ * firmware command may take rather than the whole multi-band request.
+ */
+static constexpr uint32_t WCL_SCAN_BATCH_TIMEOUT_MS = 20000;
+
 struct WCLUserEapolInputResult {
     uint32_t count;
     int status;
@@ -583,7 +590,7 @@ IOReturn AirportItlwmSkywalkInterface::beginWCLScan(apple80211ScanRequest *reque
     ic->ic_wcl_scan_restricted = scan.channelCount != 0;
     memcpy(ic->ic_wcl_scan_channels, mappedChannels, sizeof(mappedChannels));
     memcpy(ic->ic_wcl_scan_channels6GHz, mappedChannels6GHz, sizeof(mappedChannels6GHz));
-    scanSource->setTimeoutMS(20000);
+    scanSource->setTimeoutMS(WCL_SCAN_BATCH_TIMEOUT_MS);
     if (ic->ic_state == IEEE80211_S_RUN) {
         ieee80211_begin_cache_bgscan(&ic->ic_if);
         if (!(ic->ic_flags & IEEE80211_F_BGSCAN)) {
@@ -1376,6 +1383,10 @@ void AirportItlwmSkywalkInterface::handleWCLEvent(int code, void *data)
             }
             break;
         }
+        case IEEE80211_EVT_SCAN_BATCH:
+            if (scanPending)
+                scanSource->setTimeoutMS(WCL_SCAN_BATCH_TIMEOUT_MS);
+            break;
         case IEEE80211_EVT_SCAN_DONE:
             if (scanPending) {
                 scanCompleted = true;
