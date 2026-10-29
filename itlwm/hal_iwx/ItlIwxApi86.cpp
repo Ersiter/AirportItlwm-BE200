@@ -21,6 +21,13 @@
 
 static constexpr uint8_t IWL_SCAN_DWELL_ACTIVE = 10;
 static constexpr uint8_t IWL_SCAN_DWELL_PASSIVE = 110;
+/*
+ * A passive 6 GHz channel dwells for IWL_SCAN_DWELL_PASSIVE, so a command
+ * carrying every PSC channel runs for several seconds and IO80211 gives up
+ * before it completes, dropping the whole band's results. Program a slice
+ * per command and let iwx_scan_task() issue the remainder.
+ */
+static constexpr uint8_t IWX_SCAN_6GHZ_BATCH_MAX = 15;
 static constexpr uint8_t IWL_SCAN_NUM_OF_FRAGS = 3;
 static constexpr uint8_t IWX_SCAN_ADWELL_DEFAULT_N_APS_SOCIAL = 10;
 static constexpr uint8_t IWX_SCAN_ADWELL_DEFAULT_LB_N_APS = 2;
@@ -201,7 +208,8 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
         int channelBand = is6GHz ? 1 : 0;
         if (cp->count && batchBand != channelBand)
             break;
-        if (cp->count >= channelLimit)
+        if (cp->count >= (is6GHz ? MIN(channelLimit, IWX_SCAN_6GHZ_BATCH_MAX)
+                                 : channelLimit))
             break;
         batchBand = channelBand;
         auto channel = &cp->channel_config[cp->count++];
