@@ -4507,7 +4507,15 @@ uint32_t *channel_profile_v4, int nchan_profile)
         if (!(ch_flags & IWX_NVM_CHANNEL_ACTIVE))
             channel->ic_flags |= IEEE80211_CHAN_PASSIVE;
 
-        if (!is_6ghz && data->sku_cap_11n_enable)
+        /*
+         * ieee80211_setmode() keeps only VHT|HT channels once the driver is in
+         * 11AC/11AX mode, which happens as soon as an HE AP is joined, and
+         * iwx_mcc_response() re-runs it after every channel-profile update.
+         * 6 GHz channels carry OFDM|6GHZ and, when the NVM allows 40 MHz,
+         * HT40 - never HT20 or VHT - so without this they silently leave
+         * ic_chan_active and stop being scanned or reported.
+         */
+        if (is_6ghz || data->sku_cap_11n_enable)
             channel->ic_flags |= IEEE80211_CHAN_HT20;
 
         if (is_6ghz && (ch_flags & IWX_NVM_CHANNEL_40MHZ)) {
