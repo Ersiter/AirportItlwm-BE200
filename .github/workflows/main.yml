@@ -72,7 +72,11 @@ jobs:
               -configuration "$CONFIGURATION" -jobs 3 ARCHS=x86_64 ONLY_ACTIVE_ARCH=NO \
               SYMROOT="$PWD/build/products" OBJROOT="$PWD/build/obj" \
               CODE_SIGNING_ALLOWED=NO \
-              build > "logs/build-$platform.txt" 2>&1 || { tail -100 "logs/build-$platform.txt"; exit 1; }
+              build > "logs/build-$platform.txt" 2>&1 || {
+                grep -n -A3 -B2 'error:' "logs/build-$platform.txt" || true
+                tail -30 "logs/build-$platform.txt"
+                exit 1
+              }
             product="$PWD/build/products/$CONFIGURATION/$platform/AirportItlwm.kext"
             dwarfdump --uuid "$product/Contents/MacOS/AirportItlwm" > "artifacts/UUID-$platform.txt"
             ditto -c -k --keepParent "$product" "artifacts/AirportItlwm-$platform.zip"

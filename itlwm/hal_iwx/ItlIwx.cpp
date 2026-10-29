@@ -8141,7 +8141,7 @@ iwx_flush_sta_tids(struct iwx_softc *sc, int sta_id, uint16_t tids)
         .len = { sizeof(flush_cmd), },
         .data = { &flush_cmd, },
         .flags = notif_ver != IWX_FW_CMD_VER_UNKNOWN && notif_ver > 0 ?
-            IWX_CMD_WANT_RESP : 0,
+            IWX_CMD_WANT_RESP : 0U,
         .resp_pkt_len = sizeof(*pkt) + sizeof(*resp),
     };
     int err, resp_len, i, num_flushed_queues;
