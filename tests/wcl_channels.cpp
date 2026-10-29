@@ -203,8 +203,15 @@ int main()
     assert(channels.channelSpec[0] == 0x5095);
     assert(channels.channelBitmap[0] & 0x200);
     assert(!(channels.channelBitmap[0] & 4));
+    assert(channels.sixGHz[0] == 1);
     assert(!AirportWCL::appendChannel(channels, 237, ChannelBand::GHz6,
         false, true, false, false));
     assert(channels.count == 1);
+
+    NativeChannelInfo five = {};
+    assert(AirportWCL::appendChannel(five, 36, ChannelBand::GHz5,
+        false, false, true, true));
+    assert(five.sixGHz[0] == 0);
+    assert(five.indoor[0] == 0);
     return 0;
 }

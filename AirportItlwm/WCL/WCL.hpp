@@ -263,7 +263,16 @@ struct NativeChannelInfo {
     uint8_t reserved1[2];
     uint32_t firmwareChannelSpec[400];
     uint32_t channelBitmap[400];
-    uint8_t reserved2[0x2720 - 0x1910];
+    uint8_t reserved2[400];
+    /*
+     * IO80211 derives the per-channel band number itself and only consults
+     * this array to override it: a zero entry yields 3 for any channel above
+     * 14 and 0 otherwise, a non-zero one yields 1.  A 6 GHz channel is also
+     * above 14, so without this byte every 6 GHz channel we publish is
+     * advertised as 5 GHz and the interface never gains 6 GHz capability.
+     */
+    uint8_t sixGHz[400];
+    uint8_t reserved3[0x2720 - 0x1c30];
 };
 static_assert(sizeof(NativeChannelInfo) == 0x2720, "CHANNELS_INFO native size");
 static_assert(offsetof(NativeChannelInfo, country) == 8, "CHANNELS_INFO country");
@@ -277,6 +286,7 @@ static_assert(offsetof(NativeChannelInfo, supports40MHz) == 0x96e, "CHANNELS_INF
 static_assert(offsetof(NativeChannelInfo, supports80MHz) == 0xafe, "CHANNELS_INFO 80 MHz");
 static_assert(offsetof(NativeChannelInfo, firmwareChannelSpec) == 0xc90, "CHANNELS_INFO firmware chanspec");
 static_assert(offsetof(NativeChannelInfo, channelBitmap) == 0x12d0, "CHANNELS_INFO bitmap");
+static_assert(offsetof(NativeChannelInfo, sixGHz) == 0x1aa0, "CHANNELS_INFO 6 GHz flag");
 
 inline bool appendChannel(NativeChannelInfo &info, unsigned channel, ChannelBand band,
                           bool dfs, bool passive, bool supports40MHz, bool supports80MHz)
@@ -292,6 +302,7 @@ inline bool appendChannel(NativeChannelInfo &info, unsigned channel, ChannelBand
     info.passive[index] = passive;
     info.supports40MHz[index] = supports40MHz;
     info.supports80MHz[index] = supports80MHz;
+    info.sixGHz[index] = band == ChannelBand::GHz6;
     info.channelBitmap[index] = 3U | (band == ChannelBand::GHz5 ? 4U :
         (band == ChannelBand::GHz6 ? 0x200U : 0U)) |
         (dfs ? 8U : 0U) | (passive ? 32U : 0U);
