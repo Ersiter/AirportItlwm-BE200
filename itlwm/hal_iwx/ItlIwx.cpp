@@ -242,6 +242,7 @@ iwx_record_diagnostic(struct iwx_softc *sc, const char *event,
     record->mac_reconfig = sc->sc_ic.ic_wcl_mac_reconfig;
     record->response_length = response ? iwx_rx_packet_payload_len(response) : 0;
     record->response_flags = response ? response->hdr.group_id : 0;
+    record->raw_status = 0;
     record->tx_protected = -1;
     record->response_word0 = record->response_word1 = 0;
     if (record->response_length >= sizeof(uint32_t))
@@ -336,7 +337,7 @@ iwx_eapol_tx_payload_info(mbuf_t m, const uint8_t *bssid,
 static void
 iwx_record_eapol_tx(struct iwx_softc *sc, const char *event, int error,
     uint32_t qid, uint32_t index, const struct iwx_eapol_tx_info *info,
-    bool publish = true)
+    bool publish = true, uint16_t rawStatus = 0)
 {
     uint32_t sequence = __sync_add_and_fetch(&sc->sc_diagnostic_sequence, 1);
     struct iwx_diagnostic *record = &sc->sc_diagnostics[(sequence - 1) % 32];
@@ -355,6 +356,7 @@ iwx_record_eapol_tx(struct iwx_softc *sc, const char *event, int error,
     record->mac_reconfig = sc->sc_ic.ic_wcl_mac_reconfig;
     record->response_length = info->length;
     record->response_flags = info->identifier;
+    record->raw_status = rawStatus;
     record->tx_protected = info->protected_frame;
     record->response_word0 = record->response_word1 = 0;
     memcpy(&record->response_word0, info->bssid, sizeof(uint32_t));
@@ -365,8 +367,8 @@ iwx_record_eapol_tx(struct iwx_softc *sc, const char *event, int error,
         return;
     char value[320];
     snprintf(value, sizeof(value),
-        "seq=%u gen=%d event=%s error=%d len=%u type=%u eap_code=%u eap_id=%u protected=%s qid=%u idx=%u src=%02x:%02x:%02x:%02x:%02x:%02x dst=%02x:%02x:%02x:%02x:%02x:%02x bssid=%02x:%02x:%02x:%02x:%02x:%02x",
-        sequence, sc->sc_generation, event, error, info->length, info->type,
+        "seq=%u gen=%d event=%s error=%d raw_status=0x%x len=%u type=%u eap_code=%u eap_id=%u protected=%s qid=%u idx=%u src=%02x:%02x:%02x:%02x:%02x:%02x dst=%02x:%02x:%02x:%02x:%02x:%02x bssid=%02x:%02x:%02x:%02x:%02x:%02x",
+        sequence, sc->sc_generation, event, error, rawStatus, info->length, info->type,
         info->code, info->identifier,
         info->protected_frame < 0 ? "unknown" :
             (info->protected_frame ? "1" : "0"), qid, index,
@@ -397,9 +399,9 @@ iwx_publish_diagnostics(struct iwx_softc *sc)
         absolutetime_to_nanoseconds(record.uptime, &nanos);
         snprintf(key, sizeof(key), "AirportItlwm-Diagnostic%02u", i);
         snprintf(value, sizeof(value),
-            "seq=%u uptime_us=%llu event=%s source=%s:%d error=%d cmd=0x%08x gen=%d flags=0x%x state=%d next=%d ifflags=0x%x mac_reconfig=%d rxflags=0x%x rxlen=%u txprotected=%d word0=0x%08x word1=0x%08x",
+            "seq=%u uptime_us=%llu event=%s source=%s:%d error=%d raw_status=0x%x cmd=0x%08x gen=%d flags=0x%x state=%d next=%d ifflags=0x%x mac_reconfig=%d response_flags=0x%x rxlen=%u txprotected=%d word0=0x%08x word1=0x%08x",
             sequence, nanos / 1000, record.event, record.function, record.line,
-            record.error, record.command, record.generation, record.flags,
+            record.error, record.raw_status, record.command, record.generation, record.flags,
             record.state, record.next_state, record.if_flags, record.mac_reconfig,
             record.response_flags, record.response_length,
             record.tx_protected,
@@ -6755,6 +6757,14 @@ iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
                  rate_n_flags, device_timestamp, &rxi, ml);
 }
 
+static bool
+iwx_tx_status_is_acked(uint16_t status)
+{
+    status &= IWX_TX_STATUS_MSK;
+    return status == IWX_TX_STATUS_SUCCESS ||
+        status == IWX_TX_STATUS_DIRECT_DONE;
+}
+
 void ItlIwx::
 iwx_rx_tx_cmd_single(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
                      struct iwx_tx_data *txd)
@@ -6762,12 +6772,13 @@ iwx_rx_tx_cmd_single(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
     struct ieee80211com *ic = &sc->sc_ic;
     struct _ifnet *ifp = IC2IFP(ic);
     struct iwx_tx_resp *tx_resp = (struct iwx_tx_resp *)pkt->data;
-    int status = le16toh(tx_resp->status.status) & IWX_TX_STATUS_MSK;
+    uint16_t rawStatus = le16toh(tx_resp->status.status);
+    int status = rawStatus & IWX_TX_STATUS_MSK;
     int txfail;
     
     KASSERT(tx_resp->frame_count == 1, "tx_resp->frame_count == 1");
     
-    txfail = (status != IWX_TX_STATUS_SUCCESS);
+    txfail = !iwx_tx_status_is_acked(rawStatus);
     
     if (txfail) {
         DPRINTFN(3, ("%s %d OUTPUT_ERROR type=%d status=%d\n", __FUNCTION__, __LINE__, txd->type, status));
@@ -6973,9 +6984,10 @@ iwx_rx_tx_cmd(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
         const int txIndex = (int)(txd - ring->data);
         if (txd->in && iwx_eapol_tx_payload_info(txd->m,
             txd->in->in_ni.ni_bssid, sc->sc_ic.ic_myaddr, &eapolInfo)) {
-            const int txStatus = le16toh(tx_resp->status.status) & IWX_TX_STATUS_MSK;
-            iwx_record_eapol_tx(sc, "firmware-complete", txStatus, qid,
-                txIndex, &eapolInfo, false);
+            const uint16_t rawStatus = le16toh(tx_resp->status.status);
+            const int txError = iwx_tx_status_is_acked(rawStatus) ? 0 : EIO;
+            iwx_record_eapol_tx(sc, "firmware-complete", txError, qid,
+                txIndex, &eapolInfo, false, rawStatus);
         }
 #endif
         iwx_rx_tx_cmd_single(sc, pkt, txd);
@@ -8123,62 +8135,66 @@ iwx_flush_sta_tids(struct iwx_softc *sc, int sta_id, uint16_t tids)
         .sta_id = htole32(sta_id),
         .tid_mask = htole16(tids),
     };
+    uint8_t notif_ver = iwx_lookup_notif_ver(sc, IWX_LONG_GROUP, IWX_TXPATH_FLUSH);
     struct iwx_host_cmd hcmd = {
         .id = IWX_TXPATH_FLUSH,
         .len = { sizeof(flush_cmd), },
         .data = { &flush_cmd, },
-        .flags = IWX_CMD_WANT_RESP,
+        .flags = notif_ver != IWX_FW_CMD_VER_UNKNOWN && notif_ver > 0 ?
+            IWX_CMD_WANT_RESP : 0,
         .resp_pkt_len = sizeof(*pkt) + sizeof(*resp),
     };
     int err, resp_len, i, num_flushed_queues;
-    
+
     err = iwx_send_cmd(sc, &hcmd);
     if (err)
         return err;
-    
+
+    if (notif_ver == IWX_FW_CMD_VER_UNKNOWN || notif_ver == 0)
+        return 0;
+
     pkt = hcmd.resp_pkt;
     if (!pkt || (pkt->hdr.group_id & IWX_CMD_FAILED_MSK)) {
         err = EIO;
         goto out;
     }
-    
+
     resp_len = iwx_rx_packet_payload_len(pkt);
-    /* Some firmware versions don't provide a response. */
-    if (resp_len == 0)
-        goto out;
-    else if (resp_len != sizeof(*resp)) {
+    if (resp_len != sizeof(*resp)) {
         err = EIO;
         goto out;
     }
-    
+
     resp = (struct iwx_tx_path_flush_cmd_rsp *)pkt->data;
-    
     if (le16toh(resp->sta_id) != sta_id) {
         err = EIO;
         goto out;
     }
-    
+
     num_flushed_queues = le16toh(resp->num_flushed_queues);
     if (num_flushed_queues > IWX_TX_FLUSH_QUEUE_RSP) {
         err = EIO;
         goto out;
     }
-    
+
     for (i = 0; i < num_flushed_queues; i++) {
         struct iwx_flush_queue_info *queue_info = &resp->queues[i];
         uint16_t tid = le16toh(queue_info->tid);
-        uint16_t read_after = le16toh(queue_info->read_after_flush);
         uint16_t qid = le16toh(queue_info->queue_num);
+        uint16_t read_before = le16toh(queue_info->read_before_flush);
+        uint16_t read_after = le16toh(queue_info->read_after_flush);
         struct iwx_tx_ring *txq;
-        
-        if (qid >= nitems(sc->txq))
-            continue;
 
-        if (sc->sc_tid_data[tid].qid != qid)
+        if (qid >= nitems(sc->txq) || !sc->txq[qid].ring_count ||
+            tid > IWX_MGMT_TID)
+            continue;
+        if (tid == IWX_MGMT_TID && qid != sc->first_data_qid)
             continue;
         txq = &sc->txq[qid];
-        
-        iwx_ampdu_txq_advance(sc, txq, IWX_AGG_SSN_TO_TXQ_IDX(read_after, txq->ring_count));
+        DPRINTFN(3, ("%s: flush sta=%d tid=%u qid=%u read-before=%u read-after=%u\n",
+            __FUNCTION__, sta_id, tid, qid, read_before, read_after));
+        iwx_ampdu_txq_advance(sc, txq,
+            IWX_AGG_SSN_TO_TXQ_IDX(read_after, txq->ring_count));
     }
 out:
     iwx_free_resp(sc, &hcmd);
