@@ -442,6 +442,8 @@ bool ItlIwx::attach(IOPCIDevice *device)
     device->setProperty("AirportItlwm-DiagnosticVersion", 2, 32);
 #endif
     com.qfullmsk.reset();
+    com.sc_mcc_last_valid = 0;
+    com.sc_mcc_profile_synced = 0;
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
 #ifdef AIRPORT_VTD
@@ -9540,10 +9542,10 @@ iwx_mcc_update(struct iwx_softc *sc, struct iwx_mcc_chub_notif *notif)
 
     snprintf(sc->sc_fw_mcc, sizeof(sc->sc_fw_mcc), "%c%c",
              (le16toh(notif->mcc) & 0xff00) >> 8, le16toh(notif->mcc) & 0xff);
-    if (sc->sc_fw_mcc_int != notif->mcc && sc->sc_ic.ic_event_handler) {
-        (*sc->sc_ic.ic_event_handler)(&sc->sc_ic, IEEE80211_EVT_COUNTRY_CODE_UPDATE, NULL);
-    }
     sc->sc_fw_mcc_int = notif->mcc;
+    memcpy(sc->sc_mcc_last, sc->sc_fw_mcc, sizeof(sc->sc_mcc_last));
+    sc->sc_mcc_last_source = notif->source_id;
+    sc->sc_mcc_last_valid = 1;
 
     if (ifp->if_flags & IFF_DEBUG) {
         DPRINTFN(3, ("%s: firmware has detected regulatory domain '%s' "
@@ -12175,6 +12177,19 @@ iwx_parse_mcc_update_response(const struct iwx_rx_packet *pkt,
     return 0;
 }
 
+static bool
+iwx_mcc_profile_changed(uint32_t status)
+{
+    return status == IWX_MCC_RESP_NEW_CHAN_PROFILE ||
+        status == IWX_MCC_RESP_ILLEGAL;
+}
+
+static bool
+iwx_mcc_profile_needs_apply(uint32_t status, bool profileSynced)
+{
+    return !profileSynced || iwx_mcc_profile_changed(status);
+}
+
 static int
 iwx_apply_mcc_update_response(const struct iwx_rx_packet *pkt,
                               uint8_t response_version, bool v4_supported,
@@ -12228,6 +12243,10 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
     uint8_t response_version;
     uint8_t parse_version;
     struct iwx_mcc_response_view response{};
+    struct iwx_mcc_chub_notif notif = {};
+    bool profileChanged = false;
+    bool applyProfile = false;
+    const bool profileWasSynced = sc->sc_mcc_profile_synced;
     int err;
 
     sc->sc_pcitag->setProperty("AirportItlwm-MCCResponseVersion", UINT32_MAX, 32);
@@ -12287,7 +12306,8 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
              response.geo_info, response.source_id, response.n_channels));
 
     if (response.status != IWX_MCC_RESP_NEW_CHAN_PROFILE &&
-        response.status != IWX_MCC_RESP_SAME_CHAN_PROFILE) {
+        response.status != IWX_MCC_RESP_SAME_CHAN_PROFILE &&
+        response.status != IWX_MCC_RESP_ILLEGAL) {
         sc->sc_pcitag->setProperty("AirportItlwm-MCCStatus", response.status, 32);
         sc->sc_pcitag->setProperty("AirportItlwm-MCCChannelCount",
                                    response.n_channels, 32);
@@ -12296,8 +12316,10 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
         goto out;
     }
 
-    if (response.status == IWX_MCC_RESP_NEW_CHAN_PROFILE ||
-        response.status == IWX_MCC_RESP_SAME_CHAN_PROFILE) {
+    profileChanged = iwx_mcc_profile_changed(response.status);
+    applyProfile = iwx_mcc_profile_needs_apply(response.status,
+        profileWasSynced);
+    if (applyProfile) {
         struct ieee80211com *ic = &sc->sc_ic;
         struct ieee80211_channel *associatedChannel =
             ic->ic_state == IEEE80211_S_RUN && ic->ic_bss ?
@@ -12306,7 +12328,6 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
             ieee80211_chan2ieee(ic, associatedChannel) : 0;
         bool disconnect = associatedChannel &&
             (associatedIndex < 0 || associatedIndex > IEEE80211_CHAN_MAX);
-        uint16_t oldMcc = sc->sc_fw_mcc_int;
 
         iwx_init_channel_map(sc, NULL,
             const_cast<uint32_t *>(response.channels), response.n_channels);
@@ -12328,17 +12349,17 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
             disconnect = ic->ic_channels[associatedIndex].ic_flags == 0;
         ieee80211_channel_init(IC2IFP(ic));
         ieee80211_setmode(ic, static_cast<enum ieee80211_phymode>(ic->ic_curmode));
+        sc->sc_mcc_profile_synced = 1;
         if (disconnect)
             ieee80211_new_state(ic, IEEE80211_S_INIT, -1);
-
-        struct iwx_mcc_chub_notif notif = {};
-        notif.mcc = htole16(response.mcc);
-        iwx_mcc_update(sc, &notif);
-        if (response.status == IWX_MCC_RESP_NEW_CHAN_PROFILE &&
-            oldMcc == notif.mcc && sc->sc_ic.ic_event_handler)
-            (*sc->sc_ic.ic_event_handler)(&sc->sc_ic,
-                IEEE80211_EVT_COUNTRY_CODE_UPDATE, NULL);
     }
+
+    notif.mcc = htole16(response.mcc);
+    notif.source_id = response.source_id;
+    iwx_mcc_update(sc, &notif);
+    if (profileChanged && profileWasSynced && sc->sc_ic.ic_event_handler)
+        (*sc->sc_ic.ic_event_handler)(&sc->sc_ic,
+            IEEE80211_EVT_COUNTRY_CODE_UPDATE, NULL);
 
     sc->sc_pcitag->setProperty("AirportItlwm-MCCStatus", response.status, 32);
     sc->sc_pcitag->setProperty("AirportItlwm-MCCChannelCount",
@@ -12371,9 +12392,7 @@ iwx_process_mcc_request(struct iwx_softc *sc, const char *alpha2,
     if (!(sc->sc_ic.ic_if.if_flags & IFF_RUNNING))
         return EBUSY;
 
-    if (!sc->sc_nvm.lar_enabled ||
-        (sourceId == IWX_MCC_SOURCE_ME &&
-         (sc->sc_fw_mcc[0] != 'Z' || sc->sc_fw_mcc[1] != 'Z'))) {
+    if (!sc->sc_nvm.lar_enabled) {
         if (sc->sc_ic.ic_event_handler)
             sc->sc_ic.ic_event_handler(&sc->sc_ic,
                 IEEE80211_EVT_COUNTRY_CODE_UPDATE,
@@ -12382,12 +12401,11 @@ iwx_process_mcc_request(struct iwx_softc *sc, const char *alpha2,
         return 0;
     }
 
-    int err = iwx_send_update_mcc_cmd(sc, alpha2, sourceId);
-    if (err && !(sc->sc_flags & IWX_FLAG_SHUTDOWN) &&
-        sc->sc_ic.ic_event_handler)
-        sc->sc_ic.ic_event_handler(&sc->sc_ic,
-            IEEE80211_EVT_COUNTRY_CODE_UPDATE, NULL);
-    return err;
+    if (sourceId == IWX_MCC_SOURCE_WIFI &&
+        sc->sc_ic.ic_state == IEEE80211_S_RUN)
+        return 0;
+
+    return iwx_send_update_mcc_cmd(sc, alpha2, sourceId);
 }
 
 int ItlIwx::
@@ -12424,6 +12442,7 @@ iwx_init_hw(struct iwx_softc *sc)
     struct ieee80211com *ic = &sc->sc_ic;
     int err, i, generation = sc->sc_generation;
     const char *stage = "iwx_preinit";
+    sc->sc_mcc_profile_synced = 0;
 
     sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
     sc->sc_pcitag->setProperty("AirportItlwm-InitHWFailureFunction", "pending");
@@ -12568,6 +12587,14 @@ iwx_init_hw(struct iwx_softc *sc)
     if (sc->sc_nvm.lar_enabled) {
         stage = "iwx_send_update_mcc_cmd";
         sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
+        char lastMcc[3] = {};
+        uint8_t lastSource = IWX_MCC_SOURCE_OLD_FW;
+        bool restoreLastMcc = sc->sc_mcc_last_valid != 0;
+        if (restoreLastMcc) {
+            memcpy(lastMcc, sc->sc_mcc_last, sizeof(lastMcc));
+            lastSource = sc->sc_mcc_last_source;
+        }
+
         char requestedMcc[3] = "ZZ";
         char overrideMcc[3] = {};
         uint8_t sourceId =
@@ -12575,7 +12602,8 @@ iwx_init_hw(struct iwx_softc *sc)
             isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_LAR_MULTI_MCC) ?
                 IWX_MCC_SOURCE_GET_CURRENT : IWX_MCC_SOURCE_OLD_FW;
         PE_parse_boot_argn("itlwm_cc", overrideMcc, sizeof(overrideMcc));
-        if (iwx_valid_mcc(overrideMcc)) {
+        const bool hasOverride = iwx_valid_mcc(overrideMcc);
+        if (hasOverride) {
             memcpy(requestedMcc, overrideMcc, sizeof(requestedMcc));
             sourceId = IWX_MCC_SOURCE_ME;
         }
@@ -12584,6 +12612,14 @@ iwx_init_hw(struct iwx_softc *sc)
             XYLog("%s: could not init LAR (error %d)\n",
                    DEVNAME(sc), err);
             goto err;
+        }
+        if (restoreLastMcc && !hasOverride) {
+            err = iwx_send_update_mcc_cmd(sc, lastMcc, lastSource);
+            if (err) {
+                XYLog("%s: could not restore LAR MCC (error %d)\n",
+                       DEVNAME(sc), err);
+                goto err;
+            }
         }
     }
     

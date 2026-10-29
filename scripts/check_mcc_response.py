@@ -49,6 +49,8 @@ structures = "\n".join(
 response_view = declaration(source, "struct iwx_mcc_response_view {")
 parser = function(source, "static int\niwx_parse_mcc_update_response(")
 apply_response = function(source, "static int\niwx_apply_mcc_update_response(")
+mcc_profile_changed = function(source, "static bool\niwx_mcc_profile_changed(")
+mcc_profile_needs_apply = function(source, "static bool\niwx_mcc_profile_needs_apply(")
 version_normalizer = function(source, "static uint8_t\niwx_mcc_response_version_for_parse(")
 restrictions = function(source, "static uint8_t\niwx_mcc_channel_restrictions(")
 lookup_notif = function(source, "uint8_t ItlIwx::\niwx_lookup_notif_ver(")
@@ -92,6 +94,11 @@ program = r'''
 #define IWX_FW_CMD_VER_UNKNOWN 99
 #define IWX_LONG_GROUP 1
 #define IWX_MCC_UPDATE_CMD 0xc8
+#define IWX_MCC_RESP_NEW_CHAN_PROFILE 0
+#define IWX_MCC_RESP_SAME_CHAN_PROFILE 1
+#define IWX_MCC_RESP_INVALID 2
+#define IWX_MCC_RESP_NVM_DISABLED 3
+#define IWX_MCC_RESP_ILLEGAL 4
 #define IWX_FH_RSCSR_FRAME_SIZE_MSK 0x00003fff
 #define IEEE80211_CHAN_2GHZ (1u << 0)
 #define IEEE80211_CHAN_5GHZ (1u << 1)
@@ -158,6 +165,8 @@ RESPONSE_VIEW
 ARRAYS
 LOOKUP_NOTIF
 VERSION_NORMALIZER
+MCC_PROFILE_CHANGED
+MCC_PROFILE_NEEDS_APPLY
 RESTRICTIONS
 PARSER
 APPLY_RESPONSE
@@ -362,7 +371,21 @@ static void test_6ghz_nvm_width_mapping() {
             "invalid 6 GHz NVM channel cannot enable 160 MHz");
 }
 
+static void test_mcc_profile_needs_apply() {
+    require(iwx_mcc_profile_needs_apply(IWX_MCC_RESP_SAME_CHAN_PROFILE, false),
+            "first same-profile response applies the legal channel map");
+    require(!iwx_mcc_profile_needs_apply(IWX_MCC_RESP_SAME_CHAN_PROFILE, true),
+            "same-profile response is deduplicated after synchronization");
+    require(iwx_mcc_profile_needs_apply(IWX_MCC_RESP_NEW_CHAN_PROFILE, true),
+            "new profile replaces a synchronized channel map");
+    require(iwx_mcc_profile_needs_apply(IWX_MCC_RESP_ILLEGAL, true),
+            "illegal response applies the effective regulatory profile");
+    require(!iwx_mcc_profile_needs_apply(IWX_MCC_RESP_INVALID, true),
+            "invalid response does not replace the channel map");
+}
+
 int main() {
+    test_mcc_profile_needs_apply();
     test_mcc_channel_restrictions();
     test_6ghz_nvm_width_mapping();
     test_v8_response_maps_real_channels();
@@ -371,7 +394,7 @@ int main() {
     test_bad_lengths();
     std::cout << "production MCC response/channel-map checks passed\n";
 }
-'''.replace("FW_CMD_VERSION", fw_cmd_version).replace("STRUCTURES", structures).replace("RESPONSE_VIEW", response_view).replace("ARRAYS", channel_arrays).replace("LOOKUP_NOTIF", lookup_notif).replace("VERSION_NORMALIZER", version_normalizer).replace("RESTRICTIONS", restrictions).replace("RX_PACKET_LEN", rx_packet_len).replace("RX_PAYLOAD_LEN", rx_payload_len).replace("PARSER", parser).replace("APPLY_RESPONSE", apply_response).replace("CHANNEL_MAP", channel_map)
+'''.replace("FW_CMD_VERSION", fw_cmd_version).replace("STRUCTURES", structures).replace("RESPONSE_VIEW", response_view).replace("ARRAYS", channel_arrays).replace("LOOKUP_NOTIF", lookup_notif).replace("VERSION_NORMALIZER", version_normalizer).replace("MCC_PROFILE_CHANGED", mcc_profile_changed).replace("MCC_PROFILE_NEEDS_APPLY", mcc_profile_needs_apply).replace("RESTRICTIONS", restrictions).replace("RX_PACKET_LEN", rx_packet_len).replace("RX_PAYLOAD_LEN", rx_payload_len).replace("PARSER", parser).replace("APPLY_RESPONSE", apply_response).replace("CHANNEL_MAP", channel_map)
 
 bandwidth_program = r'''
 #include <cstdint>

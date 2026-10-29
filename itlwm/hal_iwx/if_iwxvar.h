@@ -738,6 +738,10 @@ struct iwx_softc {
 	int n_cmd_versions;
     char sc_fw_mcc[3];
     uint16_t sc_fw_mcc_int;
+    char sc_mcc_last[3];
+    uint8_t sc_mcc_last_source;
+    int sc_mcc_last_valid;
+    int sc_mcc_profile_synced;
     char sc_mcc_request[3];
     uint8_t sc_mcc_source;
     int sc_mcc_request_pending;
