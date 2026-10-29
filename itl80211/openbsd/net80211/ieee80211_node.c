@@ -1395,8 +1395,7 @@ ieee80211_node_choose_bss(struct ieee80211com *ic, int bgscan,
 {
     XYLog("%s\n", __FUNCTION__);
     struct ieee80211_node *ni, *nextbs, *selbs = NULL,
-    *selbs2 = NULL, *selbs5 = NULL;
-    uint8_t min_5ghz_rssi;
+    *selbs2 = NULL, *selbsHigh = NULL;
     
     ni = RB_MIN(ieee80211_tree, &ic->ic_tree);
     
@@ -1424,7 +1423,7 @@ ieee80211_node_choose_bss(struct ieee80211com *ic, int bgscan,
         }
 
 #ifdef AIRPORT_WCL
-        // WCL already chose the BSSID; legacy band ranking omits 6 GHz.
+        // WCL already chose the requested BSSID; preserve that choice.
         if (ic->ic_flags & IEEE80211_F_DESBSSID)
             return ni;
 #endif
@@ -1433,37 +1432,31 @@ ieee80211_node_choose_bss(struct ieee80211com *ic, int bgscan,
             if (IEEE80211_IS_CHAN_2GHZ(ni->ni_chan) &&
                 (selbs2 == NULL || ni->ni_rssi > selbs2->ni_rssi))
                 selbs2 = ni;
-            else if (IEEE80211_IS_CHAN_5GHZ(ni->ni_chan) &&
-                     (selbs5 == NULL || ni->ni_rssi > selbs5->ni_rssi))
-                selbs5 = ni;
+            else if ((IEEE80211_IS_CHAN_5GHZ(ni->ni_chan) ||
+                      IEEE80211_IS_CHAN_6GHZ(ni->ni_chan)) &&
+                     (selbsHigh == NULL || ni->ni_rssi > selbsHigh->ni_rssi))
+                selbsHigh = ni;
         } else if (selbs == NULL || ni->ni_rssi > selbs->ni_rssi)
             selbs = ni;
     }
     
-    if (ic->ic_max_rssi)
-        min_5ghz_rssi = IEEE80211_RSSI_THRES_RATIO_5GHZ;
-    else
-        min_5ghz_rssi = (uint8_t)IEEE80211_RSSI_THRES_5GHZ;
-    
     /*
-     * Prefer a 5Ghz AP even if its RSSI is weaker than the best 2Ghz AP
-     * (as long as it meets the minimum RSSI threshold) since the 5Ghz band
-     * is usually less saturated.
+     * Prefer a 5 or 6GHz AP if it meets the minimum RSSI threshold.
      */
-    if (selbs5 != NULL) {
-        XYLog("%s 5ghz ssid=%s mac=%s rssi=%d\n", __FUNCTION__, selbs5->ni_essid, ether_sprintf(selbs5->ni_bssid), selbs5->ni_rssi);
+    if (selbsHigh != NULL) {
+        XYLog("%s high-band ssid=%s mac=%s rssi=%d\n", __FUNCTION__, selbsHigh->ni_essid, ether_sprintf(selbsHigh->ni_bssid), selbsHigh->ni_rssi);
     }
     if (selbs2 != NULL) {
         XYLog("%s 2ghz ssid=%s mac=%s rssi=%d\n", __FUNCTION__, selbs2->ni_essid, ether_sprintf(selbs2->ni_bssid), selbs2->ni_rssi);
     }
-    if (selbs5 && (*ic->ic_node_checkrssi)(ic, selbs5))
-        selbs = selbs5;
-    else if (selbs5 && selbs2)
-        selbs = (selbs5->ni_rssi >= selbs2->ni_rssi ? selbs5 : selbs2);
+    if (selbsHigh && (*ic->ic_node_checkrssi)(ic, selbsHigh))
+        selbs = selbsHigh;
+    else if (selbsHigh && selbs2)
+        selbs = (selbsHigh->ni_rssi >= selbs2->ni_rssi ? selbsHigh : selbs2);
     else if (selbs2)
         selbs = selbs2;
-    else if (selbs5)
-        selbs = selbs5;
+    else if (selbsHigh)
+        selbs = selbsHigh;
     
     return selbs;
 }
