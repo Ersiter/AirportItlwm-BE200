@@ -392,6 +392,25 @@ inline bool scanChannelSelected(const uint8_t *channels, bool restricted, unsign
     return !restricted || (channel < 256 && (channels[channel / 8] & (1U << (channel % 8))));
 }
 
+inline bool scanChannelSelected(const uint8_t *channels, const uint8_t *channels6GHz,
+                                bool is6GHz, bool restricted, unsigned channel) {
+    return scanChannelSelected(is6GHz ? channels6GHz : channels, restricted, channel);
+}
+
+inline bool is6GHzPsc(unsigned channel) {
+    return channel >= 5 && channel <= 229 && (channel - 5) % 16 == 0;
+}
+
+inline uint32_t shortSsid(const uint8_t *ssid, size_t length) {
+    uint32_t crc = ~0U;
+    for (size_t i = 0; i < length; ++i) {
+        crc ^= ssid[i];
+        for (unsigned bit = 0; bit < 8; ++bit)
+            crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1U)));
+    }
+    return ~crc;
+}
+
 inline bool decodeScan(const void *buffer, size_t length, ScanRequest &out) {
     if (!buffer || length < 0x58)
         return false;

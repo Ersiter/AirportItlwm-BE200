@@ -137,6 +137,12 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
     }
     cp = &req->scan_params.channel_params;
     cp->flags = IWX_SCAN_CHANNEL_FLAG_ENABLE_CHAN_ORDER;
+#ifdef AIRPORT_WCL
+    const bool explicitWclChannels = ic->ic_wcl_scan_restricted &&
+        (ic->ic_wcl_scan_requested || (ic->ic_wcl_join_requested && !bgscan));
+    if (scanSSIDLength == 0)
+        cp->flags |= IWX_SCAN_CHANNEL_FLAG_6G_PSC_NO_FILTER;
+#endif
     const uint8_t channelLimit = MIN(nitems(cp->channel_config),
                                      sc->sc_capa_n_scan_channels);
     uint16_t channelIndex = sc->sc_scan_next_channel;
@@ -150,13 +156,20 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
         bool is6GHz = IEEE80211_IS_CHAN_6GHZ(c);
         bool is2GHz = IEEE80211_IS_CHAN_2GHZ(c);
         bool is5GHz = IEEE80211_IS_CHAN_5GHZ(c);
+        uint8_t channelNumber = ieee80211_chan2number(ic, c);
+#ifdef AIRPORT_WCL
+        if (is6GHz && scanActive && scanSSIDLength != 0 &&
+            !explicitWclChannels && !AirportWCL::is6GHzPsc(channelNumber))
+            continue;
+#endif
         if (!is2GHz && !is5GHz && !is6GHz)
             continue;
 #ifdef AIRPORT_WCL
         if (!AirportWCL::scanChannelSelected(ic->ic_wcl_scan_channels,
+                ic->ic_wcl_scan_channels6GHz, is6GHz,
                 ic->ic_wcl_scan_restricted && (ic->ic_wcl_scan_requested ||
                     (ic->ic_wcl_join_requested && !bgscan)),
-                ieee80211_chan2ieee(ic, c)))
+                ieee80211_chan2number(ic, c)))
             continue;
 #endif
         int channelBand = is6GHz ? 1 : 0;
@@ -170,7 +183,40 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
             is2GHz ? IWX_PHY_BAND_24 : IWX_PHY_BAND_5;
         uint32_t channelFlags = band << 30;
         if (is6GHz) {
+#ifdef AIRPORT_WCL
+            const bool activePsc = scanActive &&
+                AirportWCL::is6GHzPsc(channelNumber);
+            const bool targetBssid = explicitWclChannels && ic->ic_wcl_join_requested &&
+                !bgscan && !IEEE80211_IS_MULTICAST(ic->ic_des_bssid);
+            const bool active6GHz = scanActive &&
+                AirportWCL::probeChannel(true, c->ic_flags & IEEE80211_CHAN_PASSIVE,
+                    c->ic_flags & IEEE80211_CHAN_DFS) && (activePsc || targetBssid);
+            if (active6GHz) {
+                auto *probe = &req->scan_params.probe_params;
+                if (activePsc && scanSSIDLength != 0) {
+                    channelFlags |= 1U << 16;
+                    probe->short_ssid[0] = htole32(
+                        AirportWCL::shortSsid(scanSSID, scanSSIDLength));
+                    probe->short_ssid_num = 1;
+                }
+                if (targetBssid) {
+                    channelFlags |= 1U;
+                    memcpy(probe->bssid_array[0], ic->ic_des_bssid,
+                        sizeof(ic->ic_des_bssid));
+                    probe->bssid_num = 1;
+                }
+                if (scanSSIDLength != 0 &&
+                    isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_HIDDEN_6GHZ_SCAN)) {
+                    probe->direct_scan[0].id = IEEE80211_ELEMID_SSID;
+                    probe->direct_scan[0].len = scanSSIDLength;
+                    memcpy(probe->direct_scan[0].ssid, scanSSID, scanSSIDLength);
+                }
+            } else {
+                channelFlags |= IWX_UHB_CHAN_CFG_FLAG_FORCE_PASSIVE;
+            }
+#else
             channelFlags |= IWX_UHB_CHAN_CFG_FLAG_FORCE_PASSIVE;
+#endif
             sixGHzCount++;
         } else {
             hasLegacyChannel = true;
@@ -184,7 +230,7 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
                 channelFlags |= 1;
         }
         channel->flags = htole32(channelFlags);
-        channel->channel_num = ieee80211_chan2number(ic, c);
+        channel->channel_num = channelNumber;
         channel->psd_20 = 0x80;
         channel->iter_count = 1;
         channel->iter_interval = 0;

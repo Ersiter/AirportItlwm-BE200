@@ -8644,9 +8644,10 @@ iwx_umac_scan_fill_channels(struct iwx_softc *sc,
             continue;
 #ifdef AIRPORT_WCL
         if (!AirportWCL::scanChannelSelected(ic->ic_wcl_scan_channels,
+                ic->ic_wcl_scan_channels6GHz, IEEE80211_IS_CHAN_6GHZ(c),
                 ic->ic_wcl_scan_restricted && (ic->ic_wcl_scan_requested ||
                     (ic->ic_wcl_join_requested && !bgscan)),
-                ieee80211_chan2ieee(ic, c)))
+                ieee80211_chan2number(ic, c)))
             continue;
 #endif
         

@@ -145,6 +145,23 @@ int main()
     assert(AirportWCL::scanChannelSelected(request.channels, true, 149));
     assert(AirportWCL::scanChannelSelected(request.channels6GHz, true, 149));
 
+    assert(AirportWCL::is6GHzPsc(5));
+    assert(AirportWCL::is6GHzPsc(21));
+    assert(AirportWCL::is6GHzPsc(229));
+    assert(!AirportWCL::is6GHzPsc(1));
+    assert(!AirportWCL::is6GHzPsc(9));
+    const uint8_t crcInput[] = "123456789";
+    assert(AirportWCL::shortSsid(crcInput, sizeof(crcInput) - 1) == 0xcbf43926U);
+
+    uint8_t mappedLegacy[32] = {}, mapped6GHz[32] = {};
+    mappedLegacy[1 / 8] |= 1U << (1 % 8);
+    mapped6GHz[1 / 8] |= 1U << (1 % 8);
+    assert(AirportWCL::scanChannelSelected(mappedLegacy, mapped6GHz, false, true, 1));
+    assert(AirportWCL::scanChannelSelected(mappedLegacy, mapped6GHz, true, true, 1));
+    mapped6GHz[1 / 8] &= ~(1U << (1 % 8));
+    assert(!AirportWCL::scanChannelSelected(mappedLegacy, mapped6GHz, true, true, 1));
+    assert(AirportWCL::scanChannelSelected(mappedLegacy, mapped6GHz, false, true, 1));
+
     uint8_t only6GHzBuffer[0x58 + 2 * 12] = {};
     write32(only6GHzBuffer + 0x40, 1);
     write32(only6GHzBuffer + 0x54, 2);
