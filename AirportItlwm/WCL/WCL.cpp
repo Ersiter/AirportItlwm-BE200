@@ -663,19 +663,23 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
     {
         size_t ssidLength = node->ni_esslen > sizeof(wclResultRing[0].ssid) ?
             sizeof(wclResultRing[0].ssid) : node->ni_esslen;
-        uint32_t slotIndex = wclResultRingNext & 3;
+        uint32_t slotIndex = wclResultRingNext & 7;
         auto &slot = wclResultRing[slotIndex];
         memset(&slot, 0, sizeof(slot));
         memcpy(slot.ssid, node->ni_essid, ssidLength);
         slot.ssidLength = uint8_t(ssidLength);
         slot.channel = uint8_t(channel);
         slot.rssi = IWM_MIN_DBM + node->ni_rssi;
-        char text[48], key[32];
-        snprintf(text, sizeof(text), "%.*s|%04x|%d", int(ssidLength), node->ni_essid,
+        memcpy(slot.bssid, node->ni_bssid, sizeof(slot.bssid));
+        char text[96], key[32];
+        snprintf(text, sizeof(text), "%.*s|%02x:%02x:%02x:%02x:%02x:%02x|%04x|%d",
+                 int(ssidLength), node->ni_essid,
+                 node->ni_bssid[0], node->ni_bssid[1], node->ni_bssid[2],
+                 node->ni_bssid[3], node->ni_bssid[4], node->ni_bssid[5],
                  spec, slot.rssi);
         snprintf(key, sizeof(key), "AirportItlwm-WCLResult%u", slotIndex);
         instance->pciNub->setProperty(key, text);
-        wclResultRingNext = uint8_t((slotIndex + 1) & 3);
+        wclResultRingNext = uint8_t((slotIndex + 1) & 7);
     }
     size_t size = sizeof(AirportWCL::BeaconMetadata) + length;
     auto metadata = static_cast<AirportWCL::BeaconMetadata *>(IOMalloc(size));
