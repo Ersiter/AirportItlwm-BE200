@@ -1,1 +1,2 @@
 scripts/Collect-WiFi-Community.command text eol=lf
+tests/host/sae/run.sh text eol=lf

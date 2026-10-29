@@ -15,6 +15,10 @@
 #include <strings.h>
 #include <stdlib.h>
 
+#ifndef __packed
+#define __packed __attribute__((__packed__))
+#endif
+
 #include <machine/endian.h>
 #include <libkern/OSByteOrder.h>
 
@@ -31,6 +35,15 @@
 #define htole16(x) OSSwapHostToLittleInt16(x)
 #define htole32(x) OSSwapHostToLittleInt32(x)
 #define htole64(x) OSSwapHostToLittleInt64(x)
+#ifndef le32toh
+#define le32toh(x) OSSwapLittleToHostInt32(x)
+#endif
+#ifndef hweight8
+#define hweight8(x) __builtin_popcount((unsigned char)(x))
+#endif
+#ifndef DIV_ROUND_UP
+#define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
+#endif
 
 typedef uint8_t  u_int8_t;
 typedef uint16_t u_int16_t;

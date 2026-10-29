@@ -1134,7 +1134,10 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
             ((ic->ic_caps & IEEE80211_C_MFP) == 0 ||
              !(ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC) ||
              ((ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) ?
-                !ic->ic_sae_pt_valid : ic->ic_sae_password_len == 0)))
+                !ic->ic_sae_pt_valid :
+                (ic->ic_sae_password_len == 0 || ni->ni_chan == NULL ||
+                 !ieee80211_sae_hnp_compat_allowed(0,
+                    ni->ni_chan->ic_freq)))))
             fail |= IEEE80211_NODE_ASSOCFAIL_WPA_PROTO;
         if (ni->ni_rsngroupcipher != IEEE80211_CIPHER_WEP40 &&
             ni->ni_rsngroupcipher != IEEE80211_CIPHER_TKIP &&
@@ -1349,10 +1352,15 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
             else if (ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E)
                 error = ieee80211_sae_derive_password_elem(ic->ic_sae_pwe,
                     ic->ic_sae_pt, ic->ic_myaddr, ni->ni_macaddr);
+#ifdef IEEE80211_SAE_HNP_COMPAT
             else
                 error = ieee80211_sae_derive_password_elem_hnp(
                     ic->ic_sae_pwe, ic->ic_sae_password,
                     ic->ic_sae_password_len, ic->ic_myaddr, ni->ni_macaddr);
+#else
+            else
+                error = -1;
+#endif
             if (error != 0) {
                 explicit_bzero(ic->ic_sae_pwe, sizeof(ic->ic_sae_pwe));
                 ic->ic_sae_pwe_valid = 0;
@@ -1664,13 +1672,19 @@ ieee80211_choose_rsnparams(struct ieee80211com *ic)
     
     /* filter out unsupported AKMPs */
     ni->ni_rsnakms &= ic->ic_rsnakms;
-    /* prefer SAE when a password is configured and MFP can be negotiated */
-    if ((ic->ic_sae_pt_valid || ic->ic_sae_password_len != 0) &&
+    if ((ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) == 0 &&
+        (ni->ni_chan == NULL ||
+         !ieee80211_sae_hnp_compat_allowed(0, ni->ni_chan->ic_freq)))
+        ni->ni_rsnakms &= ~IEEE80211_AKM_SAE;
+    /* Prefer SAE only when the negotiated PWE method is available. */
+    if ((((ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) &&
+          ic->ic_sae_pt_valid) ||
+         ((ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) == 0 &&
+          ic->ic_sae_password_len != 0 && ni->ni_chan != NULL &&
+          ieee80211_sae_hnp_compat_allowed(0, ni->ni_chan->ic_freq))) &&
         (ni->ni_rsnakms & IEEE80211_AKM_SAE) &&
         (ic->ic_caps & IEEE80211_C_MFP) &&
-        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC) &&
-        ((ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) == 0 ||
-         ic->ic_sae_pt_valid)) {
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC)) {
         ni->ni_rsnakms = IEEE80211_AKM_SAE;
     } else if ((ic->ic_flags & IEEE80211_F_PSK) && (ni->ni_rsnakms &
                                              (IEEE80211_AKM_PSK | IEEE80211_AKM_SHA256_PSK))) {
@@ -1712,6 +1726,10 @@ int
 ieee80211_node_allow_wpa3(struct ieee80211com *ic,
     const struct ieee80211_node *ni)
 {
+    if ((ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) == 0 &&
+        (ni->ni_chan == NULL ||
+         !ieee80211_sae_hnp_compat_allowed(0, ni->ni_chan->ic_freq)))
+        return 0;
     if ((ic->ic_flags & IEEE80211_F_RSNON) == 0 ||
         (ni->ni_rsnprotos & IEEE80211_PROTO_RSN) == 0 ||
         ((ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) ?
@@ -1765,6 +1783,8 @@ ieee80211_node_cleanup(struct ieee80211com *ic, struct ieee80211_node *ni)
     }
     explicit_bzero(&ni->ni_sae, sizeof(ni->ni_sae));
     ni->ni_rsnxecaps = 0;
+    explicit_bzero(ni->ni_rsnxe, sizeof(ni->ni_rsnxe));
+    ni->ni_rsnxe_len = 0;
     ieee80211_ba_del(ni);
     ieee80211_ba_free(ni);
     if (ni->ni_unref_arg != NULL) {
@@ -3514,6 +3534,8 @@ ieee80211_node_leave_rsn(struct ieee80211com *ic, struct ieee80211_node *ni)
         IEEE80211_NODE_TXMGMTPROT);
     explicit_bzero(ni->ni_pmkid, sizeof(ni->ni_pmkid));
     ni->ni_rsnxecaps = 0;
+    explicit_bzero(ni->ni_rsnxe, sizeof(ni->ni_rsnxe));
+    ni->ni_rsnxe_len = 0;
     explicit_bzero(&ni->ni_sae, sizeof(ni->ni_sae));
     if (ni == ic->ic_bss) {
         explicit_bzero(ic->ic_sae_pwe, sizeof(ic->ic_sae_pwe));

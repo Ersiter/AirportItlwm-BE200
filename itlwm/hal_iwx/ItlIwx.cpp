@@ -11685,11 +11685,15 @@ iwx_sae_join_task(void *psc)
     struct SaeJoinWork {
         struct ieee80211_node *node;
         uint8_t bssid[IEEE80211_ADDR_LEN];
+#ifdef IEEE80211_SAE_HNP_COMPAT
         uint8_t password[63];
+#endif
         uint8_t pt[64];
         uint8_t ownaddr[IEEE80211_ADDR_LEN];
         uint8_t pwe[64];
+#ifdef IEEE80211_SAE_HNP_COMPAT
         size_t password_len;
+#endif
         uint32_t request_generation;
         uint32_t device_generation;
         uint32_t scan_generation;
@@ -11740,13 +11744,17 @@ iwx_sae_join_task(void *psc)
                         memcpy(w->pt, controller->ic_sae_pt,
                             sizeof(w->pt));
                         w->pt_valid = true;
-                    } else {
+#ifdef IEEE80211_SAE_HNP_COMPAT
+                    } else if (w->node->ni_chan != nullptr &&
+                        ieee80211_sae_hnp_compat_allowed(w->h2e,
+                            w->node->ni_chan->ic_freq)) {
                         w->password_len = controller->ic_sae_password_len;
                         if (w->password_len <= sizeof(w->password))
                             memcpy(w->password, controller->ic_sae_password,
                                 w->password_len);
                         else
                             w->password_len = 0;
+#endif
                     }
                 }
             }
@@ -11757,9 +11765,16 @@ iwx_sae_join_task(void *psc)
         if (work.h2e && work.pt_valid)
             work.error = ieee80211_sae_derive_password_elem(work.pwe,
                 work.pt, work.ownaddr, work.bssid);
-        else if (!work.h2e && work.password_len != 0)
+#ifdef IEEE80211_SAE_HNP_COMPAT
+        else if (!work.h2e && work.password_len != 0 &&
+            work.node->ni_chan != nullptr &&
+            ieee80211_sae_hnp_compat_allowed(work.h2e,
+                work.node->ni_chan->ic_freq))
             work.error = ieee80211_sae_derive_password_elem_hnp(work.pwe,
                 work.password, work.password_len, work.ownaddr, work.bssid);
+        explicit_bzero(work.password, sizeof(work.password));
+        work.password_len = 0;
+#endif
     }
 
     if (result == kIOReturnSuccess) {

@@ -124,6 +124,7 @@ done:
 	return ret;
 }
 
+#ifdef IEEE80211_SAE_HNP_COMPAT
 /* Derive the legacy hunting-and-pecking PWE using Hostap's KDF-z path. */
 int
 ieee80211_sae_derive_password_elem_hnp(uint8_t *pwe,
@@ -198,6 +199,8 @@ ieee80211_sae_derive_password_elem_hnp(uint8_t *pwe,
 	explicit_bzero(&ctx, sizeof(ctx));
 	return ret;
 }
+
+#endif
 
 static inline void
 pwe_hash(const uint8_t *salt, size_t salt_len,

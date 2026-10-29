@@ -979,8 +979,13 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
                 memcpy(wclDerivedCredential.credential, join.key, join.keyLength);
                 memcpy(wclDerivedCredential.result, ic->ic_sae_pt, sizeof(ic->ic_sae_pt));
             }
+#ifdef IEEE80211_SAE_HNP_COMPAT
             memcpy(ic->ic_sae_password, join.key, join.keyLength);
             ic->ic_sae_password_len = join.keyLength;
+#else
+            explicit_bzero(ic->ic_sae_password, sizeof(ic->ic_sae_password));
+            ic->ic_sae_password_len = 0;
+#endif
             ic->ic_sae_pt_valid = 1;
         }
         if (personal) {

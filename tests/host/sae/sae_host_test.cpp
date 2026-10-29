@@ -21,6 +21,7 @@
 #include <crypto/i31.h>
 #include <crypto/ec_p256_m31.h>
 
+#include <net80211/ieee80211.h>
 #include <net80211/ieee80211_var.h>
 
 /* Declarations live in the driver only; the whole test is built as C++. */
@@ -33,6 +34,14 @@ int ieee80211_sae_verify_confirm(const uint8_t *frm, size_t remain,
     const uint8_t *own_element_x, const uint8_t *own_element_y,
     const uint8_t *peer_scalar, const uint8_t *peer_element_x,
     const uint8_t *peer_element_y);
+int ieee80211_sae_password_to_pt(uint8_t *, const uint8_t *, size_t,
+    const uint8_t *, size_t);
+int ieee80211_sae_derive_password_elem(uint8_t *, const uint8_t *,
+    const uint8_t *, const uint8_t *);
+#ifdef IEEE80211_SAE_HNP_COMPAT
+int ieee80211_sae_derive_password_elem_hnp(uint8_t *, const uint8_t *,
+    size_t, const uint8_t *, const uint8_t *);
+#endif
 
 void explicit_bzero(void *p, size_t n)
 {
@@ -205,6 +214,88 @@ spec_confirm(uint8_t *out, const uint8_t *kck, const uint8_t *send_confirm,
 }
 
 static void
+test_rsnxe(void)
+{
+    uint8_t rsnxe[5];
+    static const uint8_t ap_extended[] = {244, 2, 0x31, 0x80};
+    static const uint8_t m3_same[] = {244, 2, 0x31, 0x80};
+    static const uint8_t m3_changed[] = {244, 2, 0x21, 0x80};
+    static const uint8_t missing_h2e[] = {244, 2, 0x11, 0x80};
+    static const uint8_t truncated[] = {244, 2, 0x31};
+    static const uint8_t bad_field_length[] = {244, 2, 0x30, 0x80};
+    static const uint8_t wrong_id[] = {48, 1, 0x20};
+    uint8_t *end = ieee80211_add_rsnxe_h2e(rsnxe);
+
+    CHECK("RSNXE: H2E generation emits the one-byte capability",
+        end - rsnxe == 3 && rsnxe[0] == IEEE80211_ELEMID_RSNXE &&
+        rsnxe[1] == 1 && rsnxe[2] == IEEE80211_RSNXECAP_H2E);
+    CHECK("RSNXE: H2E accepted with valid extra and unknown capabilities",
+        ieee80211_rsnxe_has_h2e(ap_extended, sizeof(ap_extended)));
+    CHECK("RSNXE: complete AP capability matches M3",
+        ieee80211_rsnxe_matches(ap_extended, sizeof(ap_extended),
+            m3_same, sizeof(m3_same)));
+    CHECK("RSNXE: changed non-H2E AP capability rejected in M3",
+        !ieee80211_rsnxe_matches(ap_extended, sizeof(ap_extended),
+            m3_changed, sizeof(m3_changed)));
+    CHECK("RSNXE: missing H2E bit rejected",
+        !ieee80211_rsnxe_has_h2e(missing_h2e, sizeof(missing_h2e)));
+    CHECK("RSNXE: truncated element rejected",
+        !ieee80211_rsnxe_valid(truncated, sizeof(truncated)));
+    CHECK("RSNXE: field length encoding checked",
+        !ieee80211_rsnxe_valid(bad_field_length, sizeof(bad_field_length)));
+    CHECK("RSNXE: wrong element ID rejected",
+        !ieee80211_rsnxe_valid(wrong_id, sizeof(wrong_id)));
+}
+
+static void
+test_h2e_pwe(void)
+{
+    static const uint8_t password[] = "password";
+    static const uint8_t ssid[] = "sae-test";
+    static const uint8_t ownaddr[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+    static const uint8_t bssid[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
+    static const uint8_t zero[64] = {};
+    uint8_t pt[64], pwe[64];
+
+    memset(pwe, 0, sizeof(pwe));
+    CHECK("SAE H2E: password token derivation succeeds",
+        ieee80211_sae_password_to_pt(pt, password, sizeof(password) - 1,
+            ssid, sizeof(ssid) - 1) == 0);
+    CHECK("SAE H2E: PWE derivation succeeds",
+        ieee80211_sae_derive_password_elem(pwe, pt, ownaddr, bssid) == 0);
+    CHECK("SAE H2E: derived PWE is nonzero",
+        memcmp(pwe, zero, sizeof(pwe)) != 0);
+}
+
+static void
+test_sae_policy(void)
+{
+#ifndef IEEE80211_SAE_HNP_COMPAT
+    CHECK("SAE policy: HnP unavailable by default",
+        !ieee80211_sae_hnp_compat_allowed(0, 5180));
+#else
+    uint8_t pwe[64];
+    static const uint8_t password[] = "password";
+    static const uint8_t ownaddr[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x01};
+    static const uint8_t bssid[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02};
+    static const uint8_t zero[64] = {};
+
+    CHECK("SAE policy: explicit HnP compatibility enables 5 GHz",
+        ieee80211_sae_hnp_compat_allowed(0, 5180));
+    CHECK("SAE policy: explicit HnP compatibility remains off on 6 GHz",
+        !ieee80211_sae_hnp_compat_allowed(0, 5955));
+    CHECK("SAE policy: H2E AP never selects HnP",
+        !ieee80211_sae_hnp_compat_allowed(1, 5180));
+    memset(pwe, 0, sizeof(pwe));
+    CHECK("SAE HnP: experimental PWE derivation succeeds",
+        ieee80211_sae_derive_password_elem_hnp(pwe, password,
+            sizeof(password) - 1, ownaddr, bssid) == 0);
+    CHECK("SAE HnP: derived PWE is nonzero",
+        memcmp(pwe, zero, sizeof(pwe)) != 0);
+#endif
+}
+
+static void
 test_confirm(void)
 {
     uint8_t own_scalar[SCALAR_LEN], peer_scalar[SCALAR_LEN];
@@ -238,6 +329,9 @@ int
 main(void)
 {
     test_commit_parsing();
+    test_rsnxe();
+    test_h2e_pwe();
+    test_sae_policy();
     test_confirm();
     printf("\n%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

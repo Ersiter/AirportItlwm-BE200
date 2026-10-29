@@ -525,15 +525,11 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         reason = IEEE80211_REASON_AUTH_LEAVE;
         goto deauth;
     }
-    /*
-     * A WPA3 AP echoes, in message 3, the RSNXE it received in the
-     * association request. Message 3 is MIC-protected, so its presence
-     * here proves the peer actually saw ours. A missing or different
-     * element is the H2E downgrade this check exists to catch.
-     */
-    if (ieee80211_node_allow_wpa3(ic, ni) &&
-        (rsnxe == NULL || rsnxe[1] != 1 ||
-         rsnxe[2] != IEEE80211_RSNXECAP_H2E)) {
+    /* Match the AP's pre-association RSNXE snapshot in the MIC-protected M3. */
+    if (ieee80211_node_allow_wpa3(ic, ni) && ni->ni_sae.sae_h2e &&
+        (rsnxe == NULL ||
+         !ieee80211_rsnxe_matches(ni->ni_rsnxe, ni->ni_rsnxe_len,
+             rsnxe, (size_t)rsnxe[1] + 2))) {
         ic->ic_wcl_rsnxe_mismatch++;
         reason = IEEE80211_REASON_AUTH_LEAVE;
         goto deauth;

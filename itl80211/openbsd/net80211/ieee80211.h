@@ -781,6 +781,62 @@ enum {
 #define IEEE80211_RSNXECAP_LENGTH_SHIFT		0
 #define IEEE80211_RSNXECAP_H2E			0x0020
 
+static inline u_int8_t *
+ieee80211_add_rsnxe_h2e(u_int8_t *frm)
+{
+	*frm++ = IEEE80211_ELEMID_RSNXE;
+	*frm++ = 1;
+	*frm++ = IEEE80211_RSNXECAP_H2E;
+	return frm;
+}
+
+static inline int
+ieee80211_rsnxe_valid(const u_int8_t *rsnxe, size_t len)
+{
+	return rsnxe != NULL && len >= 3 && len <= 18 &&
+	    rsnxe[0] == IEEE80211_ELEMID_RSNXE &&
+	    (size_t)rsnxe[1] + 2 == len &&
+	    rsnxe[1] <= 16 &&
+	    (size_t)(rsnxe[2] & IEEE80211_RSNXECAP_LENGTH_MASK) + 1 ==
+	    rsnxe[1];
+}
+
+static inline int
+ieee80211_rsnxe_has_h2e(const u_int8_t *rsnxe, size_t len)
+{
+	return ieee80211_rsnxe_valid(rsnxe, len) &&
+	    (rsnxe[2] & IEEE80211_RSNXECAP_H2E) != 0;
+}
+
+static inline int
+ieee80211_rsnxe_matches(const u_int8_t *expected, size_t expected_len,
+    const u_int8_t *actual, size_t actual_len)
+{
+	size_t i;
+
+	if (!ieee80211_rsnxe_valid(expected, expected_len) ||
+	    !ieee80211_rsnxe_valid(actual, actual_len) ||
+	    expected_len != actual_len)
+		return 0;
+	for (i = 0; i < expected_len; i++) {
+		if (expected[i] != actual[i])
+			return 0;
+	}
+	return 1;
+}
+
+static inline int
+ieee80211_sae_hnp_compat_allowed(int h2e, u_int16_t frequency)
+{
+#ifdef IEEE80211_SAE_HNP_COMPAT
+	return !h2e && frequency != 0 && frequency < 5925;
+#else
+	(void)h2e;
+	(void)frequency;
+	return 0;
+#endif
+}
+
 /*
  * HT Capabilities Info (see 802.11-2012 8.4.2.58.2).
  */

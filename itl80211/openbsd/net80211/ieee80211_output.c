@@ -1226,10 +1226,7 @@ u_int8_t *
 ieee80211_add_rsnxe(u_int8_t *frm, struct ieee80211com *ic,
     const struct ieee80211_node *ni)
 {
-	*frm++ = IEEE80211_ELEMID_RSNXE;
-	*frm++ = 1;
-	*frm++ = IEEE80211_RSNXECAP_H2E;
-	return frm;
+	return ieee80211_add_rsnxe_h2e(frm);
 }
 
 static u_int8_t *
@@ -1260,9 +1257,7 @@ ieee80211_add_sae_commit(u_int8_t *frm, const struct ieee80211_node *ni)
 	 * Commit with status 126.
 	 */
 	if (ni->ni_sae.sae_h2e) {
-		*frm++ = IEEE80211_ELEMID_RSNXE;
-		*frm++ = 1;
-		*frm++ = IEEE80211_RSNXECAP_H2E;
+		frm = ieee80211_add_rsnxe_h2e(frm);
 	}
 	return frm;
 }

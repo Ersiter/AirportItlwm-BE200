@@ -92,8 +92,10 @@ struct ieee80211_rsnparams {
 
 int ieee80211_sae_derive_password_elem(uint8_t *, const uint8_t *,
 	const uint8_t *, const uint8_t *);
+#ifdef IEEE80211_SAE_HNP_COMPAT
 int ieee80211_sae_derive_password_elem_hnp(uint8_t *, const uint8_t *,
 	size_t, const uint8_t *, const uint8_t *);
+#endif
 int ieee80211_sae_password_to_pt(uint8_t *, const uint8_t *, size_t,
 	const uint8_t *, size_t);
 int ieee80211_sae_derive_commit_elem(uint8_t *, uint8_t *, uint8_t *,

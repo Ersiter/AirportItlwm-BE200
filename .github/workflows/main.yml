@@ -59,6 +59,10 @@ jobs:
           c++ -std=c++14 -Wall -Wextra -Wno-unused-parameter -Werror tests/wcl_channels.cpp -o "$RUNNER_TEMP/wcl_channels"
           "$RUNNER_TEMP/wcl_channels"
           bash -n scripts/Collect-WiFi-Community.command
+      - name: Run host-side SAE tests
+        run: |
+          sh tests/host/sae/run.sh
+          SAE_HNP_COMPAT=1 sh tests/host/sae/run.sh
       - name: Build Tahoe and Sequoia x86_64 kexts
         env:
           CONFIGURATION: ${{ inputs.configuration || 'Debug' }}

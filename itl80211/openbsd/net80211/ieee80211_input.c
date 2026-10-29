@@ -2552,6 +2552,7 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     if (ic->ic_state == IEEE80211_S_SCAN ||
         (ic->ic_flags & IEEE80211_F_BGSCAN)) {
         struct ieee80211_rsnparams rsn, wpa;
+        int preserve_rsnxe;
         
 #ifdef AIRPORT_WCL
         uint32_t tlv_len = (mtod(m, u_int8_t *) + mbuf_len(m)) - (u_int8_t *)&wh[1] - 8 - 2 - 2;
@@ -2567,7 +2568,13 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
         ni->ni_rsngroupcipher = (enum ieee80211_cipher)0;
         ni->ni_rsngroupmgmtcipher = (enum ieee80211_cipher)0;
         ni->ni_rsncaps = 0;
-        ni->ni_rsnxecaps = 0;
+        preserve_rsnxe = ni == ic->ic_bss &&
+            ic->ic_state != IEEE80211_S_SCAN;
+        if (!preserve_rsnxe) {
+            ni->ni_rsnxecaps = 0;
+            explicit_bzero(ni->ni_rsnxe, sizeof(ni->ni_rsnxe));
+            ni->ni_rsnxe_len = 0;
+        }
         
         if (rsnie != NULL &&
             ieee80211_parse_rsn(ic, rsnie, &rsn) == 0) {
@@ -2599,8 +2606,13 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
                 ni->ni_rsngroupmgmtcipher =
                 rsn.rsn_groupmgmtcipher;
                 ni->ni_rsncaps = rsn.rsn_caps;
-                if (rsnxeie != NULL && rsnxeie[1] >= 1)
+                if (!preserve_rsnxe && rsnxeie != NULL &&
+                    ieee80211_rsnxe_valid(rsnxeie,
+                        (size_t)rsnxeie[1] + 2)) {
                     ni->ni_rsnxecaps = rsnxeie[2];
+                    ni->ni_rsnxe_len = rsnxeie[1] + 2;
+                    memcpy(ni->ni_rsnxe, rsnxeie, ni->ni_rsnxe_len);
+                }
             }
         } else if (wpaie != NULL &&
                    (ni->ni_supported_rsnprotos & IEEE80211_PROTO_WPA) &&

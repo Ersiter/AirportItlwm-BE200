@@ -12,7 +12,13 @@ mkdir -p "$out"
 # single language keeps the BearSSL symbols from being mangled differently.
 # The shim header is force-included because the vendored crypto headers assume
 # the kernel's sys/types.h has already supplied u_int/u8/uint32_t.
-clang++ -x c++ -std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter \
+if [ "${SAE_HNP_COMPAT:-0}" = 1 ]; then
+    hnp_define=-DIEEE80211_SAE_HNP_COMPAT
+else
+    hnp_define=
+fi
+
+${CXX:-clang++} ${CXXFLAGS:-} $hnp_define -x c++ -std=c++17 -O1 -g -Wall -Wextra -Wno-unused-parameter \
 	-include "$here/shim/sae_shim.h" \
 	-I"$here/shim" -I"$root/itl80211/openbsd" \
 	"$here/sae_host_test.cpp" \

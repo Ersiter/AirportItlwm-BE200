@@ -1524,14 +1524,11 @@ ieee80211_auth_sae(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 	if (ic->ic_state != IEEE80211_S_AUTH)
 		goto discard;
 
-	/*
-	 * An H2E-only AP answers a hunting-and-pecking Commit with status 126
-	 * (SAE HASH TO ELEMENT) instead of accepting the element. Re-derive the
-	 * PWE with H2E, restart the exchange and send the Commit again carrying
-	 * the RSNXE that tells the peer which method produced the element.
-	 */
+#ifdef IEEE80211_SAE_HNP_COMPAT
+	/* An explicit HnP compatibility experiment may retry H2E-only APs. */
 	if (seq == IEEE80211_AUTH_OPEN_REQUEST &&
 	    status == IEEE80211_STATUS_H2E &&
+	    ni->ni_chan != NULL && ni->ni_chan->ic_freq < 5925 &&
 	    ni->ni_sae.sae_state == SAE_STATE_COMMITTED &&
 	    ni->ni_sae.sae_h2e == 0) {
 		if (ieee80211_sae_derive_password_elem(ic->ic_sae_pwe,

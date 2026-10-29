@@ -408,6 +408,8 @@ struct ieee80211_node {
 	enum ieee80211_cipher	ni_rsngroupmgmtcipher;
 	u_int16_t		ni_rsncaps;
 	u_int8_t		ni_rsnxecaps;
+	u_int8_t		ni_rsnxe[18];
+	u_int8_t		ni_rsnxe_len;
 	enum ieee80211_cipher	ni_rsncipher;
 	u_int8_t		ni_nonce[EAPOL_KEY_NONCE_LEN];
 	u_int8_t		ni_pmk[IEEE80211_PMK_LEN];
