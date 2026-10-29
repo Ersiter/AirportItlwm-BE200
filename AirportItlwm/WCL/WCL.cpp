@@ -1080,6 +1080,8 @@ void AirportItlwmSkywalkInterface::finishWCLJoin(uint16_t status, uint16_t reaso
     explicit_bzero(&deferredJoin, sizeof(deferredJoin));
     joinTimer->cancelTimeout();
     publishWCLAuthDiagnostic(status ? "join-failed" : "join-succeeded");
+    instance->pciNub->setProperty("AirportItlwm-WCLJoinExit",
+        status ? "failed" : "complete");
     instance->postMessage(this, AirportWCL::ConnectComplete, &event, sizeof(event), true);
     if (status) {
         purgeWCLUserEapol();
@@ -1121,6 +1123,8 @@ IOReturn AirportItlwmSkywalkInterface::leaveWCLNetwork()
     purgeWCLUserEapol();
     portAuthorized = false;
     updateWCLLinkQuality(true);
+    if (joinPending)
+        instance->pciNub->setProperty("AirportItlwm-WCLJoinExit", "cancelled");
     joinPending = false;
     joinDeferred = false;
     explicit_bzero(&deferredJoin, sizeof(deferredJoin));
