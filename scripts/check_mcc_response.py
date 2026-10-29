@@ -158,7 +158,7 @@ static int ieee80211_ieee2mhz(int channel, int band) { return channel * 5 + band
 class ItlIwx {
 public:
     uint8_t iwx_lookup_notif_ver(struct iwx_softc *, uint8_t, uint8_t);
-    void iwx_init_channel_map(struct iwx_softc *, uint16_t *, uint32_t *, int);
+    void iwx_init_channel_map(struct iwx_softc *, uint16_t *, uint32_t *, int, const char *);
 };
 STRUCTURES
 RESPONSE_VIEW
@@ -221,7 +221,8 @@ static void test_v8_response_maps_real_channels() {
             "v8 channel array view");
 
     driver.iwx_init_channel_map(&sc, nullptr,
-                               const_cast<uint32_t *>(view.channels), view.n_channels);
+                               const_cast<uint32_t *>(view.channels), view.n_channels,
+                               "mcc");
     require(sc.sc_ic.ic_channels[1].ic_freq == 6,
             "v8 channel map reaches real channel mapper");
     require((sc.sc_ic.ic_channels[1].ic_flags & (IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_HT20)) ==
@@ -355,7 +356,7 @@ static void test_6ghz_nvm_width_mapping() {
     std::vector<uint32_t> profile(IWX_NUM_CHANNELS);
     profile[51] = IWX_NVM_CHANNEL_VALID | IWX_NVM_CHANNEL_40MHZ |
                   IWX_NVM_CHANNEL_80MHZ | IWX_NVM_CHANNEL_160MHZ;
-    driver.iwx_init_channel_map(&sc, nullptr, profile.data(), profile.size());
+    driver.iwx_init_channel_map(&sc, nullptr, profile.data(), profile.size(), "nvm");
     const auto &valid = sc.sc_ic.ic_channels[182];
     require((valid.ic_flags & (IEEE80211_CHAN_6GHZ | IEEE80211_CHAN_HT40U | IEEE80211_CHAN_HT40D)) ==
             (IEEE80211_CHAN_6GHZ | IEEE80211_CHAN_HT40U | IEEE80211_CHAN_HT40D),
@@ -366,7 +367,7 @@ static void test_6ghz_nvm_width_mapping() {
 
     std::fill(profile.begin(), profile.end(), 0);
     profile[52] = IWX_NVM_CHANNEL_160MHZ;
-    driver.iwx_init_channel_map(&sc, nullptr, profile.data(), profile.size());
+    driver.iwx_init_channel_map(&sc, nullptr, profile.data(), profile.size(), "nvm");
     require(sc.sc_ic.ic_channels[183].ic_freq == 0 && !sc.sc_nvm.vht160_supported,
             "invalid 6 GHz NVM channel cannot enable 160 MHz");
 }

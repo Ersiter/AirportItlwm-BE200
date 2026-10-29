@@ -122,7 +122,7 @@ public:
     bool iwx_nic_lock(iwx_softc *) { ++lock_calls; return lock_result; }
     void iwx_nic_unlock(iwx_softc *) {}
     void iwx_free_resp(iwx_softc *, iwx_host_cmd *cmd) { ++free_count; delete cmd->resp_pkt; cmd->resp_pkt = nullptr; }
-    void iwx_init_channel_map(iwx_softc *, const uint16_t *, const uint32_t *, int count) { channel_count.push_back(count); }
+    void iwx_init_channel_map(iwx_softc *, const uint16_t *, const uint32_t *, int count, const char *) { channel_count.push_back(count); }
 };
 FUNCTIONS
 static void require(bool ok, const char *name) {
