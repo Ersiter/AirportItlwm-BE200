@@ -1981,8 +1981,7 @@ ieee80211_get_auth(struct ieee80211com *ic, struct ieee80211_node *ni,
 				goto sae_error;
 			sae_commit = 1;
 		} else if (seq == IEEE80211_AUTH_OPEN_REQUEST &&
-		    ni->ni_sae.sae_state == SAE_STATE_COMMITTED &&
-		    ni->ni_sae.sae_token_len != 0) {
+		    ni->ni_sae.sae_state == SAE_STATE_COMMITTED) {
 			sae_commit = 2;
 		} else if (seq == IEEE80211_AUTH_OPEN_RESPONSE &&
 		    ni->ni_sae.sae_state ==
@@ -1997,6 +1996,9 @@ ieee80211_get_auth(struct ieee80211com *ic, struct ieee80211_node *ni,
 			    ni->ni_sae.sae_peer_scalar) != 0)
 				goto sae_error;
 			sae_confirm = 1;
+		} else if (seq == IEEE80211_AUTH_OPEN_RESPONSE &&
+		    ni->ni_sae.sae_state == SAE_STATE_CONFIRMED) {
+			sae_confirm = 2;
 		} else {
 			goto sae_error;
 		}
@@ -2034,12 +2036,14 @@ ieee80211_get_auth(struct ieee80211com *ic, struct ieee80211_node *ni,
 	} else if (sae_commit == 2) {
 		frm = ieee80211_add_sae_commit(frm, ni);
 	} else if (sae_confirm) {
-		memcpy(ni->ni_sae.sae_kck, kck, sizeof(kck));
-		memcpy(ni->ni_sae.sae_pmk, pmk, sizeof(pmk));
-		memcpy(ni->ni_sae.sae_pmkid, pmkid, sizeof(pmkid));
-		ni->ni_sae.sae_state |= SAE_EVENT_CONFIRM_SENT;
-		if (ni->ni_sae.sae_send_confirm < 0xffff)
-			ni->ni_sae.sae_send_confirm++;
+		if (sae_confirm == 1) {
+			memcpy(ni->ni_sae.sae_kck, kck, sizeof(kck));
+			memcpy(ni->ni_sae.sae_pmk, pmk, sizeof(pmk));
+			memcpy(ni->ni_sae.sae_pmkid, pmkid, sizeof(pmkid));
+			ni->ni_sae.sae_state |= SAE_EVENT_CONFIRM_SENT;
+			if (ni->ni_sae.sae_send_confirm < 0xffff)
+				ni->ni_sae.sae_send_confirm++;
+		}
 		frm = ieee80211_add_sae_confirm(frm, ni);
 	}
 	explicit_bzero(scalar, sizeof(scalar));

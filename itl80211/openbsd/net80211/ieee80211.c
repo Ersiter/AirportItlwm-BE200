@@ -953,6 +953,9 @@ ieee80211_watchdog(struct _ifnet *ifp)
             ni = ieee80211_find_node(ic, ic->ic_bss->ni_macaddr);
             if (ni)
                 ni->ni_fails++;
+            if (ic->ic_state == IEEE80211_S_AUTH && ni &&
+                ieee80211_auth_sae_timeout(ic, ic->ic_bss, ni->ni_fails))
+                goto done;
             /* Try more times to join, some drivers will timeout when doing auth/assoc */
             if (ic->ic_state == IEEE80211_S_AUTH && ni && ni->ni_fails < 3) {
                 ieee80211_node_join_bss(ic, ni);

@@ -486,6 +486,17 @@ struct ieee80211com {
     uint8_t ic_wcl_scan_ssid[32];
     bool ic_wcl_scan_restricted;
     uint8_t ic_wcl_scan_channels[32];
+    uint8_t ic_wcl_scan_channels6GHz[32];
+    uint32_t ic_wcl_join_attempt;
+    uint32_t ic_wcl_auth_rx_count;
+    uint32_t ic_wcl_sae_rx_count;
+    uint32_t ic_wcl_sae_token_retries;
+    uint32_t ic_wcl_sae_commit_retries;
+    uint32_t ic_wcl_sae_confirm_replays;
+    uint32_t ic_wcl_sae_failures;
+    uint16_t ic_wcl_sae_last_seq;
+    uint16_t ic_wcl_sae_last_status;
+    uint8_t ic_wcl_sae_last_state;
     uint32_t ic_wcl_scan_away_time_ms;
     uint64_t ic_wcl_tx_packets[4];
     uint64_t ic_wcl_rx_packets[4];

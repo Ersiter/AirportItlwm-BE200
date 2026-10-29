@@ -2814,6 +2814,17 @@ ieee80211_recv_auth(struct ieee80211com *ic, mbuf_t m,
     DPRINTF(("auth %d seq %d from %s\n", algo, seq,
              ether_sprintf((u_int8_t *)wh->i_addr2)));
     
+#ifdef AIRPORT_WCL
+    if (ic->ic_wcl_join_requested) {
+        ic->ic_wcl_auth_rx_count++;
+        if (algo == IEEE80211_AUTH_ALG_SAE) {
+            ic->ic_wcl_sae_rx_count++;
+            ic->ic_wcl_sae_last_seq = seq;
+            ic->ic_wcl_sae_last_status = status;
+            ic->ic_wcl_sae_last_state = ni->ni_sae.sae_state;
+        }
+    }
+#endif
     if (algo == IEEE80211_AUTH_ALG_SAE) {
         ieee80211_auth_sae(ic, wh, frm, mbuf_len(m) - sizeof(*wh) - 6,
             ni, rxi, seq, status);
