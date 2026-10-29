@@ -777,6 +777,7 @@ struct iwx_softc {
 #ifdef AIRPORT_WCL
     volatile uint32_t sc_diagnostic_sequence;
     struct iwx_diagnostic sc_diagnostics[32];
+    volatile uint32_t sc_eapol_tx_sequence;
 #endif
 
 //	struct rwlock ioctl_rwl;

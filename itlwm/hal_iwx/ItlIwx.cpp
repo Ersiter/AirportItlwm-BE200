@@ -339,30 +339,12 @@ iwx_record_eapol_tx(struct iwx_softc *sc, const char *event, int error,
     uint32_t qid, uint32_t index, const struct iwx_eapol_tx_info *info,
     bool publish = true, uint16_t rawStatus = 0)
 {
-    uint32_t sequence = __sync_add_and_fetch(&sc->sc_diagnostic_sequence, 1);
-    struct iwx_diagnostic *record = &sc->sc_diagnostics[(sequence - 1) % 32];
-    __atomic_store_n(&record->sequence, 0, __ATOMIC_RELEASE);
-    clock_get_uptime(&record->uptime);
-    record->event = event;
-    record->function = "iwx_eapol_tx";
-    record->line = 0;
-    record->error = error;
-    record->command = ((qid & 0xffff) << 16) | (index & 0xffff);
-    record->generation = sc->sc_generation;
-    record->flags = sc->sc_flags;
-    record->state = sc->sc_ic.ic_state;
-    record->next_state = sc->ns_nstate;
-    record->if_flags = sc->sc_ic.ic_if.if_flags;
-    record->mac_reconfig = sc->sc_ic.ic_wcl_mac_reconfig;
-    record->response_length = info->length;
-    record->response_flags = info->identifier;
-    record->raw_status = rawStatus;
-    record->tx_protected = info->protected_frame;
-    record->response_word0 = record->response_word1 = 0;
-    memcpy(&record->response_word0, info->bssid, sizeof(uint32_t));
-    memcpy(&record->response_word1, info->bssid + sizeof(uint32_t), 2);
-    __atomic_store_n(&record->sequence, sequence, __ATOMIC_RELEASE);
-
+    /*
+     * EAPOL TX is recorded with its own counter and never in the shared
+     * ring: three entries per frame crowded out the state and recovery
+     * records that the ring exists to keep.
+     */
+    uint32_t sequence = __sync_add_and_fetch(&sc->sc_eapol_tx_sequence, 1);
     if (!publish)
         return;
     char value[320];
