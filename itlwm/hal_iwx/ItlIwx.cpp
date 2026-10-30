@@ -12495,7 +12495,15 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
     notif.mcc = htole16(response.mcc);
     notif.source_id = response.source_id;
     iwx_mcc_update(sc, &notif);
-    if (profileChanged && profileWasSynced && sc->sc_ic.ic_event_handler)
+    /*
+     * Hand the initial domain to the framework as well. Upstream does the same
+     * with regulatory_set_wiphy_regd_sync() and it is what starts the second
+     * round: without it the boot profile is never questioned again, which is
+     * why 6 GHz only showed up after the user toggled Wi-Fi. Only the first
+     * application is included, so the framework's answer cannot feed a loop.
+     */
+    if ((profileChanged || (!profileWasSynced && applyProfile)) &&
+        sc->sc_ic.ic_event_handler)
         (*sc->sc_ic.ic_event_handler)(&sc->sc_ic,
             IEEE80211_EVT_COUNTRY_CODE_UPDATE, NULL);
 
