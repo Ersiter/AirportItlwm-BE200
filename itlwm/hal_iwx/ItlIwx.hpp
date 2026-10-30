@@ -462,6 +462,9 @@ public:
     static struct ieee80211_node *iwx_node_alloc(struct ieee80211com *);
     static int    iwx_set_key(struct ieee80211com *, struct ieee80211_node *,
            struct ieee80211_key *);
+    static int    iwx_set_key_hw(struct ieee80211com *, struct ieee80211_node *,
+           struct ieee80211_key *);
+    static void    iwx_setkey_task(void *);
     static void    iwx_deferred_eapol_task(void *);
     static void    iwx_delete_key(struct ieee80211com *,
            struct ieee80211_node *, struct ieee80211_key *);

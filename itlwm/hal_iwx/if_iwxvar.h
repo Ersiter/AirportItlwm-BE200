@@ -614,6 +614,12 @@ struct iwx_diagnostic {
 };
 #endif
 
+struct iwx_setkey_arg {
+	struct ieee80211_node *ni;
+	struct ieee80211_key *k;
+};
+#define IWX_SETKEY_NKEYS 4
+
 struct iwx_softc {
 	struct device sc_dev;
 	struct ieee80211com sc_ic;
@@ -623,6 +629,10 @@ struct iwx_softc {
 
 	struct task		init_task; /* NB: not reference-counted */
 	struct task		mcc_task;
+	/* Keys the firmware programs are queued; net80211 retries on EBUSY. */
+	struct iwx_setkey_arg sc_setkey_arg[IWX_SETKEY_NKEYS];
+	unsigned sc_setkey_cur, sc_setkey_tail, sc_setkey_nkeys;
+	struct task sc_setkey_task;
 //	struct refcnt		task_refs;
 	struct task newstate_task;
 	struct task start_task;

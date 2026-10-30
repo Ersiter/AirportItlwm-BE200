@@ -471,6 +471,9 @@ detach(IOPCIDevice *device)
     sc->sc_flags |= IWX_FLAG_SHUTDOWN;
     sc->sc_generation++;
     task_del(systq, &sc->mcc_task);
+    task_del(systq, &sc->sc_setkey_task);
+    memset(sc->sc_setkey_arg, 0, sizeof(sc->sc_setkey_arg));
+    sc->sc_setkey_cur = sc->sc_setkey_tail = sc->sc_setkey_nkeys = 0;
 #ifdef AIRPORT_VTD
     releaseAll();
     taskq_destroy(systq);
@@ -11436,6 +11439,34 @@ iwx_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
             struct ieee80211_key *k)
 {
     struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
+
+    /*
+     * Queue keys the firmware has to program. net80211 answers EBUSY by
+     * keeping the frame and trying again, so a key that arrives while the
+     * device is not configured no longer tears the handshake down - that is
+     * what made the first connection attempt fail and the second one work.
+     */
+    if (k->k_cipher != IEEE80211_CIPHER_CCMP &&
+        !ieee80211_is_bip_cipher(k->k_cipher))
+        return ieee80211_set_key(ic, ni, k);
+
+    if (sc->sc_setkey_nkeys >= nitems(sc->sc_setkey_arg))
+        return ENOSPC;
+
+    struct iwx_setkey_arg *a = &sc->sc_setkey_arg[sc->sc_setkey_cur];
+    a->ni = ni;
+    a->k = k;
+    sc->sc_setkey_cur = (sc->sc_setkey_cur + 1) % nitems(sc->sc_setkey_arg);
+    sc->sc_setkey_nkeys++;
+    container_of(sc, ItlIwx, com)->iwx_add_task(sc, systq, &sc->sc_setkey_task);
+    return EBUSY;
+}
+
+int ItlIwx::
+iwx_set_key_hw(struct ieee80211com *ic, struct ieee80211_node *ni,
+               struct ieee80211_key *k)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
     struct iwx_add_sta_key_cmd cmd;
     ItlIwx *that = container_of(sc, ItlIwx, com);
     
@@ -11482,6 +11513,35 @@ iwx_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     
     return that->iwx_send_cmd_pdu(sc, IWX_ADD_STA_KEY, IWX_CMD_ASYNC,
                             sizeof(cmd), &cmd);
+}
+
+void ItlIwx::
+iwx_setkey_task(void *arg)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)arg;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+
+    if (!that->getMainWorkLoop()->inGate()) {
+        that->getMainCommandGate()->runAction(
+            [](OSObject *, void *a, void *, void *, void *) -> IOReturn {
+                iwx_setkey_task(a);
+                return kIOReturnSuccess;
+            }, arg);
+        return;
+    }
+
+    int err = 0, s = splnet();
+    while (sc->sc_setkey_nkeys > 0) {
+        if (err || (sc->sc_flags & IWX_FLAG_SHUTDOWN))
+            break;
+        struct iwx_setkey_arg *a = &sc->sc_setkey_arg[sc->sc_setkey_tail];
+        err = that->iwx_set_key_hw(&sc->sc_ic, a->ni, a->k);
+        a->ni = nullptr;
+        a->k = nullptr;
+        sc->sc_setkey_tail = (sc->sc_setkey_tail + 1) % nitems(sc->sc_setkey_arg);
+        sc->sc_setkey_nkeys--;
+    }
+    splx(s);
 }
 
 void ItlIwx::
@@ -11752,6 +11812,9 @@ iwx_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
         that->iwx_del_task(sc, systq, &sc->ba_task);
         that->iwx_del_task(sc, systq, &sc->mac_ctxt_task);
         that->iwx_del_task(sc, systq, &sc->chan_ctxt_task);
+        that->iwx_del_task(sc, systq, &sc->sc_setkey_task);
+        memset(sc->sc_setkey_arg, 0, sizeof(sc->sc_setkey_arg));
+        sc->sc_setkey_cur = sc->sc_setkey_tail = sc->sc_setkey_nkeys = 0;
     }
     
     sc->ns_nstate = nstate;
@@ -16363,6 +16426,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     task_set(&sc->init_task, iwx_init_task, sc, "iwx_init_task");
     task_set(&sc->mcc_task, iwx_mcc_task, sc, "iwx_mcc_task");
     task_set(&sc->newstate_task, iwx_newstate_task, sc, "iwx_newstate_task");
+    task_set(&sc->sc_setkey_task, iwx_setkey_task, sc, "iwx_setkey_task");
     task_set(&sc->start_task, iwx_start_deferred, sc, "iwx_start_task");
     task_set(&sc->mld_link_task, iwx_mld_active_link_task, sc,
         "iwx_mld_active_link_task");
