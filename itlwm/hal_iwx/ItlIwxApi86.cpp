@@ -60,12 +60,13 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
     uint16_t gen_flags = 0;
     struct iwx_api86_scan_general *general_params;
     struct iwx_api86_scan_channels *cp;
-    const uint32_t timeout = bgscan ?  htole32(120) : htole32(0);
 #ifdef AIRPORT_WCL
     const auto timing = AirportWCL::scanTiming(ic->ic_wcl_scan_away_time_ms, bgscan,
         isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_FRAGMENTED_SCAN));
+    const uint32_t timeout = htole32(timing.suspendTU);
     const uint32_t maxOut = htole32(timing.maxOutTU);
 #else
+    const uint32_t timeout = bgscan ?  htole32(120) : htole32(0);
     const uint32_t maxOut = timeout;
 #endif
     struct iwx_host_cmd hcmd = {
