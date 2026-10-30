@@ -10098,8 +10098,20 @@ iwx_scan(struct iwx_softc *sc)
     struct _ifnet *ifp = IC2IFP(ic);
     int err;
 
+    sc->sc_scan_lar_deferred = 0;
     if (sc->sc_flags & IWX_FLAG_SCAN_ABORTING)
         return EBUSY;
+    /*
+     * Upstream refuses to scan until the firmware has returned an MCC
+     * regdomain, because scanning before LAR settles can crash it. The flag is
+     * cleared at every hardware init, so this covers the window after a reset
+     * as well as the first boot.
+     */
+    if (sc->sc_nvm.lar_enabled && !sc->sc_mcc_profile_synced) {
+        iwx_record_diagnostic(sc, "scan-blocked-lar", __FUNCTION__, 0, EBUSY, 0);
+        sc->sc_scan_lar_deferred = 1;
+        return EBUSY;
+    }
     if (sc->sc_flags & IWX_FLAG_BGSCAN) {
         err = iwx_scan_abort(sc);
         if (err) {
@@ -11694,7 +11706,14 @@ out:
             iwx_record_diagnostic(sc, "state-error", __FUNCTION__, __LINE__, err, 0, ostate, nstate);
             iwx_publish_diagnostics(sc);
 #endif
-            iwx_schedule_recovery(sc, __FUNCTION__, __LINE__);
+            /* A scan refused before LAR settled is a deferral, not a fault:
+             * restarting the firmware here is exactly what upstream's gate
+             * exists to avoid. */
+            if (sc->sc_scan_lar_deferred) {
+                sc->sc_scan_lar_deferred = 0;
+            } else {
+                iwx_schedule_recovery(sc, __FUNCTION__, __LINE__);
+            }
         }
         else if (nstate == sc->ns_nstate && arg == sc->ns_arg)
             sc->sc_newstate(ic, nstate, arg);
