@@ -773,6 +773,8 @@ struct iwx_softc {
 	uint32_t sc_hw_mask;
 
 	int sc_generation;
+	/* Which gate refused the last command; 0 means it was handed to the ring. */
+	uint8_t sc_cmd_error_stage;
 	uint32_t sc_fw_error_count;
 #ifdef AIRPORT_WCL
     volatile uint32_t sc_diagnostic_sequence;

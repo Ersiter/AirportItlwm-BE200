@@ -7426,6 +7426,19 @@ iwx_phy_ctxt_cmd(struct iwx_softc *sc, struct iwx_phy_ctxt *ctxt,
     return iwx_send_cmd_pdu(sc, IWX_PHY_CONTEXT_CMD, 0, sizeof(cmd), &cmd);
 }
 
+/*
+ * Every ENXIO out of the command path comes from one of these gates, and the
+ * diagnostic record used to carry only the error code, so a capture could not
+ * tell "device gone" from "wrong generation".
+ */
+#define IWX_CMD_STAGE_NONE       0
+#define IWX_CMD_STAGE_DETACHING  1
+#define IWX_CMD_STAGE_SHUTDOWN   2
+#define IWX_CMD_STAGE_HW_ERR     3
+#define IWX_CMD_STAGE_RING_EMPTY 4
+#define IWX_CMD_STAGE_DMA_EPOCH  5
+#define IWX_CMD_STAGE_GENERATION 6
+
 int ItlIwx::
 iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
 {
@@ -7440,7 +7453,8 @@ iwx_send_cmd(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     int error = iwx_send_cmd_impl(sc, hcmd);
 #ifdef AIRPORT_WCL
     if (error) {
-        iwx_record_diagnostic(sc, "command-error", __FUNCTION__, __LINE__, error, hcmd->id);
+        iwx_record_diagnostic(sc, "command-error", __FUNCTION__,
+            sc->sc_cmd_error_stage, error, hcmd->id);
         iwx_publish_diagnostics(sc);
     }
 #endif
@@ -7455,6 +7469,8 @@ iwx_send_cmd_impl(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
     struct iwx_tx_data *txdata;
     struct iwx_device_cmd *cmd;
     mbuf_t m;
+
+    sc->sc_cmd_error_stage = IWX_CMD_STAGE_NONE;
     bus_addr_t paddr;
     uint64_t addr;
     int err = 0, i, paylen, off;
@@ -7471,12 +7487,23 @@ iwx_send_cmd_impl(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
 
     hcmd->resp_pkt = NULL;
 #ifdef AIRPORT_VTD
-    if (dmaDetaching)
+    if (dmaDetaching) {
+        sc->sc_cmd_error_stage = IWX_CMD_STAGE_DETACHING;
         return ENXIO;
+    }
 #endif
-    if ((sc->sc_flags & (IWX_FLAG_SHUTDOWN | IWX_FLAG_HW_ERR)) ||
-        ring->ring_count == 0)
+    if (sc->sc_flags & IWX_FLAG_SHUTDOWN) {
+        sc->sc_cmd_error_stage = IWX_CMD_STAGE_SHUTDOWN;
         return ENXIO;
+    }
+    if (sc->sc_flags & IWX_FLAG_HW_ERR) {
+        sc->sc_cmd_error_stage = IWX_CMD_STAGE_HW_ERR;
+        return ENXIO;
+    }
+    if (ring->ring_count == 0) {
+        sc->sc_cmd_error_stage = IWX_CMD_STAGE_RING_EMPTY;
+        return ENXIO;
+    }
 
     code = hcmd->id;
     async = hcmd->flags & IWX_CMD_ASYNC;
@@ -7638,11 +7665,15 @@ iwx_send_cmd_impl(struct iwx_softc *sc, struct iwx_host_cmd *hcmd)
         }
         /* Reset owns the old buffers, including after a timed-out sleep. */
 #ifdef AIRPORT_VTD
-        if (epoch != dmaEpoch)
+        if (epoch != dmaEpoch) {
+            sc->sc_cmd_error_stage = IWX_CMD_STAGE_DMA_EPOCH;
             return ENXIO;
+        }
 #endif
-        if (generation != sc->sc_generation)
+        if (generation != sc->sc_generation) {
+            sc->sc_cmd_error_stage = IWX_CMD_STAGE_GENERATION;
             return ENXIO;
+        }
         txdata->flags &= ~IWX_TXDATA_FLAG_CMD_WAITING;
         if (!err) {
             hcmd->resp_pkt = (struct iwx_rx_packet *)sc->sc_cmd_resp_pkt[idx];
