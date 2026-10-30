@@ -855,6 +855,14 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
     bool supported = auth != AirportWCL::LegacyAuth::Invalid;
     ieee80211com *ic = fHalService->get80211Controller();
     purgeWCLUserEapol();
+    /*
+     * A join preempts a scan. The HAL aborts the command, but WCL has to retire
+     * its own bookkeeping first: leaving scanPending set makes this join fail as
+     * "scan-busy" and keeps every later scan refused until the batch timer
+     * fires, which is the empty list that follows a connection.
+     */
+    if (scanPending && (ic->ic_if.if_flags & IFF_RUNNING))
+        finishWCLScan(kIOReturnAborted);
     // Applying a private MAC restarts firmware asynchronously. WCL can issue
     // the association before that restart has completed; keep one request
     // until the HAL reports READY rather than making the user retry it.
