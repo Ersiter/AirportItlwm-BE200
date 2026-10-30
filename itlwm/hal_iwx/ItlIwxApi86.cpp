@@ -237,9 +237,15 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
             rnrShortSsidBitmap |= 1U << hint;
         }
         const bool rnrTarget = rnrBssidBitmap != 0;
-        if (is6GHz && scanActive && scanSSIDLength != 0 &&
-            !explicitWclChannels && !AirportWCL::is6GHzPsc(channelNumber) &&
-            !rnrTarget)
+        /*
+         * A 6 GHz channel off the PSC grid is worth a passive dwell only when
+         * something points at it: an RNR hint, an explicit channel request, or
+         * a directed scan for an SSID. Upstream strips them from scheduled
+         * scans for the same reason, and a full 59-channel background sweep is
+         * several seconds of churn around a live association.
+         */
+        if (is6GHz && !AirportWCL::is6GHzPsc(channelNumber) && !rnrTarget &&
+            !explicitWclChannels && (!scanActive || scanSSIDLength != 0))
             continue;
 #endif
         if (!is2GHz && !is5GHz && !is6GHz)
