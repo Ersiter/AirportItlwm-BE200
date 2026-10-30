@@ -2142,7 +2142,7 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     struct ieee80211_node *ni = NULL;
     const struct ieee80211_frame *wh;
     const u_int8_t *frm, *efrm;
-    const u_int8_t *tstamp, *ssid, *rates, *xrates, *edcaie, *wmmie, *extcap;
+    const u_int8_t *tstamp, *ssid, *rnr, *rates, *xrates, *edcaie, *wmmie, *extcap;
     const u_int8_t *rsnie, *rsnxeie, *wpaie, *htcaps, *htop;
     const uint8_t *csa;
     const uint8_t *vhtcap;
@@ -2197,6 +2197,7 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     capinfo = LE_READ_2(frm); frm += 2;
     
     ssid = rates = xrates = edcaie = wmmie = extcap = rsnie = wpaie = csa = vhtcap = vhtopmode = hecap = heopmode = he6ghzcap = NULL;
+    rnr = NULL;
     rsnxeie = NULL;
     htcaps = htop = NULL;
     if (rxi->rxi_chan) {
@@ -2221,6 +2222,9 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
         switch (frm[0]) {
             case IEEE80211_ELEMID_SSID:
                 ssid = frm;
+                break;
+            case IEEE80211_ELEMID_RNR:
+                rnr = frm;
                 break;
             case IEEE80211_ELEMID_CSA:
                 csa = frm;
@@ -2358,6 +2362,88 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
         ic->ic_stats.is_rx_badchan++;
         return;
     }
+#ifdef AIRPORT_WCL
+    if (ic->ic_wcl_scan_requested && rnr != NULL &&
+        !IEEE80211_IS_CHAN_6GHZ(&ic->ic_channels[chanidx]) &&
+        (rxi->rxi_chan == 0 || chan == rxi->rxi_chan) &&
+        ((ic->ic_state == IEEE80211_S_SCAN &&
+          (ic->ic_caps & IEEE80211_C_SCANALL)) || chan == bchan)) {
+        bool sourceSsidValid = false;
+        for (unsigned byte = 0; byte < ssid[1]; ++byte)
+            sourceSsidValid |= ssid[byte + 2] != 0;
+        uint32_t sourceShortSsid = ~0U;
+        if (sourceSsidValid) {
+            for (unsigned byte = 0; byte < ssid[1]; ++byte) {
+                sourceShortSsid ^= ssid[byte + 2];
+                for (unsigned bit = 0; bit < 8; ++bit)
+                    sourceShortSsid = (sourceShortSsid >> 1) ^
+                        (0xedb88320U & (0U - (sourceShortSsid & 1U)));
+            }
+            sourceShortSsid = ~sourceShortSsid;
+        }
+        const uint8_t *rnrPos = rnr + 2;
+        const uint8_t *rnrEnd = rnrPos + rnr[1];
+        while (rnrEnd - rnrPos >= 4) {
+            const uint8_t header = rnrPos[0];
+            const uint8_t infoLength = rnrPos[1];
+            const uint8_t opClass = rnrPos[2];
+            const uint8_t channel = rnrPos[3];
+            const uint8_t entryCount = ((header & 0xf0) >> 4) + 1;
+            rnrPos += 4;
+            if (infoLength == 0 || entryCount >
+                size_t(rnrEnd - rnrPos) / infoLength)
+                break;
+            if ((header & 0x03) == 0 && opClass >= 131 && opClass <= 136 &&
+                (infoLength == 8 || infoLength == 9 || infoLength >= 12)) {
+                for (uint8_t entry = 0; entry < entryCount; ++entry) {
+                    const uint8_t *tbtt = rnrPos + size_t(entry) * infoLength;
+                    const uint8_t bssParams = infoLength >= 12 ? tbtt[11] : tbtt[7];
+                    if ((bssParams & 0x40) == 0)
+                        continue;
+                    uint32_t shortSsid = 0;
+                    bool shortSsidValid = false;
+                    if (infoLength >= 12) {
+                        shortSsid = LE_READ_4(tbtt + 7);
+                        shortSsidValid = true;
+                    }
+                    if ((bssParams & 0x02) && sourceSsidValid) {
+                        shortSsid = sourceShortSsid;
+                        shortSsidValid = true;
+                    }
+                    bool validBssid = false;
+                    for (unsigned byte = 1; byte < 7; ++byte)
+                        validBssid |= tbtt[byte] != 0;
+                    if (!shortSsidValid || !validBssid ||
+                        IEEE80211_IS_MULTICAST(tbtt + 1))
+                        continue;
+                    const unsigned channelIndex = ieee80211_ieee2chanidx(
+                        ic, channel, IEEE80211_CHAN_6GHZ);
+                    if (channelIndex == 0 ||
+                        !ic->ic_channels[channelIndex].ic_freq ||
+                        !isset(ic->ic_chan_active, channelIndex) ||
+                        !IEEE80211_IS_CHAN_6GHZ(&ic->ic_channels[channelIndex]))
+                        continue;
+                    uint8_t slot = 0;
+                    for (; slot < ic->ic_wcl_scan_rnr_count; ++slot) {
+                        if (ic->ic_wcl_scan_rnr_channel[slot] == channel &&
+                            IEEE80211_ADDR_EQ(ic->ic_wcl_scan_rnr_bssid[slot], tbtt + 1))
+                            break;
+                    }
+                    if (slot == ic->ic_wcl_scan_rnr_count) {
+                        if (slot >= 8)
+                            continue;
+                        ++ic->ic_wcl_scan_rnr_count;
+                    }
+                    ic->ic_wcl_scan_rnr_channel[slot] = channel;
+                    memcpy(ic->ic_wcl_scan_rnr_bssid[slot], tbtt + 1,
+                        IEEE80211_ADDR_LEN);
+                    ic->ic_wcl_scan_rnr_short_ssid[slot] = shortSsid;
+                }
+            }
+            rnrPos += size_t(entryCount) * infoLength;
+        }
+    }
+#endif
     if ((rxi->rxi_chan != 0 && chan != rxi->rxi_chan) ||
         ((ic->ic_state != IEEE80211_S_SCAN ||
          !(ic->ic_caps & IEEE80211_C_SCANALL)) &&
@@ -2646,7 +2732,16 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
      * a non-zero-length SSID filled with zeroes that we may have
      * received earlier in a beacon.
      */
-    if (ssid[1] != 0 && ni->ni_essid[0] == '\0') {
+    bool ssidVisible = false;
+    for (unsigned index = 0; index < ssid[1]; ++index) {
+        if (ssid[index + 2] != 0) {
+            ssidVisible = true;
+            break;
+        }
+    }
+    if (ssidVisible &&
+        (ni->ni_esslen != ssid[1] ||
+         memcmp(ni->ni_essid, &ssid[2], ssid[1]) != 0)) {
         ni->ni_esslen = ssid[1];
         memset(ni->ni_essid, 0, sizeof(ni->ni_essid));
         /* we know that ssid[1] <= IEEE80211_NWID_LEN */

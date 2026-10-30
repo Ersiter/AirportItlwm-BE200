@@ -183,6 +183,40 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
     uint16_t channelIndex = sc->sc_scan_next_channel;
     uint8_t sixGHzCount = 0;
     bool hasLegacyChannel = false;
+#ifdef AIRPORT_WCL
+    const bool directedJoin = explicitWclChannels && ic->ic_wcl_join_requested &&
+        !bgscan && !IEEE80211_IS_MULTICAST(ic->ic_des_bssid);
+    auto *probe = &req->scan_params.probe_params;
+    uint8_t rnrProbeChannels[IWX_SCAN_SHORT_SSID_MAX_SIZE] = {};
+    uint8_t rnrProbeCount = 0;
+    if (scanActive && ic->ic_wcl_scan_requested && !directedJoin) {
+        const uint32_t requestedShortSsid = scanSSIDLength != 0 ?
+            AirportWCL::shortSsid(scanSSID, scanSSIDLength) : 0;
+        for (uint8_t hint = 0; hint < ic->ic_wcl_scan_rnr_count; ++hint) {
+            const uint32_t shortSsid = ic->ic_wcl_scan_rnr_short_ssid[hint];
+            const uint8_t hintChannel = ic->ic_wcl_scan_rnr_channel[hint];
+            if (scanSSIDLength != 0 && shortSsid != requestedShortSsid)
+                continue;
+            const unsigned hintIndex = ieee80211_ieee2chanidx(
+                ic, hintChannel, IEEE80211_CHAN_6GHZ);
+            if (hintIndex == 0 || !ic->ic_channels[hintIndex].ic_freq ||
+                !isset(ic->ic_chan_active, hintIndex) ||
+                !AirportWCL::scanChannelSelected(ic->ic_wcl_scan_channels,
+                    ic->ic_wcl_scan_channels6GHz, true, explicitWclChannels,
+                    hintChannel))
+                continue;
+            if (rnrProbeCount >= IWX_SCAN_SHORT_SSID_MAX_SIZE)
+                break;
+            probe->short_ssid[rnrProbeCount] = htole32(shortSsid);
+            memcpy(probe->bssid_array[rnrProbeCount],
+                ic->ic_wcl_scan_rnr_bssid[hint], ETHER_ADDR_LEN);
+            rnrProbeChannels[rnrProbeCount] = hintChannel;
+            ++rnrProbeCount;
+        }
+        probe->short_ssid_num = rnrProbeCount;
+        probe->bssid_num = rnrProbeCount;
+    }
+#endif
     int batchBand = -1;
     int batchBandValue = 0;
     for (; channelIndex <= IEEE80211_CHAN_MAX; channelIndex++) {
@@ -194,8 +228,18 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
         bool is5GHz = IEEE80211_IS_CHAN_5GHZ(c);
         uint8_t channelNumber = ieee80211_chan2number(ic, c);
 #ifdef AIRPORT_WCL
+        uint32_t rnrBssidBitmap = 0;
+        uint32_t rnrShortSsidBitmap = 0;
+        for (uint8_t hint = 0; hint < rnrProbeCount; ++hint) {
+            if (rnrProbeChannels[hint] != channelNumber)
+                continue;
+            rnrBssidBitmap |= 1U << hint;
+            rnrShortSsidBitmap |= 1U << hint;
+        }
+        const bool rnrTarget = rnrBssidBitmap != 0;
         if (is6GHz && scanActive && scanSSIDLength != 0 &&
-            !explicitWclChannels && !AirportWCL::is6GHzPsc(channelNumber))
+            !explicitWclChannels && !AirportWCL::is6GHzPsc(channelNumber) &&
+            !rnrTarget)
             continue;
 #endif
         if (!is2GHz && !is5GHz && !is6GHz)
@@ -222,18 +266,22 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
 #ifdef AIRPORT_WCL
             const bool activePsc = scanActive &&
                 AirportWCL::is6GHzPsc(channelNumber);
-            const bool targetBssid = explicitWclChannels && ic->ic_wcl_join_requested &&
-                !bgscan && !IEEE80211_IS_MULTICAST(ic->ic_des_bssid);
+            const bool targetBssid = directedJoin;
             const bool active6GHz = scanActive &&
                 AirportWCL::probeChannel(true, c->ic_flags & IEEE80211_CHAN_PASSIVE,
-                    c->ic_flags & IEEE80211_CHAN_DFS) && (activePsc || targetBssid);
+                    c->ic_flags & IEEE80211_CHAN_DFS) &&
+                (activePsc || targetBssid || rnrTarget);
             if (active6GHz) {
-                auto *probe = &req->scan_params.probe_params;
+                if (rnrTarget)
+                    channelFlags |= rnrBssidBitmap |
+                        (rnrShortSsidBitmap << 16);
                 if (activePsc && scanSSIDLength != 0) {
                     channelFlags |= 1U << 16;
-                    probe->short_ssid[0] = htole32(
-                        AirportWCL::shortSsid(scanSSID, scanSSIDLength));
-                    probe->short_ssid_num = 1;
+                    if (!rnrProbeCount) {
+                        probe->short_ssid[0] = htole32(
+                            AirportWCL::shortSsid(scanSSID, scanSSIDLength));
+                        probe->short_ssid_num = 1;
+                    }
                 }
                 if (targetBssid) {
                     channelFlags |= 1U;

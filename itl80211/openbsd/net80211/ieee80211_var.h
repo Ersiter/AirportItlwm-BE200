@@ -487,6 +487,10 @@ struct ieee80211com {
     bool ic_wcl_scan_restricted;
     uint8_t ic_wcl_scan_channels[32];
     uint8_t ic_wcl_scan_channels6GHz[32];
+    uint8_t ic_wcl_scan_rnr_count;
+    uint8_t ic_wcl_scan_rnr_channel[8];
+    uint8_t ic_wcl_scan_rnr_bssid[8][IEEE80211_ADDR_LEN];
+    uint32_t ic_wcl_scan_rnr_short_ssid[8];
     uint32_t ic_wcl_join_attempt;
     uint32_t ic_wcl_auth_rx_count;
     uint32_t ic_wcl_sae_rx_count;
