@@ -1276,16 +1276,14 @@ IOReturn AirportItlwm::
 getCOUNTRY_CODE(OSObject *object,
                                 struct apple80211_country_code_data *cd)
 {
-    char user_override_cc[3];
     const char *cc_fw = fHalService->getDriverInfo()->getFirmwareCountryCode();
     
     if (!cd)
         return kIOReturnError;
     cd->version = APPLE80211_VERSION;
-    memset(user_override_cc, 0, sizeof(user_override_cc));
-    PE_parse_boot_argn("itlwm_cc", user_override_cc, 3);
-    /* user_override_cc > firmware_cc > geo_location_cc */
-    strncpy((char*)cd->cc, user_override_cc[0] ? user_override_cc : ((cc_fw[0] == 'Z' && cc_fw[1] == 'Z' && geo_location_cc[0]) ? geo_location_cc : cc_fw), sizeof(cd->cc));
+    /* Firmware first: it owns the domain; the boot argument or the framework's
+     * value only stand in while the firmware has not answered. */
+    strncpy((char*)cd->cc, (cc_fw[0] == 'Z' && cc_fw[1] == 'Z' && geo_location_cc[0]) ? geo_location_cc : cc_fw, sizeof(cd->cc));
     return kIOReturnSuccess;
 }
 
@@ -1293,12 +1291,9 @@ IOReturn AirportItlwm::
 setCOUNTRY_CODE(OSObject *object, struct apple80211_country_code_data *data)
 {
     XYLog("%s cc=%s\n", __FUNCTION__, data->cc);
-    if (data && data->cc[0] != 120 && data->cc[0] != 88) {
-        if (!fHalService->getDriverController()->setCountryCode(data->cc)) {
-            memcpy(geo_location_cc, data->cc, sizeof(geo_location_cc));
-            fNetIf->postMessage(APPLE80211_M_COUNTRY_CODE_CHANGED);
-        }
-    }
+    /* Record only; the firmware's domain is not rewritten from here. */
+    if (data && data->cc[0] != 120 && data->cc[0] != 88)
+        memcpy(geo_location_cc, data->cc, sizeof(geo_location_cc));
     return kIOReturnSuccess;
 }
 

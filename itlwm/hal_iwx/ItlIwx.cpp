@@ -12429,10 +12429,9 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
     overrideRequest = sc->sc_mcc_override[0] != 0 &&
         alpha2[0] == sc->sc_mcc_override[0] &&
         alpha2[1] == sc->sc_mcc_override[1];
-    if (overrideRequest) {
-        sc->sc_mcc_override_valid = 0;
-        sc->sc_pcitag->setProperty("AirportItlwm-MCCOverrideApplied", static_cast<uint64_t>(0), 32);
-    }
+    if (overrideRequest)
+        sc->sc_pcitag->setProperty("AirportItlwm-MCCOverrideApplied",
+            static_cast<uint64_t>(0), 32);
     sc->sc_pcitag->setProperty("AirportItlwm-MCCRequestedCountry", alpha2);
     sc->sc_pcitag->setProperty("AirportItlwm-MCCRequestSource",
                                mcc_cmd.source_id, 32);
@@ -12499,12 +12498,10 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
         const uint16_t requestedOverride =
             (static_cast<uint8_t>(sc->sc_mcc_override[0]) << 8) |
             static_cast<uint8_t>(sc->sc_mcc_override[1]);
-        sc->sc_mcc_override_valid =
+        sc->sc_pcitag->setProperty("AirportItlwm-MCCOverrideApplied",
             (response.status == IWX_MCC_RESP_NEW_CHAN_PROFILE ||
              response.status == IWX_MCC_RESP_SAME_CHAN_PROFILE) &&
-            response.mcc == requestedOverride;
-        sc->sc_pcitag->setProperty("AirportItlwm-MCCOverrideApplied",
-                                   sc->sc_mcc_override_valid, 32);
+            response.mcc == requestedOverride, 32);
     }
 
     profileChanged = iwx_mcc_profile_changed(response.status);
@@ -12599,12 +12596,6 @@ iwx_process_mcc_request(struct iwx_softc *sc, const char *alpha2,
 
     if (sourceId == IWX_MCC_SOURCE_WIFI &&
         sc->sc_ic.ic_state == IEEE80211_S_RUN)
-        return 0;
-
-    /* Keep a boot-argument country pinned only while firmware has applied it. */
-    if (sc->sc_mcc_override_valid &&
-        (alpha2 == NULL || alpha2[0] != sc->sc_mcc_override[0] ||
-         alpha2[1] != sc->sc_mcc_override[1]))
         return 0;
 
     return iwx_send_update_mcc_cmd(sc, alpha2, sourceId);
@@ -12797,37 +12788,44 @@ iwx_init_hw(struct iwx_softc *sc)
             lastSource = sc->sc_mcc_last_source;
         }
 
-        char requestedMcc[3] = "ZZ";
         char overrideMcc[3] = {};
-        uint8_t sourceId =
-            isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_WIFI_MCC_UPDATE) ||
-            isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_LAR_MULTI_MCC) ?
-                IWX_MCC_SOURCE_GET_CURRENT : IWX_MCC_SOURCE_OLD_FW;
         PE_parse_boot_argn("itlwm_cc", overrideMcc, sizeof(overrideMcc));
         const bool hasOverride = iwx_valid_mcc(overrideMcc);
         if (hasOverride) {
-            memcpy(requestedMcc, overrideMcc, sizeof(requestedMcc));
-            sourceId = IWX_MCC_SOURCE_ME;
             memcpy(sc->sc_mcc_override, overrideMcc,
                 sizeof(sc->sc_mcc_override));
-            sc->sc_mcc_override_valid = 0;
-            sc->sc_pcitag->setProperty("AirportItlwm-MCCOverride",
-                overrideMcc[0] == 0 ? "" : overrideMcc);
-            sc->sc_pcitag->setProperty("AirportItlwm-MCCOverrideApplied", static_cast<uint64_t>(0), 32);
+            sc->sc_pcitag->setProperty("AirportItlwm-MCCOverride", overrideMcc);
+            sc->sc_pcitag->setProperty("AirportItlwm-MCCOverrideApplied",
+                static_cast<uint64_t>(0), 32);
+        }
+
+        /*
+         * One request, in the order this driver can justify: an explicit boot
+         * argument, otherwise what the firmware itself reported last time
+         * together with the source it reported it under, otherwise the current
+         * domain. None of these is a permanent override; whatever the firmware
+         * answers is what the framework is told.
+         */
+        char requestedMcc[3];
+        uint8_t sourceId;
+        if (hasOverride) {
+            memcpy(requestedMcc, overrideMcc, sizeof(requestedMcc));
+            sourceId = IWX_MCC_SOURCE_ME;
+        } else if (restoreLastMcc) {
+            memcpy(requestedMcc, lastMcc, sizeof(requestedMcc));
+            sourceId = lastSource;
+        } else {
+            memcpy(requestedMcc, "ZZ", sizeof(requestedMcc));
+            sourceId =
+                isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_WIFI_MCC_UPDATE) ||
+                isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_LAR_MULTI_MCC) ?
+                    IWX_MCC_SOURCE_GET_CURRENT : IWX_MCC_SOURCE_OLD_FW;
         }
         err = iwx_send_update_mcc_cmd(sc, requestedMcc, sourceId);
         if (err) {
             XYLog("%s: could not init LAR (error %d)\n",
                    DEVNAME(sc), err);
             goto err;
-        }
-        if (restoreLastMcc && !hasOverride) {
-            err = iwx_send_update_mcc_cmd(sc, lastMcc, lastSource);
-            if (err) {
-                XYLog("%s: could not restore LAR MCC (error %d)\n",
-                       DEVNAME(sc), err);
-                goto err;
-            }
         }
     }
     

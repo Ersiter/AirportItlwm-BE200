@@ -1231,19 +1231,20 @@ IOReturn AirportItlwm::
 getCOUNTRY_CODE(OSObject *object,
                                 struct apple80211_country_code_data *cd)
 {
-    char user_override_cc[3];
     const char *cc_fw = fHalService->getDriverInfo()->getFirmwareCountryCode();
 
     if (!cd)
         return kIOReturnError;
     cd->version = APPLE80211_VERSION;
-    memset(user_override_cc, 0, sizeof(user_override_cc));
-    PE_parse_boot_argn("itlwm_cc", user_override_cc, 3);
+    /*
+     * Report what the firmware applied. Upstream treats the wiphy as
+     * self-managed: the firmware owns the regulatory domain and the driver only
+     * passes it up, so neither the boot argument nor the framework's own value
+     * may win over it. Fall back to the framework's value only while the
+     * firmware has not answered, which is what lets it start resolving.
+     */
     const char *countryCode = cc_fw;
-    /* user_override_cc > firmware_cc > geo_location_cc */
-    if (user_override_cc[0])
-        countryCode = user_override_cc;
-    else if (cc_fw[0] == 'Z' && cc_fw[1] == 'Z' && geo_location_cc[0])
+    if (cc_fw[0] == 'Z' && cc_fw[1] == 'Z' && geo_location_cc[0])
         countryCode = geo_location_cc;
     strncpy((char*)cd->cc, countryCode, sizeof(cd->cc));
     pciNub->setProperty("AirportItlwm-GetCountryCode", countryCode);
@@ -1256,18 +1257,16 @@ setCOUNTRY_CODE(OSObject *object, struct apple80211_country_code_data *data)
 #ifdef AIRPORT_WCL
     if (!data)
         return kIOReturnBadArgument;
-    if (data->cc[0] != 'x' && data->cc[0] != 'X' &&
-        memcmp(geo_location_cc, data->cc, sizeof(geo_location_cc)) != 0) {
-        if (fHalService->getDriverController()->setCountryCode(
-                reinterpret_cast<const char *>(data->cc)))
-            return kIOReturnSuccess;
-        else {
-            memcpy(geo_location_cc, data->cc, sizeof(geo_location_cc));
-        }
-        if (fNetIf)
-            static_cast<AirportItlwmSkywalkInterface *>(fNetIf)->handleWCLEvent(
-                IEEE80211_EVT_COUNTRY_CODE_UPDATE, nullptr);
-    }
+    if (data->cc[0] == 'x' || data->cc[0] == 'X')
+        return kIOReturnSuccess;
+    /*
+     * Keep the framework's value as the fallback reported above, but do not
+     * push it down: upstream's wiphy is self-managed, so an OS country change
+     * never rewrites the firmware's domain. Pushing it is what flipped the
+     * channel profile underneath a live association.
+     */
+    if (memcmp(geo_location_cc, data->cc, sizeof(geo_location_cc)) != 0)
+        memcpy(geo_location_cc, data->cc, sizeof(geo_location_cc));
 #else
     XYLog("%s cc=%s\n", __FUNCTION__, data->cc);
     if (data && data->cc[0] != 120 && data->cc[0] != 88) {
