@@ -1487,7 +1487,7 @@ iwx_ctxt_info_gen3_init(struct iwx_softc *sc, const struct iwx_fw_sects *fws)
                                sizeof(struct iwx_prph_scratch), 0);
     if (err) {
         XYLog("%s: could not allocate prph scratch\n", DEVNAME(sc));
-        return false;
+        return err;
     }
     
     prph_scratch = (struct iwx_prph_scratch *)sc->prph_scratch_dma.vaddr;
@@ -1513,6 +1513,7 @@ iwx_ctxt_info_gen3_init(struct iwx_softc *sc, const struct iwx_fw_sects *fws)
     err = iwx_init_fw_sec(sc, fws, &prph_scratch->dram);
     if (err) {
         iwx_ctxt_info_free_fw_img(sc);
+        iwx_dma_contig_free(&sc->prph_scratch_dma);
         return err;
     }
     
@@ -1590,9 +1591,10 @@ iwx_ctxt_info_gen3_init(struct iwx_softc *sc, const struct iwx_fw_sects *fws)
 fail1:
     iwx_dma_contig_free(&sc->iml_dma);
 fail0:
+    iwx_ctxt_info_free_fw_img(sc);
     iwx_dma_contig_free(&sc->prph_info_dma);
     iwx_dma_contig_free(&sc->prph_scratch_dma);
-    return ENOMEM;
+    return err;
 }
 
 void ItlIwx::
@@ -3208,6 +3210,7 @@ iwx_enable_rfkill_int(struct iwx_softc *sc)
                   sc->sc_fh_init_mask);
         IWX_WRITE(sc, IWX_CSR_MSIX_HW_INT_MASK_AD,
                   ~IWX_MSIX_HW_INT_CAUSES_REG_RF_KILL);
+        sc->sc_fh_mask = 0;
         sc->sc_hw_mask = IWX_MSIX_HW_INT_CAUSES_REG_RF_KILL;
     }
     
@@ -3305,6 +3308,8 @@ iwx_disable_interrupts(struct iwx_softc *sc)
         IWX_WRITE(sc, IWX_CSR_INT, ~0);
         IWX_WRITE(sc, IWX_CSR_FH_INT_STATUS, ~0);
     } else {
+        sc->sc_fh_mask = 0;
+        sc->sc_hw_mask = 0;
         IWX_WRITE(sc, IWX_CSR_MSIX_FH_INT_MASK_AD,
                   sc->sc_fh_init_mask);
         IWX_WRITE(sc, IWX_CSR_MSIX_HW_INT_MASK_AD,
@@ -3362,7 +3367,6 @@ int ItlIwx::
 iwx_prepare_card_hw(struct iwx_softc *sc)
 {
     XYLog("%s\n", __FUNCTION__);
-    int t = 0;
     int ntries;
     
     if (iwx_set_hw_ready(sc))
@@ -3374,6 +3378,7 @@ iwx_prepare_card_hw(struct iwx_softc *sc)
     
     
     for (ntries = 0; ntries < 10; ntries++) {
+        int t = 0;
         /* If HW is not ready, prepare the conditions to check again */
         IWX_SETBITS(sc, IWX_CSR_HW_IF_CONFIG_REG,
                     IWX_CSR_HW_IF_CONFIG_REG_PREPARE);
@@ -3662,6 +3667,9 @@ iwx_start_hw(struct iwx_softc *sc)
     
     /* Reset the entire device */
     iwx_sw_reset(sc);
+    err = iwx_prepare_card_hw(sc);
+    if (err)
+        return err;
     
     if (sc->sc_device_family == IWX_DEVICE_FAMILY_22000 && sc->sc_integrated) {
         IWX_SETBITS(sc, IWX_CSR_GP_CNTRL,
@@ -3679,6 +3687,9 @@ iwx_start_hw(struct iwx_softc *sc)
         
         /* Reset the entire device */
         iwx_sw_reset(sc);
+        err = iwx_prepare_card_hw(sc);
+        if (err)
+            return err;
     }
     
     err = iwx_apm_init(sc);
@@ -3711,18 +3722,18 @@ iwx_stop_device(struct iwx_softc *sc)
     dmaEpoch++;
 #endif
     XYLog("%s\n", __FUNCTION__);
-    int qid;
-    
+    int qid, err;
+
     iwx_disable_interrupts(sc);
     sc->sc_flags &= ~IWX_FLAG_USE_ICT;
-    
+
     iwx_disable_rx_dma(sc);
 #ifndef AIRPORT_VTD
     iwx_reset_rx_ring(sc, &sc->rxq);
     for (qid = 0; qid < nitems(sc->txq); qid++)
         iwx_reset_tx_ring(sc, &sc->txq[qid]);
 #endif
-    
+
     /* Make sure (redundant) we've released our request to stay awake */
     IWX_CLRBITS(sc, IWX_CSR_GP_CNTRL,
                 sc->sc_device_family >= IWX_DEVICE_FAMILY_BZ ?
@@ -3732,10 +3743,10 @@ iwx_stop_device(struct iwx_softc *sc)
         XYLog("%s: %d active NIC locks forcefully cleared\n",
               DEVNAME(sc), sc->sc_nic_locks);
     sc->sc_nic_locks = 0;
-    
+
     /* Stop the device, and put it in low power state */
     iwx_apm_stop(sc);
-    
+
     /* Reset the on-board processor. */
     iwx_sw_reset(sc);
 #ifdef AIRPORT_VTD
@@ -3744,7 +3755,12 @@ iwx_stop_device(struct iwx_softc *sc)
     for (qid = 0; qid < nitems(sc->txq); qid++)
         iwx_reset_tx_ring(sc, &sc->txq[qid]);
 #endif
-    
+
+    err = iwx_prepare_card_hw(sc);
+    if (err)
+        XYLog("%s: unable to retake hardware ownership after reset (error %d)\n",
+              DEVNAME(sc), err);
+
     /*
      * Upon stop, the IVAR table gets erased, so msi-x won't
      * work. This causes a bug in RF-KILL flows, since the interrupt
@@ -3753,19 +3769,17 @@ iwx_stop_device(struct iwx_softc *sc)
      * Configure the IVAR table again after reset.
      */
     iwx_conf_msix_hw(sc, 1);
-    
+
     /*
      * Upon stop, the APM issues an interrupt if HW RF kill is set.
      * Clear the interrupt again.
      */
     iwx_disable_interrupts(sc);
-    
+
     /* Even though we stop the HW we still want the RF kill interrupt. */
     iwx_enable_rfkill_int(sc);
     iwx_check_rfkill(sc);
-    
-    iwx_prepare_card_hw(sc);
-    
+
     iwx_ctxt_info_free_paging(sc);
     /* free gen3 devices related firmware DMA resource */
     iwx_dma_contig_free(&sc->prph_info_dma);
@@ -5299,6 +5313,7 @@ iwx_ba_task(void *arg)
             sc->ns_nstate != IEEE80211_S_RUN)
             break;
         if (sc->ba_tx.start_tidmask & (1 << tid)) {
+            err = 0;
             ba = &ni->ni_tx_ba[tid];
             XYLog("%s ba_tx_start tid=%d, ssn=%d\n", __FUNCTION__, tid, ba->ba_winstart);
             if (!that->iwx_nic_lock(sc)) {
@@ -5616,7 +5631,7 @@ iwx_load_firmware(struct iwx_softc *sc)
         return err;
     }
     
-    err = iwx_wait_notification(sc, &sc->sc_uc.uc_intr, 1, 1000);
+    err = iwx_wait_notification(sc, &sc->sc_uc.uc_intr, 1, 2000);
     if (err == ENXIO)
         return err;
     if (!err && !sc->sc_uc.uc_ok)
@@ -11421,6 +11436,7 @@ iwx_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
         int err = that->iwx_mld_set_key(sc, ni, k, 1);
         if (err)
             XYLog("MLD key removal failed: %d\n", err);
+        ieee80211_delete_key(ic, ni, k);
         return;
     }
     if (sc->sc_use_mld_api && ieee80211_is_bip_cipher(k->k_cipher) &&
@@ -11452,6 +11468,7 @@ iwx_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     cmd.common.sta_id = IWX_STATION_ID;
     
     that->iwx_send_cmd_pdu(sc, IWX_ADD_STA_KEY, IWX_CMD_ASYNC, sizeof(cmd), &cmd);
+    ieee80211_delete_key(ic, ni, k);
 }
 
 int ItlIwx::

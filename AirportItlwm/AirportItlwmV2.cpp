@@ -24,6 +24,16 @@ IOCommandGate *_fCommandGate;
 
 void AirportItlwm::releaseAll()
 {
+    if (fWatchdogWorkLoop) {
+        if (watchdogTimer) {
+            watchdogTimer->cancelTimeout();
+            fWatchdogWorkLoop->removeEventSource(watchdogTimer);
+            watchdogTimer->release();
+            watchdogTimer = NULL;
+        }
+        fWatchdogWorkLoop->release();
+        fWatchdogWorkLoop = NULL;
+    }
 #ifdef AIRPORT_WCL
     if (fNetIf)
         static_cast<AirportItlwmSkywalkInterface *>(fNetIf)->stopWCL();
@@ -68,14 +78,6 @@ void AirportItlwm::releaseAll()
             _fWorkloop->removeEventSource(scanSource);
             scanSource->release();
             scanSource = NULL;
-        }
-        if (fWatchdogWorkLoop && watchdogTimer) {
-            watchdogTimer->cancelTimeout();
-            fWatchdogWorkLoop->removeEventSource(watchdogTimer);
-            watchdogTimer->release();
-            watchdogTimer = NULL;
-            fWatchdogWorkLoop->release();
-            fWatchdogWorkLoop = NULL;
         }
         _fWorkloop->release();
         _fWorkloop = NULL;
@@ -365,7 +367,7 @@ bool AirportItlwm::start(IOService *provider)
         return false;
     }
     provider->setProperty("AirportItlwm-StartupStage", "controller-timers");
-    fWatchdogWorkLoop = IOWorkLoop::workLoop();
+    fWatchdogWorkLoop = _fWorkloop;
     if (fWatchdogWorkLoop == NULL) {
         XYLog("init watchdog workloop fail\n");
         fHalService->detach(pciNub);
@@ -373,6 +375,7 @@ bool AirportItlwm::start(IOService *provider)
         releaseAll();
         return false;
     }
+    fWatchdogWorkLoop->retain();
     watchdogTimer = IOTimerEventSource::timerEventSource(this, OSMemberFunctionCast(IOTimerEventSource::Action, this, &AirportItlwm::watchdogAction));
     if (!watchdogTimer) {
         XYLog("init watchdog fail\n");

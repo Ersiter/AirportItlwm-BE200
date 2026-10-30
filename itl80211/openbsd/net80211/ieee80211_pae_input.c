@@ -610,6 +610,8 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         
         /* map PTK to 802.11 key */
         k = &ni->ni_pairwise_key;
+        if (k->k_priv != NULL)
+            ieee80211_delete_key(ic, ni, k);
         memset(k, 0, sizeof(*k));
         k->k_cipher = ni->ni_rsncipher;
         k->k_rsc[0] = prsc;
@@ -646,6 +648,8 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         kid = gtk[6] & 3;
         k = &ic->ic_nw_keys[kid];
         if (ieee80211_must_update_group_key(k, &gtk[8], keylen)) {
+            if (k->k_priv != NULL)
+                ieee80211_delete_key(ic, ni, k);
             memset(k, 0, sizeof(*k));
             k->k_id = kid;    /* 0-3 */
             k->k_cipher = ni->ni_rsngroupcipher;
@@ -689,6 +693,8 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         /* map IGTK to 802.11 key */
         k = &ic->ic_nw_keys[kid];
         if (ieee80211_must_update_group_key(k, &igtk[14], keylen)) {
+            if (k->k_priv != NULL)
+                ieee80211_delete_key(ic, ni, k);
             memset(k, 0, sizeof(*k));
             k->k_id = kid;    /* either 4 or 5 */
             k->k_cipher = ni->ni_rsngroupmgmtcipher;
@@ -701,6 +707,7 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
                 case 0:
                     ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT;
                     ni->ni_flags |= IEEE80211_NODE_RXMGMTPROT;
+                    ic->ic_igtk_kid = kid;
                     break;
                 case EBUSY:
                     deferlink = 1;
@@ -709,6 +716,8 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
                     reason = IEEE80211_REASON_AUTH_LEAVE;
                     goto deauth;
             }
+        } else {
+            ic->ic_igtk_kid = kid;
         }
     }
     if (bigtk != NULL) {
@@ -728,6 +737,8 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         }
         k = &ic->ic_nw_keys[kid];
         if (ieee80211_must_update_group_key(k, &bigtk[14], keylen)) {
+            if (k->k_priv != NULL)
+                ieee80211_delete_key(ic, ni, k);
             memset(k, 0, sizeof(*k));
             k->k_id = kid;
             k->k_cipher = ni->ni_rsngroupmgmtcipher;
@@ -813,6 +824,8 @@ ieee80211_recv_4way_msg4(struct ieee80211com *ic,
         
         /* map PTK to 802.11 key */
         k = &ni->ni_pairwise_key;
+        if (k->k_priv != NULL)
+            ieee80211_delete_key(ic, ni, k);
         memset(k, 0, sizeof(*k));
         k->k_cipher = ni->ni_rsncipher;
         k->k_len = ieee80211_cipher_keylen(k->k_cipher);
@@ -989,6 +1002,8 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
     kid = gtk[6] & 3;
     k = &ic->ic_nw_keys[kid];
     if (ieee80211_must_update_group_key(k, &gtk[8], keylen)) {
+        if (k->k_priv != NULL)
+            ieee80211_delete_key(ic, ni, k);
         memset(k, 0, sizeof(*k));
         k->k_id = kid;    /* 0-3 */
         k->k_cipher = ni->ni_rsngroupcipher;
@@ -1025,6 +1040,8 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
         /* map IGTK to 802.11 key */
         k = &ic->ic_nw_keys[kid];
         if (ieee80211_must_update_group_key(k, &igtk[14], keylen)) {
+            if (k->k_priv != NULL)
+                ieee80211_delete_key(ic, ni, k);
             memset(k, 0, sizeof(*k));
             k->k_id = kid;    /* either 4 or 5 */
             k->k_cipher = ni->ni_rsngroupmgmtcipher;
@@ -1037,6 +1054,7 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
                 case 0:
                     ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT;
                     ni->ni_flags |= IEEE80211_NODE_RXMGMTPROT;
+                    ic->ic_igtk_kid = kid;
                     break;
                 case EBUSY:
                     break;
@@ -1044,6 +1062,8 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
                     reason = IEEE80211_REASON_AUTH_LEAVE;
                     goto deauth;
             }
+        } else {
+            ic->ic_igtk_kid = kid;
         }
     }
     if (bigtk != NULL) {
@@ -1057,6 +1077,8 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
         }
         k = &ic->ic_nw_keys[kid];
         if (ieee80211_must_update_group_key(k, &bigtk[14], keylen)) {
+            if (k->k_priv != NULL)
+                ieee80211_delete_key(ic, ni, k);
             memset(k, 0, sizeof(*k));
             k->k_id = kid;
             k->k_cipher = ni->ni_rsngroupmgmtcipher;
@@ -1163,6 +1185,8 @@ ieee80211_recv_wpa_group_msg1(struct ieee80211com *ic,
     k = &ic->ic_nw_keys[kid];
     gtk = (const uint8_t *)&key[1]; /* key data field contains the GTK */
     if (ieee80211_must_update_group_key(k, gtk, keylen)) {
+        if (k->k_priv != NULL)
+            ieee80211_delete_key(ic, ni, k);
         memset(k, 0, sizeof(*k));
         k->k_id = kid;    /* 0-3 */
         k->k_cipher = ni->ni_rsngroupcipher;
