@@ -8426,7 +8426,13 @@ iwx_power_build_cmd(struct iwx_softc *sc, struct iwx_node *in,
     keep_alive = roundup(keep_alive, 1000) / 1000;
     cmd->keep_alive_seconds = htole16(keep_alive);
     
-    if (ic->ic_opmode != IEEE80211_M_MONITOR)
+    /*
+     * Power save stays off unless the interface asked for it. Dozing between
+     * beacons shows up as latency and jitter; upstream sends level 0 here and
+     * only raises it for IEEE80211_F_PMGTON.
+     */
+    if ((ic->ic_flags & IEEE80211_F_PMGTON) &&
+        ic->ic_opmode != IEEE80211_M_MONITOR)
         cmd->flags = htole16(IWX_POWER_FLAGS_POWER_SAVE_ENA_MSK);
 }
 
@@ -8458,7 +8464,8 @@ iwx_power_update_device(struct iwx_softc *sc)
     struct iwx_device_power_cmd cmd = { };
     struct ieee80211com *ic = &sc->sc_ic;
     
-    if (ic->ic_opmode != IEEE80211_M_MONITOR)
+    if ((ic->ic_flags & IEEE80211_F_PMGTON) &&
+        ic->ic_opmode != IEEE80211_M_MONITOR)
         cmd.flags = htole16(IWX_DEVICE_POWER_FLAGS_POWER_SAVE_ENA_MSK);
     
     return iwx_send_cmd_pdu(sc,
