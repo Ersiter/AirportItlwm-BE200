@@ -1154,6 +1154,9 @@ getCARD_CAPABILITIES(OSObject *object,
             cd->capabilities[11] |= 0x40;
             break;
         }
+    pciNub->setProperty("AirportItlwm-EHTCapValid", ic->ic_eht_cap_valid, 32);
+    pciNub->setProperty("AirportItlwm-CapByte11", cd->capabilities[11], 32);
+    pciNub->setProperty("AirportItlwm-CapByte17", cd->capabilities[17], 32);
 #else
     cd->capabilities[2] = 0xFF; // BURST, WME, SHORT_GI_40MHZ, SHORT_GI_20MHZ, WOW, TSN, ?, ?
     cd->capabilities[3] = 0x2B;
@@ -1236,15 +1239,14 @@ getCOUNTRY_CODE(OSObject *object,
     cd->version = APPLE80211_VERSION;
     memset(user_override_cc, 0, sizeof(user_override_cc));
     PE_parse_boot_argn("itlwm_cc", user_override_cc, 3);
-    /* user_override_cc > firmware_cc > geo_location_cc */
     const char *countryCode = cc_fw;
-    if (user_override_cc[0] && cc_fw[0] == user_override_cc[0] &&
-        cc_fw[1] == user_override_cc[1])
+    /* user_override_cc > firmware_cc > geo_location_cc */
+    if (user_override_cc[0])
         countryCode = user_override_cc;
-    else if (cc_fw[0] == 'Z' && cc_fw[1] == 'Z' &&
-             !user_override_cc[0] && geo_location_cc[0])
+    else if (cc_fw[0] == 'Z' && cc_fw[1] == 'Z' && geo_location_cc[0])
         countryCode = geo_location_cc;
     strncpy((char*)cd->cc, countryCode, sizeof(cd->cc));
+    pciNub->setProperty("AirportItlwm-GetCountryCode", countryCode);
     return kIOReturnSuccess;
 }
 
@@ -1256,10 +1258,6 @@ setCOUNTRY_CODE(OSObject *object, struct apple80211_country_code_data *data)
         return kIOReturnBadArgument;
     if (data->cc[0] != 'x' && data->cc[0] != 'X' &&
         memcmp(geo_location_cc, data->cc, sizeof(geo_location_cc)) != 0) {
-        char user_override_cc[3] = {};
-        PE_parse_boot_argn("itlwm_cc", user_override_cc, sizeof(user_override_cc));
-        if (user_override_cc[0])
-            return kIOReturnSuccess;
         if (fHalService->getDriverController()->setCountryCode(
                 reinterpret_cast<const char *>(data->cc)))
             return kIOReturnSuccess;

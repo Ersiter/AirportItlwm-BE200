@@ -158,6 +158,7 @@ public:
     int iwx_mld_set_key(iwx_softc *, ieee80211_node *, ieee80211_key *, int);
     int iwx_mld_queue_cmd(iwx_softc *, uint32_t, int, int, uint32_t, uint64_t, uint64_t, uint16_t *, uint16_t *);
     int iwx_mld_update_active_links(iwx_softc *, uint8_t, uint8_t, bool);
+    bool iwx_mld_associated_channels_valid(iwx_softc *);
 #ifdef AIRPORT_WCL
     uint8_t iwx_mld_select_emlsr_links(iwx_softc *, uint8_t *);
 #endif

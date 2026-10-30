@@ -491,6 +491,56 @@ iwx_mld_select_emlsr_links(struct iwx_softc *sc, uint8_t *primary_link)
 }
 #endif
 
+bool ItlIwx::
+iwx_mld_associated_channels_valid(struct iwx_softc *sc)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    auto channelValidForNode = [&](struct ieee80211_node *ni) {
+        if (ni == NULL || ni->ni_chan == NULL)
+            return false;
+        int index = ieee80211_chan2ieee(ic, ni->ni_chan);
+        if (index <= 0 || index > IEEE80211_CHAN_MAX)
+            return false;
+        struct ieee80211_channel *channel = &ic->ic_channels[index];
+        if (!channel->ic_freq || !channel->ic_flags)
+            return false;
+        uint8_t restrictions = channel->ic_reg_flags;
+        if ((ni->ni_flags & IEEE80211_NODE_HE) &&
+            (restrictions & IEEE80211_CHAN_NO_HE))
+            return false;
+        if ((ni->ni_flags & IEEE80211_NODE_EHT) &&
+            (restrictions & IEEE80211_CHAN_NO_EHT))
+            return false;
+        switch (ni->ni_chw) {
+        case IEEE80211_CHAN_WIDTH_20_NOHT:
+        case IEEE80211_CHAN_WIDTH_20:
+            return true;
+        case IEEE80211_CHAN_WIDTH_40:
+            return !(restrictions & IEEE80211_CHAN_NO_40MHZ);
+        case IEEE80211_CHAN_WIDTH_80:
+            return !(restrictions & IEEE80211_CHAN_NO_80MHZ);
+        case IEEE80211_CHAN_WIDTH_80P80:
+        case IEEE80211_CHAN_WIDTH_160:
+            return !(restrictions & IEEE80211_CHAN_NO_160MHZ);
+        case IEEE80211_CHAN_WIDTH_320:
+            return !(restrictions & IEEE80211_CHAN_NO_320MHZ);
+        default:
+            return false;
+        }
+    };
+    if (!channelValidForNode(ic->ic_bss))
+        return false;
+    if (sc->sc_use_mld_api) {
+        for (int i = 1; i < ic->ic_mld_link_count; i++) {
+            struct ieee80211_mld_link_info *link = &ic->ic_mld_links[i];
+            if (link->assoc_accepted &&
+                !channelValidForNode(link->ni))
+                return false;
+        }
+    }
+    return true;
+}
+
 void ItlIwx::
 iwx_mld_active_link_task(void *arg)
 {
@@ -520,6 +570,11 @@ iwx_mld_active_link_task(void *arg)
     if (!pending || generation != sc->sc_generation ||
         (sc->sc_flags & IWX_FLAG_SHUTDOWN))
         return;
+    if (sc->sc_ic.ic_state == IEEE80211_S_RUN &&
+        !that->iwx_mld_associated_channels_valid(sc)) {
+        that->iwx_newstate(&sc->sc_ic, IEEE80211_S_INIT, -1);
+        return;
+    }
 
     err = that->iwx_mld_update_active_links(sc, links, primary_link,
         emlsr_active);
