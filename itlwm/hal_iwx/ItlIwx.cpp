@@ -126,6 +126,7 @@
 #include <net80211/ieee80211_priv.h>
 
 static bool iwx_valid_mcc(const char *mcc);
+static void iwx_setkey_queue_reset(struct iwx_softc *sc);
 
 #define super ItlHalService
 OSDefineMetaClassAndStructors(ItlIwx, ItlHalService)
@@ -471,9 +472,7 @@ detach(IOPCIDevice *device)
     sc->sc_flags |= IWX_FLAG_SHUTDOWN;
     sc->sc_generation++;
     task_del(systq, &sc->mcc_task);
-    task_del(systq, &sc->sc_setkey_task);
-    memset(sc->sc_setkey_arg, 0, sizeof(sc->sc_setkey_arg));
-    sc->sc_setkey_cur = sc->sc_setkey_tail = sc->sc_setkey_nkeys = 0;
+    iwx_setkey_queue_reset(sc);
 #ifdef AIRPORT_VTD
     releaseAll();
     taskq_destroy(systq);
@@ -11515,6 +11514,14 @@ iwx_set_key_hw(struct ieee80211com *ic, struct ieee80211_node *ni,
                             sizeof(cmd), &cmd);
 }
 
+static void
+iwx_setkey_queue_reset(struct iwx_softc *sc)
+{
+    task_del(systq, &sc->sc_setkey_task);
+    memset(sc->sc_setkey_arg, 0, sizeof(sc->sc_setkey_arg));
+    sc->sc_setkey_cur = sc->sc_setkey_tail = sc->sc_setkey_nkeys = 0;
+}
+
 void ItlIwx::
 iwx_setkey_task(void *arg)
 {
@@ -11812,9 +11819,7 @@ iwx_newstate(struct ieee80211com *ic, enum ieee80211_state nstate, int arg)
         that->iwx_del_task(sc, systq, &sc->ba_task);
         that->iwx_del_task(sc, systq, &sc->mac_ctxt_task);
         that->iwx_del_task(sc, systq, &sc->chan_ctxt_task);
-        that->iwx_del_task(sc, systq, &sc->sc_setkey_task);
-        memset(sc->sc_setkey_arg, 0, sizeof(sc->sc_setkey_arg));
-        sc->sc_setkey_cur = sc->sc_setkey_tail = sc->sc_setkey_nkeys = 0;
+        iwx_setkey_queue_reset(sc);
     }
     
     sc->ns_nstate = nstate;
