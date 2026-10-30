@@ -11354,9 +11354,26 @@ iwx_run(struct iwx_softc *sc)
 int ItlIwx::
 iwx_run_stop(struct iwx_softc *sc)
 {
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct ieee80211_node *bss = ic->ic_bss;
+
+    /*
+     * A PMF AP ignores a deauth that is not protected, so it keeps this
+     * station's MFP state until it times out - and refuses the next handshake
+     * while it does. Send the deauth while the station is still programmed;
+     * TX_MGMT_ONLY holds data frames back until the transition completes, and
+     * ieee80211_newstate() clears it there.
+     */
+    if (bss != NULL && (ic->ic_flags & IEEE80211_F_RSNON) &&
+        (bss->ni_flags & IEEE80211_NODE_MFP)) {
+        ic->ic_xflags |= IEEE80211_F_TX_MGMT_ONLY;
+        if (IEEE80211_SEND_MGMT(ic, bss, IEEE80211_FC0_SUBTYPE_DEAUTH,
+            IEEE80211_REASON_AUTH_LEAVE) != 0)
+            ic->ic_xflags &= ~IEEE80211_F_TX_MGMT_ONLY;
+    }
+
     if (sc->sc_use_mld_api)
         return iwx_mld_run_stop(sc);
-    struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_node *in = (struct iwx_node *)ic->ic_bss;
     int err, i;
     
