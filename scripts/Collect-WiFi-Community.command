@@ -39,6 +39,17 @@ capture() {
     printf '%s\t%s\t%s\t%s\n' "$started" "$(date '+%Y-%m-%d %H:%M:%S %z')" "$name" "$status" >> "$out/status.tsv"
 }
 
+collect_crash_reports() {
+    /bin/mkdir -p "$out/crash-reports" || return 1
+    /usr/bin/find /Library/Logs/DiagnosticReports -maxdepth 2 -type f -mtime -7 \
+        \( -iname '*panic*' -o -name 'Kernel*' -o -name 'shutdown_stall*' \
+        -o -name 'Sleep Wake Failure*' \) -print0 |
+        while IFS= read -r -d '' report; do
+            printf '%s\n' "$report"
+            /bin/cp -p "$report" "$out/crash-reports/" || return 1
+        done
+}
+
 stop_live() {
     local pid status
     for pid in "$sample_pid" "$stream_pid" $packet_pids; do
@@ -162,6 +173,7 @@ capture boot-args /usr/sbin/sysctl kern.bootargs
 capture framework-layout framework_layout
 capture extension-paths extension_paths
 capture extension-metadata extension_metadata
+capture crash-reports collect_crash_reports
 capture kext-load-log /usr/bin/log show --last 24h --info --style compact --predicate \
     '(process == "kernelmanagerd" OR process == "kextd") AND (eventMessage CONTAINS[c] "itlwm" OR eventMessage CONTAINS[c] "IO80211" OR eventMessage CONTAINS[c] "IOSkywalk")'
 airport_pid="$(/usr/bin/pgrep -x airportd | /usr/bin/head -n 1)"
