@@ -5074,6 +5074,10 @@ iwx_sta_rx_agg(struct iwx_softc *sc, struct ieee80211_node *ni, uint8_t tid,
         rxba->baid = baid;
         rxba->timeout = timeout_val;
         getmicrouptime(&rxba->last_rx);
+        timeout_set(&rxba->session_timer, iwx_rx_ba_session_expired,
+                    rxba);
+        timeout_set(&rxba->reorder_buf.reorder_timer,
+                    iwx_reorder_timer_expired, &rxba->reorder_buf);
         iwx_init_reorder_buffer(&rxba->reorder_buf, ssn,
                                 winsize);
         if (timeout_val != 0) {
@@ -6619,7 +6623,7 @@ drop:
 
 void ItlIwx::
 iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
-               size_t maxlen, struct mbuf_list *ml)
+               size_t packet_len, struct mbuf_list *ml)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_rxinfo rxi;
@@ -6630,11 +6634,16 @@ iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
     uint16_t phy_info;
     size_t desc_size;
     
-    desc = (struct iwx_rx_mpdu_desc *)pktdata;
     if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210)
         desc_size = sizeof(struct iwx_rx_mpdu_desc);
     else
         desc_size = IWX_RX_DESC_SIZE_V1;
+    if (packet_len < desc_size) {
+        IC2IFP(ic)->netStat->inputErrors++;
+        mbuf_freem(m);
+        return;
+    }
+    desc = (struct iwx_rx_mpdu_desc *)pktdata;
     
     if (!(desc->status & htole16(IWX_RX_MPDU_RES_STATUS_CRC_OK)) ||
         !(desc->status & htole16(IWX_RX_MPDU_RES_STATUS_OVERRUN_OK))) {
@@ -6657,7 +6666,7 @@ iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
         mbuf_freem(m);
         return;
     }
-    if (len > maxlen - desc_size) {
+    if (len > packet_len - desc_size) {
         IC2IFP(ic)->netStat->inputErrors++;
         mbuf_freem(m);
         return;
@@ -6695,7 +6704,11 @@ iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
             hdrlen += IEEE80211_CCMP_HDRLEN;
         }
         
-        //        memmove(m->m_data + 2, m->m_data, hdrlen);
+        if (hdrlen + 2 > len) {
+            IC2IFP(ic)->netStat->inputErrors++;
+            mbuf_freem(m);
+            return;
+        }
         memmove((uint8_t*)mbuf_data(m) + 2, mbuf_data(m), hdrlen);
         mbuf_adj(m, 2);
     }
@@ -13834,7 +13847,6 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                 break;
                 
             case IWX_REPLY_RX_MPDU_CMD: {
-                size_t maxlen = IWX_RBUF_SIZE - offset - minsz;
                 nextoff = offset +
                 roundup(len, IWX_FH_RSCSR_FRAME_ALIGN);
                 nextpkt = (struct iwx_rx_packet *)
@@ -13844,7 +13856,8 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                     /* No need to copy last frame in buffer. */
                     if (offset > 0)
                         mbuf_adj(m0, offset);
-                    iwx_rx_mpdu_mq(sc, m0, pkt->data, maxlen, ml);
+                    iwx_rx_mpdu_mq(sc, m0, pkt->data,
+                        iwx_rx_packet_payload_len(pkt), ml);
                     m0 = NULL; /* stack owns m0 now; abort loop */
                 } else {
                     /*
@@ -13860,7 +13873,8 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                         break;
                     }
                     mbuf_adj(m, offset);
-                    iwx_rx_mpdu_mq(sc, m, pkt->data, maxlen, ml);
+                    iwx_rx_mpdu_mq(sc, m, pkt->data,
+                        iwx_rx_packet_payload_len(pkt), ml);
                 }
                 break;
             }
