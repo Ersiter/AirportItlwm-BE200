@@ -749,9 +749,13 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
      * A result with no name is one WCL keeps in its scan array and never shows
      * in the menu, which is the shape a 6 GHz BSS took. A frame that carries no
      * name only proves an AP is there, so leave the network out of the list
-     * until one names it.
+     * until one names it - except for the access point being joined. Its result
+     * is what carries the link up, and it is the one place where a nameless
+     * entry is still the right answer.
      */
-    if (ssidBytes == 0) {
+    const bool joinedBssid = assocNotified &&
+        IEEE80211_ADDR_EQ(node->ni_bssid, joinBSSID);
+    if (ssidBytes == 0 && !joinedBssid) {
         instance->pciNub->setProperty("AirportItlwm-WCLBeaconDrops", ++wclBeaconDrops, 32);
         instance->pciNub->setProperty("AirportItlwm-WCLBeaconDropReason", "noname");
         return;
