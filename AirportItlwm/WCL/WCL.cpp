@@ -769,7 +769,15 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
     metadata->rssi = IWM_MIN_DBM + node->ni_rssi;
     metadata->interval = node->ni_intval;
     metadata->capability = node->ni_capinfo;
-    metadata->flags = AirportWCL::SSIDPresent | AirportWCL::RSSIValid;
+    /*
+     * Only claim the name is there when it actually is. A result that says
+     * SSIDPresent while carrying an empty string is the shape WCL builds its
+     * list from, so the entry shows up in the scan array and never in the
+     * menu - which is what a 6 GHz BSS looked like before the name was taken
+     * from the frame.
+     */
+    metadata->flags = AirportWCL::RSSIValid |
+        (ssidBytes ? AirportWCL::SSIDPresent : 0U);
     memcpy(metadata + 1, ies, length);
     size_t messageSize = sizeof(*metadata) + metadata->ieLength;
     if (assocNotified && IEEE80211_ADDR_EQ(node->ni_bssid, joinBSSID)) {
