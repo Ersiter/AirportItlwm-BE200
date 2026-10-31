@@ -713,6 +713,36 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
                 ++wclSsidFromFrame, 32);
         }
     }
+    /*
+     * Once a name is known it stays. net80211 keeps it on the node, but a node
+     * is dropped and rebuilt between scans, and the next frame from the same
+     * BSSID may be one that carries no name at all, so remember it here too.
+     */
+    if (ssidBytes == 0) {
+        for (unsigned i = 0; i < nitems(wclResultRing); ++i) {
+            if (wclResultRing[i].used && wclResultRing[i].ssidLength &&
+                memcmp(wclResultRing[i].bssid, node->ni_bssid,
+                    sizeof(wclResultRing[i].bssid)) == 0) {
+                memcpy(ssidBuf, wclResultRing[i].ssid, wclResultRing[i].ssidLength);
+                ssidPtr = ssidBuf;
+                ssidBytes = wclResultRing[i].ssidLength;
+                instance->pciNub->setProperty("AirportItlwm-WCLSsidRemembered",
+                    ++wclSsidRemembered, 32);
+                break;
+            }
+        }
+    }
+    /*
+     * A result with no name is one WCL keeps in its scan array and never shows
+     * in the menu, which is the shape a 6 GHz BSS took. A frame that carries no
+     * name only proves an AP is there, so leave the network out of the list
+     * until one names it.
+     */
+    if (ssidBytes == 0) {
+        instance->pciNub->setProperty("AirportItlwm-WCLBeaconDrops", ++wclBeaconDrops, 32);
+        instance->pciNub->setProperty("AirportItlwm-WCLBeaconDropReason", "noname");
+        return;
+    }
     ieee80211com *ic = fHalService->get80211Controller();
     if (!node->ni_chan || node->ni_chan == IEEE80211_CHAN_ANYC) {
         instance->pciNub->setProperty("AirportItlwm-WCLBeaconDrops", ++wclBeaconDrops, 32);
