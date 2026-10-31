@@ -922,6 +922,26 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
         instance->pciNub->setProperty("AirportItlwm-WCLJoinExit", "deferred");
         return kIOReturnSuccess;
     }
+    /*
+     * Taking the current link down for this very request clears IFF_RUNNING
+     * for a moment, and WCL used to answer that with kIOReturnBusy and drop
+     * the request - which is the "click the network twice" behaviour: the
+     * first click lands in the teardown window and only the second one, issued
+     * after the driver is running again, is accepted. Keep the request while
+     * the interface is still up and let the READY path issue it.
+     */
+    if (supported && !joinPending && !(ic->ic_if.if_flags & IFF_RUNNING) &&
+        (ic->ic_if.if_flags & IFF_UP)) {
+        deferredJoin = join;
+        memcpy(joinBSSID, join.bssid, sizeof(joinBSSID));
+        explicit_bzero(&join, sizeof(join));
+        joinDeferred = joinPending = true;
+        joinTimer->setTimeoutMS(30000);
+        wclJoinTimeoutMS = 30000;
+        publishWCLAuthDiagnostic("join-deferred");
+        instance->pciNub->setProperty("AirportItlwm-WCLJoinExit", "deferred-not-running");
+        return kIOReturnSuccess;
+    }
     if (!supported || !(ic->ic_if.if_flags & IFF_RUNNING) || joinPending || scanPending) {
         char detail[64];
         snprintf(detail, sizeof(detail), "%s(flags=0x%x,state=%d)",
