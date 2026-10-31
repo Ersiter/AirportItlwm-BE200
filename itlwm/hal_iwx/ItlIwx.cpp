@@ -12927,32 +12927,40 @@ iwx_init_hw(struct iwx_softc *sc)
         }
 
         /*
-         * One request, in the order this driver can justify: an explicit boot
-         * argument, otherwise what the firmware itself reported last time
-         * together with the source it reported it under, otherwise the current
-         * domain. None of these is a permanent override; whatever the firmware
-         * answers is what the framework is told.
+         * Two steps on every firmware init, in upstream's order: the world
+         * domain through GET_CURRENT, which is also how the firmware is told
+         * that this driver takes wifi location updates at all, and then the
+         * domain it reported last time under the source it reported it under,
+         * or the boot argument when one was given. Choosing one of the three
+         * skipped the first step after every re-init.
          */
-        char requestedMcc[3];
-        uint8_t sourceId;
-        if (hasOverride) {
-            memcpy(requestedMcc, overrideMcc, sizeof(requestedMcc));
-            sourceId = IWX_MCC_SOURCE_ME;
-        } else if (restoreLastMcc) {
-            memcpy(requestedMcc, lastMcc, sizeof(requestedMcc));
-            sourceId = lastSource;
-        } else {
-            memcpy(requestedMcc, "ZZ", sizeof(requestedMcc));
-            sourceId =
-                isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_WIFI_MCC_UPDATE) ||
-                isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_LAR_MULTI_MCC) ?
-                    IWX_MCC_SOURCE_GET_CURRENT : IWX_MCC_SOURCE_OLD_FW;
-        }
-        err = iwx_send_update_mcc_cmd(sc, requestedMcc, sourceId);
+        err = iwx_send_update_mcc_cmd(sc, "ZZ",
+            isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_WIFI_MCC_UPDATE) ||
+            isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_LAR_MULTI_MCC) ?
+                IWX_MCC_SOURCE_GET_CURRENT : IWX_MCC_SOURCE_OLD_FW);
         if (err) {
             XYLog("%s: could not init LAR (error %d)\n",
                    DEVNAME(sc), err);
             goto err;
+        }
+
+        if (hasOverride || restoreLastMcc) {
+            char requestedMcc[3];
+            uint8_t sourceId;
+
+            if (hasOverride) {
+                memcpy(requestedMcc, overrideMcc, sizeof(requestedMcc));
+                sourceId = IWX_MCC_SOURCE_ME;
+            } else {
+                memcpy(requestedMcc, lastMcc, sizeof(requestedMcc));
+                sourceId = lastSource;
+            }
+            err = iwx_send_update_mcc_cmd(sc, requestedMcc, sourceId);
+            if (err) {
+                XYLog("%s: could not restore LAR MCC (error %d)\n",
+                       DEVNAME(sc), err);
+                goto err;
+            }
         }
     }
     
