@@ -271,12 +271,21 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
         uint32_t channelFlags = band << 30;
         if (is6GHz) {
 #ifdef AIRPORT_WCL
+            /*
+             * Linux decides this from the scan's own hints and never from the
+             * channel's flag: a 6 GHz channel is scanned actively when an RNR
+             * entry points at it or when it is a PSC channel, and passively
+             * only when it has neither (scan.c,
+             * iwl_mvm_umac_scan_cfg_channels_v7_6g). The PASSIVE bit here is
+             * the NVM's per-channel ACTIVE flag, a property of the chip rather
+             * than of the regulatory domain, so consulting it made every 6 GHz
+             * dwell passive - and a 6 GHz network whose beacon carries an empty
+             * SSID then never answered a probe, so its name never arrived.
+             */
             const bool activePsc = scanActive &&
                 AirportWCL::is6GHzPsc(channelNumber);
             const bool targetBssid = directedJoin;
             const bool active6GHz = scanActive &&
-                AirportWCL::probeChannel(true, c->ic_flags & IEEE80211_CHAN_PASSIVE,
-                    c->ic_flags & IEEE80211_CHAN_DFS) &&
                 (activePsc || targetBssid || rnrTarget);
             if (active6GHz) {
                 if (rnrTarget)
