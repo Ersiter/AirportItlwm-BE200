@@ -11492,9 +11492,22 @@ iwx_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
      * keeps the case this queue was added for: a key that arrives while the
      * device is not configured must not tear the handshake down.
      */
+    // Read before the call: a failed BIP install clears the key on its way out.
+    bool mgmt_key = ieee80211_is_bip_cipher(k->k_cipher);
+
     int err = iwx_set_key_hw(ic, ni, k);
     if (err == 0)
         return 0;
+
+    /*
+     * net80211 raises TXMGMTPROT/RXMGMTPROT and records ic_igtk_kid from the
+     * value this call returns, so a retry that succeeds later has no way to
+     * report it. Deferring a group management key therefore leaves the port
+     * unauthorised with nothing left to authorise it; let the handshake fail
+     * and restart instead.
+     */
+    if (mgmt_key)
+        return err;
 
     if (sc->sc_setkey_nkeys >= nitems(sc->sc_setkey_arg))
         return err;
@@ -11529,8 +11542,13 @@ iwx_set_key_hw(struct ieee80211com *ic, struct ieee80211_node *ni,
                 return err;
         }
         err = that->iwx_mld_set_key(sc, ni, k, 0);
-        if (err && k->k_cipher == IEEE80211_CIPHER_BIP &&
-            (k->k_flags & IEEE80211_KEY_IGTK))
+        /*
+         * Leave the slot empty for every BIP cipher, not just BIP-CMAC: a
+         * half-populated slot still reads as "the same key" to
+         * ieee80211_must_update_group_key() and the next message 3 would skip
+         * the install instead of retrying it.
+         */
+        if (err)
             ieee80211_delete_key(ic, ni, k);
         return err;
     }
@@ -11567,6 +11585,7 @@ iwx_setkey_queue_reset(struct iwx_softc *sc)
     task_del(systq, &sc->sc_setkey_task);
     memset(sc->sc_setkey_arg, 0, sizeof(sc->sc_setkey_arg));
     sc->sc_setkey_cur = sc->sc_setkey_tail = sc->sc_setkey_nkeys = 0;
+    sc->sc_setkey_epoch++;
 }
 
 void ItlIwx::
@@ -11584,12 +11603,22 @@ iwx_setkey_task(void *arg)
         return;
     }
 
+    /*
+     * The firmware call below sleeps with the gate released, so a state
+     * change can run iwx_setkey_queue_reset() underneath us and empty the
+     * queue. If the epoch moved, this entry no longer exists: touching the
+     * cursor or the counter would underflow them and hand the next iteration
+     * a zeroed slot.
+     */
+    unsigned epoch = sc->sc_setkey_epoch;
     int err = 0, s = splnet();
     while (sc->sc_setkey_nkeys > 0) {
         if (err || (sc->sc_flags & IWX_FLAG_SHUTDOWN))
             break;
         struct iwx_setkey_arg *a = &sc->sc_setkey_arg[sc->sc_setkey_tail];
         err = that->iwx_set_key_hw(&sc->sc_ic, a->ni, a->k);
+        if (epoch != sc->sc_setkey_epoch)
+            break;
         a->ni = nullptr;
         a->k = nullptr;
         sc->sc_setkey_tail = (sc->sc_setkey_tail + 1) % nitems(sc->sc_setkey_arg);

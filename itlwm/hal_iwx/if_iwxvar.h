@@ -632,6 +632,7 @@ struct iwx_softc {
 	/* Keys the firmware programs are queued; net80211 retries on EBUSY. */
 	struct iwx_setkey_arg sc_setkey_arg[IWX_SETKEY_NKEYS];
 	unsigned sc_setkey_cur, sc_setkey_tail, sc_setkey_nkeys;
+	unsigned sc_setkey_epoch;	/* bumped by every queue reset */
 	struct task sc_setkey_task;
 //	struct refcnt		task_refs;
 	struct task newstate_task;
