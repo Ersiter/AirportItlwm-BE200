@@ -737,9 +737,27 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
     {
         size_t ssidLength = ssidBytes > sizeof(wclResultRing[0].ssid) ?
             sizeof(wclResultRing[0].ssid) : ssidBytes;
-        uint32_t slotIndex = wclResultRingNext & 7;
+        /*
+         * One slot per BSSID, so a scan leaves one entry per network instead of
+         * whatever happened to be heard last. The ring used to rotate blindly,
+         * which meant a full scan kept only its final few results.
+         */
+        unsigned slotIndex = nitems(wclResultRing);
+        for (unsigned i = 0; i < nitems(wclResultRing); ++i) {
+            if (wclResultRing[i].used &&
+                memcmp(wclResultRing[i].bssid, node->ni_bssid,
+                    sizeof(wclResultRing[i].bssid)) == 0) {
+                slotIndex = i;
+                break;
+            }
+        }
+        if (slotIndex == nitems(wclResultRing)) {
+            slotIndex = wclResultRingNext % nitems(wclResultRing);
+            wclResultRingNext = uint8_t(slotIndex + 1);
+        }
         auto &slot = wclResultRing[slotIndex];
         memset(&slot, 0, sizeof(slot));
+        slot.used = 1;
         memcpy(slot.ssid, ssidPtr, ssidLength);
         slot.ssidLength = uint8_t(ssidLength);
         slot.channel = uint8_t(channel);
@@ -753,7 +771,6 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
                  spec, slot.rssi);
         snprintf(key, sizeof(key), "AirportItlwm-WCLResult%u", slotIndex);
         instance->pciNub->setProperty(key, text);
-        wclResultRingNext = uint8_t((slotIndex + 1) & 7);
     }
     size_t size = sizeof(AirportWCL::BeaconMetadata) + length;
     auto metadata = static_cast<AirportWCL::BeaconMetadata *>(IOMalloc(size));

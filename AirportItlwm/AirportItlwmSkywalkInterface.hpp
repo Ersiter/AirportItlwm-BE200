@@ -491,7 +491,8 @@ private:
         uint8_t channel;
         int32_t rssi;
         uint8_t bssid[6];
-    } wclResultRing[8] = {};
+        uint8_t used;
+    } wclResultRing[16] = {};
     int wclReportedLinkQuality = -2;
     ifnet_t wclLinkQualityInterface = nullptr;
     bool joinPending;
