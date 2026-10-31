@@ -1260,13 +1260,23 @@ setCOUNTRY_CODE(OSObject *object, struct apple80211_country_code_data *data)
     if (data->cc[0] == 'x' || data->cc[0] == 'X')
         return kIOReturnSuccess;
     /*
-     * Keep the framework's value as the fallback reported above, but do not
-     * push it down: upstream's wiphy is self-managed, so an OS country change
-     * never rewrites the firmware's domain. Pushing it is what flipped the
-     * channel profile underneath a live association.
+     * Keep the framework's value as the fallback reported above. Upstream's
+     * wiphy is self-managed, so once the firmware has a domain of its own the
+     * framework's value does not replace it, and pushing it underneath a live
+     * association is what flipped the channel profile out from under the link.
+     * A firmware that still reports "ZZ"/"00" has only ever answered the
+     * cold-boot request with the world domain, which carries no 6 GHz and is
+     * never asked again on its own, so that case - and only that case - is
+     * handed the framework's country, while nothing is up.
      */
     if (memcmp(geo_location_cc, data->cc, sizeof(geo_location_cc)) != 0)
         memcpy(geo_location_cc, data->cc, sizeof(geo_location_cc));
+    const char *cc_fw = fHalService->getDriverInfo()->getFirmwareCountryCode();
+    if (((cc_fw[0] == 'Z' && cc_fw[1] == 'Z') ||
+         (cc_fw[0] == '0' && cc_fw[1] == '0')) &&
+        fHalService->get80211Controller()->ic_state != IEEE80211_S_RUN)
+        fHalService->getDriverController()->setCountryCode(
+            reinterpret_cast<const char *>(data->cc));
 #else
     XYLog("%s cc=%s\n", __FUNCTION__, data->cc);
     if (data && data->cc[0] != 120 && data->cc[0] != 88) {
