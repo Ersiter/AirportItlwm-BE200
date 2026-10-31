@@ -549,10 +549,23 @@ IOReturn AirportItlwmSkywalkInterface::beginWCLScan(apple80211ScanRequest *reque
         instance->pciNub->setProperty("AirportItlwm-WCLScanExit", "not-running");
         return kIOReturnNotReady;
     }
-    if (scanPending || joinPending || (ic->ic_flags & IEEE80211_F_BGSCAN)) {
+    if (scanPending) {
+        /*
+         * A newer request supersedes the scan in flight. Refusing it leaves
+         * the caller waiting for the previous scan to finish or for the batch
+         * timer to fire - from outside that is a Wi-Fi menu that never
+         * refreshes. Retire the old one the same way a join does.
+         */
+        finishWCLScan(kIOReturnAborted);
+    }
+    if (joinPending) {
         instance->pciNub->setProperty("AirportItlwm-WCLScanExit", "busy");
         return kIOReturnBusy;
     }
+    /*
+     * A background scan is not a reason to refuse either: iwx_scan() aborts it
+     * before starting the new one, so refusing here only delays the request.
+     */
     if (ic->ic_state == IEEE80211_S_AUTH || ic->ic_state == IEEE80211_S_ASSOC) {
         instance->pciNub->setProperty("AirportItlwm-WCLScanExit", "busy-auth");
         return kIOReturnBusy;
