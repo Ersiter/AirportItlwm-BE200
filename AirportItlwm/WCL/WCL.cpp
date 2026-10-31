@@ -1473,8 +1473,14 @@ void AirportItlwmSkywalkInterface::handleWCLEvent(int code, void *data)
                     updateWCLLinkQuality();
                 }
             }
-            if (scanPending || joinPending || ic->ic_state == IEEE80211_S_SCAN ||
-                (portAuthorized && IEEE80211_ADDR_EQ(beacon->node->ni_bssid, joinBSSID)))
+            /*
+             * Scan results belong to scans. Republishing the associated AP on
+             * every one of its beacons - about ten a second - is not something
+             * upstream does: it buries the result ring in duplicates and hands
+             * WCL the same result over and over. Link quality has its own
+             * messages below.
+             */
+            if (scanPending || joinPending || ic->ic_state == IEEE80211_S_SCAN)
                 publishWCLBeacon(beacon->node, beacon->ies, beacon->length);
             if (joinPending && assocNotified && !firstBeaconNotified &&
                 IEEE80211_ADDR_EQ(beacon->node->ni_bssid, joinBSSID)) {
