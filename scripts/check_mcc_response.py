@@ -66,7 +66,13 @@ channel_arrays = "\n".join(
 )
 channel_map = function(source, "void ItlIwx::\niwx_init_channel_map(")
 proto_source = (root / "itl80211/openbsd/net80211/ieee80211_proto.c").read_text(encoding="utf-8")
-vht_negotiate = function(proto_source, "void\nieee80211_vht_negotiate(")
+# VHT negotiation now consults these two helpers before committing to a width,
+# and falls back through ieee80211_ht_negotiate_chw; the harness has to carry
+# all three or the synthetic translation unit will not build.
+vht_negotiate = (
+    function(proto_source, "static int\nieee80211_vht_chandef_usable(") +
+    function(proto_source, "static int\nieee80211_ht40_chandef_usable(") +
+    function(proto_source, "void\nieee80211_vht_negotiate("))
 he_negotiate = function(proto_source, "void\nieee80211_he_negotiate(")
 eht_puncturing_valid = function(proto_source, "static bool\nieee80211_eht_puncturing_valid(")
 eht_negotiate = function(proto_source, "void\nieee80211_eht_negotiate(")
@@ -506,6 +512,7 @@ struct ieee80211com {
     bool ic_eht_cap_valid = false;
     ieee80211_eht_cap_elem ic_eht_cap_elem{};
     ieee80211_eht_mcs_nss_supp ic_eht_mcs_nss_supp{};
+    ieee80211_channel ic_channels[256];
 };
 static int ieee80211_he_supported(ieee80211com *, ieee80211_node *ni) {
     return ni->he_cap_valid && !(ni->ni_chan->ic_reg_flags & IEEE80211_CHAN_NO_HE);
@@ -521,6 +528,29 @@ static int ieee80211_chan2number(ieee80211com *, ieee80211_channel *channel) {
 static int ieee80211_ieee2mhz(int channel, int band) {
     return channel * 5 + ((band & IEEE80211_CHAN_6GHZ) ? 5950 :
         ((band & IEEE80211_CHAN_5GHZ) ? 5000 : 2407));
+}
+#define IEEE80211_CHAN_MAX 255
+#define IEEE80211_CHAN_HT40U   0x00020000u
+#define IEEE80211_CHAN_HT40D   0x00040000u
+#define IEEE80211_CHAN_VHT80   0x08000000u
+#define IEEE80211_CHAN_VHT160  0x10000000u
+#define IEEE80211_IS_CHAN_HT40(_c) (((_c)->ic_flags & (IEEE80211_CHAN_HT40U | IEEE80211_CHAN_HT40D)) != 0)
+#define IEEE80211_IS_CHAN_HT40U(_c) (((_c)->ic_flags & IEEE80211_CHAN_HT40U) != 0)
+#define IEEE80211_IS_CHAN_HT40D(_c) (((_c)->ic_flags & IEEE80211_CHAN_HT40D) != 0)
+static u_int ieee80211_mhz2ieee(int freq, int flags) {
+    if (flags & IEEE80211_CHAN_6GHZ) return u_int((freq - 5950) / 5);
+    if (flags & IEEE80211_CHAN_5GHZ) return u_int((freq - 5000) / 5);
+    return freq == 2484 ? 14u : u_int((freq - 2407) / 5);
+}
+static void ieee80211_ht_negotiate_chw(ieee80211com *ic, ieee80211_node *ni) {
+    ieee80211_channel *c = ni->ni_chan;
+    if (IEEE80211_IS_CHAN_HT40(c)) {
+        ni->ni_chw = IEEE80211_CHAN_WIDTH_40;
+        c->ic_center_freq1 = c->ic_freq + (IEEE80211_IS_CHAN_HT40U(c) ? 10 : -10);
+    } else {
+        ni->ni_chw = IEEE80211_CHAN_WIDTH_20;
+        c->ic_center_freq1 = c->ic_freq;
+    }
 }
 VHT_NEGOTIATION
 HE_NEGOTIATION
@@ -549,8 +579,15 @@ static void test_eht_puncturing_bitmap() {
 static void setup_5ghz(ieee80211com &ic, ieee80211_node &ni, ieee80211_channel &channel,
     uint8_t op_width, uint8_t seg0, uint8_t seg1) {
     channel.ic_freq = 5180;
-    channel.ic_flags = IEEE80211_CHAN_5GHZ;
+    channel.ic_flags = IEEE80211_CHAN_5GHZ | IEEE80211_CHAN_HT40U;
     ni.ni_chan = &channel;
+    /* The table the width check consults. A real driver registers every
+     * 20 MHz channel of the block with the VHT permissions it carries. */
+    for (unsigned ch = 36; ch <= 64; ++ch) {
+        ic.ic_channels[ch].ic_freq = int(5000 + ch * 5);
+        ic.ic_channels[ch].ic_flags = IEEE80211_CHAN_5GHZ |
+            IEEE80211_CHAN_VHT80 | IEEE80211_CHAN_VHT160;
+    }
     ni.ni_flags = IEEE80211_NODE_HT | IEEE80211_NODE_QOS |
         IEEE80211_NODE_HECAP | IEEE80211_NODE_HEOP;
     ni.ni_he_requested = true;
