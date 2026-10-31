@@ -803,33 +803,16 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
             wclResultRingNext = uint8_t(slotIndex + 1);
         }
         auto &slot = wclResultRing[slotIndex];
-        /*
-         * A frame with no name must not erase the name this BSSID was published
-         * under before. The one case that publishes without a name is the
-         * access point being joined, and wiping its slot there destroys exactly
-         * the record the lookup above exists to keep.
-         */
-        uint8_t keptSsid[sizeof(slot.ssid)] = {};
-        uint8_t keptLength = 0;
-        if (slot.used && slot.ssidLength) {
-            memcpy(keptSsid, slot.ssid, sizeof(keptSsid));
-            keptLength = slot.ssidLength;
-        }
         memset(&slot, 0, sizeof(slot));
         slot.used = 1;
-        if (ssidLength == 0 && keptLength != 0) {
-            memcpy(slot.ssid, keptSsid, sizeof(slot.ssid));
-            slot.ssidLength = keptLength;
-        } else {
-            memcpy(slot.ssid, ssidPtr, ssidLength);
-            slot.ssidLength = uint8_t(ssidLength);
-        }
+        memcpy(slot.ssid, ssidPtr, ssidLength);
+        slot.ssidLength = uint8_t(ssidLength);
         slot.channel = uint8_t(channel);
         slot.rssi = IWM_MIN_DBM + node->ni_rssi;
         memcpy(slot.bssid, node->ni_bssid, sizeof(slot.bssid));
         char text[96], key[32];
         snprintf(text, sizeof(text), "%.*s|%02x:%02x:%02x:%02x:%02x:%02x|%04x|%d",
-                 int(slot.ssidLength), reinterpret_cast<const char *>(slot.ssid),
+                 int(ssidLength), ssidPtr,
                  node->ni_bssid[0], node->ni_bssid[1], node->ni_bssid[2],
                  node->ni_bssid[3], node->ni_bssid[4], node->ni_bssid[5],
                  spec, slot.rssi);
