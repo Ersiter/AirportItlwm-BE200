@@ -643,6 +643,38 @@ void AirportItlwmSkywalkInterface::completeWCLScan()
         finishWCLScan(scanCompleted ? kIOReturnSuccess : kIOReturnTimeout);
 }
 
+/*
+ * The SSID element of a beacon or probe response, as sent. The node's copy is
+ * only filled in for frames net80211 parsed end to end, so a result can reach
+ * WCL with an empty name while the frame that produced it carries one.
+ */
+static size_t wclSsidFromIEs(const uint8_t *ies, size_t length,
+                             uint8_t *out, size_t outSize)
+{
+    size_t pos = 0;
+    while (pos + 2 <= length) {
+        uint8_t id = ies[pos];
+        uint8_t len = ies[pos + 1];
+        if (pos + 2 + len > length)
+            break;
+        if (id == IEEE80211_ELEMID_SSID) {
+            if (len == 0 || len > outSize)
+                return 0;
+            size_t seen = 0;
+            for (; seen < len; ++seen) {
+                if (ies[pos + 2 + seen])
+                    break;
+            }
+            if (seen == len)
+                return 0;    /* all-zero: hidden, not a name */
+            memcpy(out, ies + pos + 2, len);
+            return len;
+        }
+        pos += 2 + len;
+    }
+    return 0;
+}
+
 void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, const uint8_t *ies, size_t length)
 {
     instance->pciNub->setProperty("AirportItlwm-WCLBeaconEvents", ++wclBeaconEvents, 32);
@@ -656,6 +688,18 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
         return;
     }
     length = iePrefix;
+    uint8_t ssidBuf[IEEE80211_NWID_LEN];
+    const uint8_t *ssidPtr = node->ni_essid;
+    size_t ssidBytes = node->ni_esslen;
+    if (ssidBytes == 0) {
+        size_t fromFrame = wclSsidFromIEs(ies, length, ssidBuf, sizeof(ssidBuf));
+        if (fromFrame != 0) {
+            ssidPtr = ssidBuf;
+            ssidBytes = fromFrame;
+            instance->pciNub->setProperty("AirportItlwm-WCLSsidFromFrame",
+                ++wclSsidFromFrame, 32);
+        }
+    }
     ieee80211com *ic = fHalService->get80211Controller();
     if (!node->ni_chan || node->ni_chan == IEEE80211_CHAN_ANYC) {
         instance->pciNub->setProperty("AirportItlwm-WCLBeaconDrops", ++wclBeaconDrops, 32);
@@ -678,19 +722,19 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
     instance->pciNub->setProperty("AirportItlwm-WCLScanLastBand",
         sixGHz ? 6 : (IEEE80211_IS_CHAN_5GHZ(node->ni_chan) ? 5 : 2), 32);
     {
-        size_t ssidLength = node->ni_esslen > sizeof(wclResultRing[0].ssid) ?
-            sizeof(wclResultRing[0].ssid) : node->ni_esslen;
+        size_t ssidLength = ssidBytes > sizeof(wclResultRing[0].ssid) ?
+            sizeof(wclResultRing[0].ssid) : ssidBytes;
         uint32_t slotIndex = wclResultRingNext & 7;
         auto &slot = wclResultRing[slotIndex];
         memset(&slot, 0, sizeof(slot));
-        memcpy(slot.ssid, node->ni_essid, ssidLength);
+        memcpy(slot.ssid, ssidPtr, ssidLength);
         slot.ssidLength = uint8_t(ssidLength);
         slot.channel = uint8_t(channel);
         slot.rssi = IWM_MIN_DBM + node->ni_rssi;
         memcpy(slot.bssid, node->ni_bssid, sizeof(slot.bssid));
         char text[96], key[32];
         snprintf(text, sizeof(text), "%.*s|%02x:%02x:%02x:%02x:%02x:%02x|%04x|%d",
-                 int(ssidLength), node->ni_essid,
+                 int(ssidLength), ssidPtr,
                  node->ni_bssid[0], node->ni_bssid[1], node->ni_bssid[2],
                  node->ni_bssid[3], node->ni_bssid[4], node->ni_bssid[5],
                  spec, slot.rssi);
@@ -706,8 +750,8 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
     metadata->ieLength = uint32_t(length);
     metadata->channelSpec = spec;
     metadata->channel = channel;
-    metadata->ssidLength = node->ni_esslen;
-    memcpy(metadata->ssid, node->ni_essid, node->ni_esslen);
+    metadata->ssidLength = uint32_t(ssidBytes);
+    memcpy(metadata->ssid, ssidPtr, ssidBytes);
     memcpy(metadata->bssid, node->ni_bssid, 6);
     metadata->rssi = IWM_MIN_DBM + node->ni_rssi;
     metadata->interval = node->ni_intval;

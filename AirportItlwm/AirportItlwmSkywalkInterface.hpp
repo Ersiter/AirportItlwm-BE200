@@ -476,6 +476,7 @@ private:
     uint32_t wclScanDoneStatus = UINT32_MAX;
     uint32_t wclBeaconEvents = 0;
     uint32_t wclBeaconDrops = 0;
+    uint32_t wclSsidFromFrame = 0;
     uint32_t wcl6GHzReceived = 0;
     uint32_t wcl6GHzPublished = 0;
     uint32_t wclJoinRequests = 0;

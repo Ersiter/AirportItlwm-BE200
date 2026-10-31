@@ -2159,6 +2159,7 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     u_int16_t capinfo, bintval;
     u_int8_t chan, bchan, erp, dtim_count, dtim_period;
     u_int chanidx, channel_band;
+    bool chanFromHe6 = false;
     int is_new;
     
     /*
@@ -2353,6 +2354,28 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
         vhtopmode = NULL;
     }
     chanidx = ieee80211_ieee2chanidx(ic, chan, channel_band);
+    /*
+     * 6 GHz has no DS Parameter Set, so the channel above is only the one the
+     * receiver was tuned to when the frame arrived. Under a directed scan that
+     * is not the BSS's channel: the same beacon then lands on every scanned
+     * channel. The HE Operation element carries the BSS's own primary channel,
+     * which is what cfg80211_get_bss_channel() uses for the same reason.
+     */
+    if (channel_band == IEEE80211_CHAN_6GHZ && heopmode != NULL) {
+        const struct ieee80211_he_6ghz_oper *oper =
+            ieee80211_he_6ghz_oper(
+                (const struct ieee80211_he_operation *)(heopmode + 3));
+        if (oper != NULL && oper->primary != 0) {
+            unsigned primary = ieee80211_ieee2chanidx(ic, oper->primary,
+                IEEE80211_CHAN_6GHZ);
+            if (primary != 0 && ic->ic_channels[primary].ic_freq &&
+                IEEE80211_IS_CHAN_6GHZ(&ic->ic_channels[primary])) {
+                chanidx = primary;
+                chan = oper->primary;
+                chanFromHe6 = true;
+            }
+        }
+    }
     if (chanidx == 0 ||
         (isclr(ic->ic_chan_active, chanidx) &&
          ((ic->ic_caps & IEEE80211_C_SCANALL) == 0 ||
@@ -2444,10 +2467,11 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
         }
     }
 #endif
-    if ((rxi->rxi_chan != 0 && chan != rxi->rxi_chan) ||
+    if (!chanFromHe6 &&
+        ((rxi->rxi_chan != 0 && chan != rxi->rxi_chan) ||
         ((ic->ic_state != IEEE80211_S_SCAN ||
          !(ic->ic_caps & IEEE80211_C_SCANALL)) &&
-        chan != bchan)) {
+        chan != bchan))) {
         /*
          * Frame was received on a channel different from the
          * one indicated in the DS params element id;
