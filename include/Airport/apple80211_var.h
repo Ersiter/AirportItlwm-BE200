@@ -678,6 +678,13 @@ struct apple80211_status_msg_hdr
 #define APPLE80211_M_ACTION_FRAME            143
 #define APPLE80211_M_AWDL_APP_SPECIFIC_INFO  144
 #define APPLE80211_M_WSEC_NOTIFICATION       146
+/*
+ * Reaches WCLConfigManager::countryCodeChanged, which reloads the channel and
+ * country configuration - the only entry point that makes the native cache read
+ * our getWCL_CHANNELS_INFO again. Above APPLE80211_M_MAX on purpose: the
+ * native switch knows this one even though the enum here stops at 170.
+ */
+#define APPLE80211_M_CHANNEL_SPEC_QUERY_COMPLETED 224
 
 
 #define APPLE80211_M_MAX                     170

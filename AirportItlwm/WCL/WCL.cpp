@@ -321,6 +321,19 @@ IOReturn AirportItlwmSkywalkInterface::wclCountryUpdateGated(
         return kIOReturnNotReady;
     if (!update->queue->inGate() || update->queue->onThread())
         return kIOReturnNotPermitted;
+    /*
+     * The legacy notification only makes the framework ask for the country
+     * code again, and it answers that from its own copy, which the driver never
+     * refreshes - so it re-reads the old value and the domain looks unchanged.
+     * WCL reloads that copy, channel table and country together, when it gets
+     * CHANNEL_SPEC_QUERY_COMPLETED through the WCL route; refreshing first is
+     * what lets the notification below report the new domain.
+     */
+    update->interface->postMessage(APPLE80211_M_CHANNEL_SPEC_QUERY_COMPLETED,
+        nullptr, 0, true);
+    update->interface->instance->pciNub->setProperty(
+        "AirportItlwm-WCLCountryRefreshes",
+        ++update->interface->wclCountryRefreshes, 32);
     update->interface->postMessage(APPLE80211_M_COUNTRY_CODE_CHANGED, nullptr, 0, false);
     return kIOReturnSuccess;
 }
