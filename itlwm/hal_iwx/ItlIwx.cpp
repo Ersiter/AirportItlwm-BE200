@@ -11477,18 +11477,27 @@ iwx_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
 {
     struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
 
-    /*
-     * Queue keys the firmware has to program. net80211 answers EBUSY by
-     * keeping the frame and trying again, so a key that arrives while the
-     * device is not configured no longer tears the handshake down - that is
-     * what made the first connection attempt fail and the second one work.
-     */
     if (k->k_cipher != IEEE80211_CIPHER_CCMP &&
         !ieee80211_is_bip_cipher(k->k_cipher))
         return ieee80211_set_key(ic, ni, k);
 
+    /*
+     * Program the key while net80211 is still in the handshake. Answering
+     * EBUSY for a key the device can take is not harmless: 4-way msg3 reacts
+     * to EBUSY by skipping the port authorisation for that frame and nothing
+     * re-runs this path by itself, so ni_port_valid never gets set and the
+     * link never comes up - which is every CCMP network.
+     *
+     * Only a device that cannot take the key right now is deferred, and that
+     * keeps the case this queue was added for: a key that arrives while the
+     * device is not configured must not tear the handshake down.
+     */
+    int err = iwx_set_key_hw(ic, ni, k);
+    if (err == 0)
+        return 0;
+
     if (sc->sc_setkey_nkeys >= nitems(sc->sc_setkey_arg))
-        return ENOSPC;
+        return err;
 
     struct iwx_setkey_arg *a = &sc->sc_setkey_arg[sc->sc_setkey_cur];
     a->ni = ni;
