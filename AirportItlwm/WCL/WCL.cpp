@@ -609,6 +609,15 @@ IOReturn AirportItlwmSkywalkInterface::beginWCLScan(apple80211ScanRequest *reque
     }
     scanPending = true;
     scanCompleted = false;
+    /*
+     * A request that arrives while a scan is already running gets an
+     * SCAN_DONE for the scan it interrupted before its own results exist.
+     * Upstream drops that one so the completion the caller waits for is the
+     * one from its own scan.
+     */
+    scanSkipCompletion = ic->ic_state == IEEE80211_S_SCAN &&
+        ((scan.type != 2 && scan.ssidLength != 0) ||
+         ic->ic_wcl_scan_ssid_length != 0 || ic->ic_des_esslen != 0);
     ic->ic_wcl_scan_requested = true;
     ic->ic_wcl_scan_active = scan.type != 2;
     ic->ic_wcl_scan_ssid_length = scan.type == 2 ? 0 : scan.ssidLength;
@@ -627,7 +636,7 @@ IOReturn AirportItlwmSkywalkInterface::beginWCLScan(apple80211ScanRequest *reque
             instance->pciNub->setProperty("AirportItlwm-WCLScanExit", "bgscan-unavailable");
             return kIOReturnBusy;
         }
-    } else {
+    } else if (ic->ic_state != IEEE80211_S_SCAN) {
         int error = ic->ic_newstate(ic, IEEE80211_S_SCAN, -1);
         if (error) {
             scanPending = false;
@@ -1569,8 +1578,12 @@ void AirportItlwmSkywalkInterface::handleWCLEvent(int code, void *data)
             break;
         case IEEE80211_EVT_SCAN_DONE:
             if (scanPending) {
-                scanCompleted = true;
-                scanSource->setTimeoutMS(0);
+                if (scanSkipCompletion)
+                    scanSkipCompletion = false;
+                else {
+                    scanCompleted = true;
+                    scanSource->setTimeoutMS(0);
+                }
             }
             break;
         case IEEE80211_EVT_STA_ASSOC_DONE:
