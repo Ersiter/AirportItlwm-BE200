@@ -1492,6 +1492,17 @@ void AirportItlwmSkywalkInterface::handleWCLEvent(int code, void *data)
             instance->pciNub->setProperty("AirportItlwm-WCLDriverAvailableReason", event.reason, 32);
             IOReturn status = instance->postMessage(this, AirportWCL::DriverAvailable, &event, sizeof(event), true);
             instance->pciNub->setProperty("AirportItlwm-WCLDriverAvailablePostResult", status, 32);
+            /*
+             * The same message over the interface path is what sets the
+             * controller's own availability record: message 55 there branches
+             * to IO80211ControllerMonitor::setDriverAvailable, which takes the
+             * integer at payload offset 8 and requires the exact 0xf8 length
+             * this struct already has. The WCL route above does not reach it, so
+             * without this second posting the record stays down - and airportd
+             * reads it when it asks the driver for the country code.
+             */
+            IOReturn infraStatus = instance->postMessage(this, AirportWCL::DriverAvailable, &event, sizeof(event), false);
+            instance->pciNub->setProperty("AirportItlwm-WCLDriverAvailableInfraResult", infraStatus, 32);
             if (ready)
                 resumeWCLJoin();
             break;
