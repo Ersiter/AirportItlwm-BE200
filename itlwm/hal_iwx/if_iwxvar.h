@@ -784,6 +784,8 @@ struct iwx_softc {
 	int sc_generation;
 	/* Which gate refused the last command; 0 means it was handed to the ring. */
 	uint8_t sc_cmd_error_stage;
+	uint8_t sc_driver_ready;
+	uint8_t sc_mcc_notify_pending;
 	/* A scan was refused because the LAR domain had not arrived yet. */
 	uint8_t sc_scan_lar_deferred;
 	uint32_t sc_fw_error_count;

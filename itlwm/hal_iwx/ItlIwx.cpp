@@ -12664,10 +12664,22 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
      * why 6 GHz only showed up after the user toggled Wi-Fi. Only the first
      * application is included, so the framework's answer cannot feed a loop.
      */
+    /*
+     * The framework can only re-read the country code once it considers this
+     * driver available, and that happens at the end of iwx_init(), long after
+     * this response is processed. Posting here made airportd ask with
+     * isDriverAvailable=0 and drop the answer, so nothing ever asked again and
+     * the boot-time 6 GHz channels stayed out of the WCL table until the user
+     * toggled Wi-Fi. Hold the notification until the driver is ready.
+     */
     if ((profileChanged || (!profileWasSynced && applyProfile)) &&
-        sc->sc_ic.ic_event_handler)
-        (*sc->sc_ic.ic_event_handler)(&sc->sc_ic,
-            IEEE80211_EVT_COUNTRY_CODE_UPDATE, NULL);
+        sc->sc_ic.ic_event_handler) {
+        if (sc->sc_driver_ready)
+            (*sc->sc_ic.ic_event_handler)(&sc->sc_ic,
+                IEEE80211_EVT_COUNTRY_CODE_UPDATE, NULL);
+        else
+            sc->sc_mcc_notify_pending = 1;
+    }
 
     sc->sc_pcitag->setProperty("AirportItlwm-MCCStatus", response.status, 32);
     sc->sc_pcitag->setProperty("AirportItlwm-MCCChannelCount",
@@ -13032,6 +13044,8 @@ iwx_init(struct _ifnet *ifp)
     iwx_publish_diagnostics(sc);
 #endif
     generation = ++sc->sc_generation;
+    sc->sc_driver_ready = 0;
+    sc->sc_mcc_notify_pending = 0;
     sc->sc_pcitag->setProperty("AirportItlwm-InitGeneration", generation, 32);
     sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "init-hw");
     sc->sc_pcitag->setProperty("AirportItlwm-InitFailureFunction", "pending");
@@ -13142,6 +13156,22 @@ iwx_init(struct _ifnet *ifp)
         sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "driver-ready-event");
         sc->sc_pcitag->setProperty("AirportItlwm-InitReadyEventAttempted", 1, 32);
         ic->ic_event_handler(ic, IEEE80211_EVT_DRIVER_READY, NULL);
+        sc->sc_driver_ready = 1;
+        /* A profile applied before this point could not be handed over yet. */
+        if (sc->sc_mcc_notify_pending) {
+            sc->sc_mcc_notify_pending = 0;
+            sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "country-code-deferred");
+            /*
+             * The profile was applied inside iwx_init_hw(), before the mode for
+             * this interface was settled, so the active-channel mask was built
+             * without the 6 GHz entries. Rebuild it now, exactly as the apply
+             * path does, so the channel list handed to WCL matches the table
+             * the firmware already answered with.
+             */
+            ieee80211_channel_init(IC2IFP(ic));
+            ieee80211_setmode(ic, static_cast<enum ieee80211_phymode>(ic->ic_curmode));
+            ic->ic_event_handler(ic, IEEE80211_EVT_COUNTRY_CODE_UPDATE, NULL);
+        }
     } else {
         sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "driver-ready-event-handler-absent");
     }
