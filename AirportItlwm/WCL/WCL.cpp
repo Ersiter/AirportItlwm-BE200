@@ -707,6 +707,14 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
     size_t iePrefix = AirportWCL::validIEPrefix(ies, length);
     instance->pciNub->setProperty("AirportItlwm-WCLBeaconRawIELength", (uint32_t)length, 32);
     instance->pciNub->setProperty("AirportItlwm-WCLBeaconIEPrefix", (uint32_t)iePrefix, 32);
+    /*
+     * What the element chain actually opens with, so a capture can tell an
+     * empty SSID from a frame that has no SSID element at all. The SSID element
+     * is id 0: 0x00NN is a name of NN bytes, 0x0000 an empty one, any other
+     * high byte means the chain starts with something else.
+     */
+    instance->pciNub->setProperty("AirportItlwm-WCLBeaconFirstIE",
+        iePrefix >= 2 ? ((uint32_t)ies[0] << 8) | ies[1] : UINT32_MAX, 32);
     if (!node || node->ni_esslen > 32 || !iePrefix) {
         instance->pciNub->setProperty("AirportItlwm-WCLBeaconDrops", ++wclBeaconDrops, 32);
         instance->pciNub->setProperty("AirportItlwm-WCLBeaconDropReason",
