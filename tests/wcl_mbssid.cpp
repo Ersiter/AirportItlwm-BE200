@@ -19,32 +19,37 @@ void element(uint8_t id, const uint8_t *payload, size_t size)
     length += size;
 }
 
-/* Nontransmitted BSSID Profile: capability, that BSS's SSID, its index. */
+/* Nontransmitted BSSID Profile, laid out the way the captured frame does it:
+ * the capability element, then that BSS's SSID, then its index. */
 void profile(const char *ssid, uint8_t index)
 {
     uint8_t body[128];
     size_t n = 0;
-    body[n++] = 0x11;            /* Nontransmitted BSSID Capability */
-    body[n++] = 0x04;
+    body[n++] = 83;              /* Nontransmitted BSSID Capability */
+    body[n++] = 2;
+    body[n++] = 0x11;
+    body[n++] = 0x11;
     body[n++] = 0;               /* SSID element */
     body[n++] = uint8_t(strlen(ssid));
     memcpy(body + n, ssid, strlen(ssid));
     n += strlen(ssid);
     body[n++] = 85;              /* Multiple BSSID-Index */
-    body[n++] = 1;
+    body[n++] = 3;               /* BSSID index, DTIM period, DTIM count */
     body[n++] = index;
+    body[n++] = 1;
+    body[n++] = 0;
     frame[length++] = 0;         /* subelement: Nontransmitted BSSID Profile */
     frame[length++] = uint8_t(n);
     memcpy(frame + length, body, n);
     length += n;
 }
 
+/* Element id 71, then the MaxBSSID Indicator, then the subelements. */
 void multipleBssid(uint8_t maxIndicator)
 {
-    frame[length++] = 71;        /* Multiple BSSID */
+    frame[length++] = 71;
     frame[length++] = 0;         /* filled in by endMultipleBssid */
     mbLengthAt = length - 1;
-    frame[length++] = 71;        /* element id extension */
     frame[length++] = maxIndicator;
 }
 
@@ -70,10 +75,11 @@ int main()
     using AirportWCL::decodeMbssidProfiles;
     using AirportWCL::mbssidDeriveBssid;
     MbssidProfile out[8];
+    const uint8_t empty = 0;
 
-    /* The 6 GHz shape seen on the machine: empty SSID, the name in a profile. */
+    /* The captured 6 GHz shape: empty SSID, the name in a profile, and an
+     * indicator of 1 so the two BSSIDs differ in the last bit. */
     reset();
-    uint8_t empty = 0;
     element(0, &empty, 0);
     multipleBssid(1);
     profile("1Joey_6", 1);
@@ -82,9 +88,18 @@ int main()
     assert(n == 1);
     assert(out[0].ssidLength == 7);
     assert(memcmp(out[0].ssid, "1Joey_6", 7) == 0);
-    /* 0x3a with its lowest bit replaced by index 1 is 0x3b: the second BSSID. */
     assert(out[0].bssid[5] == 0x3b);
     assert(memcmp(out[0].bssid, kTransmitted, 5) == 0);
+
+    /* An indicator of 3 replaces the low three bits: 0x3a -> 0x39. */
+    reset();
+    element(0, &empty, 0);
+    multipleBssid(3);
+    profile("1Joey_6", 1);
+    endMultipleBssid();
+    n = decodeMbssidProfiles(frame, length, kTransmitted, out, 8);
+    assert(n == 1);
+    assert(out[0].bssid[5] == 0x39);
 
     /* Two profiles under a wider indicator both come out. */
     reset();
@@ -104,6 +119,14 @@ int main()
     element(0, &empty, 0);
     multipleBssid(1);
     profile("", 1);
+    endMultipleBssid();
+    assert(decodeMbssidProfiles(frame, length, kTransmitted, out, 8) == 0);
+
+    /* An index outside the set is not an address we can derive. */
+    reset();
+    element(0, &empty, 0);
+    multipleBssid(1);
+    profile("1Joey_6", 2);
     endMultipleBssid();
     assert(decodeMbssidProfiles(frame, length, kTransmitted, out, 8) == 0);
 

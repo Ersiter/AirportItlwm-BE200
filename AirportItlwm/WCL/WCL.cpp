@@ -840,9 +840,28 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
     for (unsigned i = 0; i < profileCount; ++i) {
         if (IEEE80211_ADDR_EQ(profiles[i].bssid, node->ni_bssid))
             continue;
+        /*
+         * The RNR a 2.4/5 GHz beacon carried already names the 6 GHz BSSIDs its
+         * radio has, paired with the CRC32 of each one's SSID. Where such a
+         * pair matches this profile, take its address: that is the access
+         * point's own statement of where the network is, and it holds even for
+         * implementations whose index does not follow the bit layout the
+         * derivation assumes.
+         */
+        uint8_t bssid[6];
+        memcpy(bssid, profiles[i].bssid, 6);
+        const uint32_t crc = AirportWCL::shortSsid(profiles[i].ssid,
+                                                   profiles[i].ssidLength);
+        for (uint8_t hint = 0; hint < ic->ic_wcl_scan_rnr_count; ++hint) {
+            if (ic->ic_wcl_scan_rnr_channel[hint] != channel ||
+                ic->ic_wcl_scan_rnr_short_ssid[hint] != crc)
+                continue;
+            memcpy(bssid, ic->ic_wcl_scan_rnr_bssid[hint], 6);
+            break;
+        }
         instance->pciNub->setProperty("AirportItlwm-WCLMbssidProfiles",
             ++wclMbssidProfiles, 32);
-        postWCLScanResult(node, profiles[i].bssid, profiles[i].ssid,
+        postWCLScanResult(node, bssid, profiles[i].ssid,
                           profiles[i].ssidLength, spec, channel, sixGHz, ies,
                           length);
     }

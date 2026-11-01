@@ -474,11 +474,18 @@ inline unsigned decodeMbssidProfiles(const uint8_t *ies, size_t length,
         }
         pos += 2 + elementLength;
     }
-    /* Extension id, then the MaxBSSID Indicator the BSSID is derived with. */
-    if (!element || element[1] < 2 || element[2] != 71)
+    /*
+     * The element is a plain element id 71 whose first content octet is the
+     * MaxBSSID Indicator; subelements follow it. (Linux reads exactly the same
+     * octet: cfg80211_parse_mbssid_elems takes mbssid_elem->data[0].)
+     */
+    if (!element || element[1] < 3)
         return 0;
-    const unsigned maxIndicator = element[3];
-    const uint8_t *sub = element + 4;
+    const unsigned maxIndicator = element[2];
+    /* 802.11ax allows 1..8; anything else is not a set we can index. */
+    if (maxIndicator == 0 || maxIndicator > 8)
+        return 0;
+    const uint8_t *sub = element + 3;
     const uint8_t *subEnd = element + 2 + element[1];
     unsigned count = 0;
     while (sub + 2 <= subEnd && count < max) {
@@ -492,8 +499,13 @@ inline unsigned decodeMbssidProfiles(const uint8_t *ies, size_t length,
             const uint8_t *ssid = nullptr;
             unsigned index = 0;
             bool haveIndex = false;
-            /* Nontransmitted BSSID Capability first, then that BSS's elements. */
-            const uint8_t *walk = profileEnd >= profile + 2 ? profile + 2 : profileEnd;
+            /*
+             * The profile is a plain element list: Nontransmitted BSSID
+             * Capability first, then that BSS's own elements in any order.
+             * Walk it from its start so the capability element is skipped by
+             * its own length rather than assumed to be two octets.
+             */
+            const uint8_t *walk = profile;
             while (walk + 2 <= profileEnd) {
                 const size_t elementLength = walk[1];
                 if (walk + 2 + elementLength > profileEnd)
@@ -506,7 +518,7 @@ inline unsigned decodeMbssidProfiles(const uint8_t *ies, size_t length,
                 }
                 walk += 2 + elementLength;
             }
-            if (ssid && haveIndex) {
+            if (ssid && haveIndex && index < (1U << maxIndicator)) {
                 bool visible = false;
                 for (unsigned i = 0; i < ssid[1]; ++i)
                     if (ssid[2 + i]) {
