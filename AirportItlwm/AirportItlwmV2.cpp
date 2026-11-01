@@ -1622,5 +1622,18 @@ void AirportItlwm::setPowerStateOn()
 {
     XYLog("%s\n", __FUNCTION__);
     pmPowerState = kPowerStateOn;
+    /*
+     * Sleep takes the adapter down through setPowerStateOff and nothing brings
+     * it back: the framework only re-enables an interface it considers it
+     * disabled, and the WCL stack does not ask here. The interface then stays
+     * down until the user toggles Wi-Fi, which is exactly the "does not
+     * reconnect after sleep" report.
+     *
+     * Enabling is idempotent: ItlIwx::enable returns at once when the interface
+     * is already up, so a setPOWER that arrives afterwards is unaffected.
+     */
+    if (bsdInterface != nullptr && fHalService != nullptr &&
+        !(fHalService->get80211Controller()->ic_ac.ac_if.if_flags & IFF_UP))
+        enableAdapter(bsdInterface);
     pmPolicyMaker->acknowledgeSetPowerState();
 }
