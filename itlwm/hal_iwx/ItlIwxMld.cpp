@@ -1429,6 +1429,11 @@ iwx_mld_auth(struct iwx_softc *sc)
     ieee80211_mld_discover_links(ic, &in->in_ni);
 #endif
     iwx_mld_limit_link_resources(sc);
+    /* Every context programmed below derives its centre from the BSS channel. */
+    if (in->in_ni.ni_chan == NULL) {
+        record_error(EINVAL);
+        return EINVAL;
+    }
     sc->sc_mld_link_active = 0;
     sc->sc_mld_phy_active = 0;
     sc->sc_mld_active_links = 1;
@@ -1504,6 +1509,8 @@ iwx_mld_run(struct iwx_softc *sc)
     if (ic->ic_opmode != IEEE80211_M_STA ||
         in->in_ni.ni_chw == IEEE80211_CHAN_WIDTH_80P80)
         return ENOTSUP;
+    if (in->in_ni.ni_chan == NULL)
+        return EINVAL;
     in->in_phyctxt->mld_width = in->in_ni.ni_chw;
     in->in_phyctxt->mld_center_freq = in->in_ni.ni_eht_center_freq1 ?
         in->in_ni.ni_eht_center_freq1 : in->in_ni.ni_chan->ic_center_freq1;
