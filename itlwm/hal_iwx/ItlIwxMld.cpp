@@ -541,6 +541,37 @@ iwx_mld_associated_channels_valid(struct iwx_softc *sc)
     return true;
 }
 
+/*
+ * Whether the channel the link sits on still exists, without judging what that
+ * channel is allowed to do. A regulatory answer can narrow a channel after the
+ * link is up; that is a reason to run narrower, not a reason to drop a working
+ * connection.
+ */
+bool ItlIwx::
+iwx_mld_associated_channel_usable(struct iwx_softc *sc)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    auto usable = [&](struct ieee80211_node *ni) {
+        if (ni == NULL || ni->ni_chan == NULL)
+            return false;
+        int index = ieee80211_chan2ieee(ic, ni->ni_chan);
+        if (index <= 0 || index > IEEE80211_CHAN_MAX)
+            return false;
+        struct ieee80211_channel *channel = &ic->ic_channels[index];
+        return channel->ic_freq != 0 && channel->ic_flags != 0;
+    };
+    if (!usable(ic->ic_bss))
+        return false;
+    if (sc->sc_use_mld_api) {
+        for (int i = 1; i < ic->ic_mld_link_count; i++) {
+            struct ieee80211_mld_link_info *link = &ic->ic_mld_links[i];
+            if (link->assoc_accepted && !usable(link->ni))
+                return false;
+        }
+    }
+    return true;
+}
+
 void ItlIwx::
 iwx_mld_active_link_task(void *arg)
 {

@@ -12670,8 +12670,16 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
         }
         ieee80211_channel_init(IC2IFP(ic));
         ieee80211_setmode(ic, static_cast<enum ieee80211_phymode>(ic->ic_curmode));
-        bool disconnect = ic->ic_state == IEEE80211_S_RUN &&
-            !iwx_mld_associated_channels_valid(sc);
+        /*
+         * Only a channel that is gone ends the link here. A narrower answer
+         * from the regulatory domain is not a reason to drop a connection that
+         * is already up - Linux narrows the channel instead of disconnecting -
+         * so record the mismatch and leave the link alone.
+         */
+        const bool channelUsable = iwx_mld_associated_channel_usable(sc);
+        sc->sc_pcitag->setProperty("AirportItlwm-MCCWidthMismatch",
+            channelUsable && !iwx_mld_associated_channels_valid(sc), 32);
+        bool disconnect = ic->ic_state == IEEE80211_S_RUN && !channelUsable;
         sc->sc_mcc_profile_synced = 1;
         if (disconnect) {
             iwx_del_task(sc, sc->sc_nswq, &sc->mld_link_task);
