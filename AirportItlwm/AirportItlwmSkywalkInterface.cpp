@@ -474,12 +474,16 @@ IOReturn AirportItlwmSkywalkInterface::
 getCHANNEL(struct apple80211_channel_data *cd)
 {
     struct ieee80211com * ic = fHalService->get80211Controller();
-    if (ic->ic_state == IEEE80211_S_RUN) {
+    /* Same rule as the scan list: no channel means no channel to report. */
+    const struct ieee80211_channel *chan =
+        ic->ic_bss != NULL ? ic->ic_bss->ni_chan : NULL;
+    if (ic->ic_state == IEEE80211_S_RUN && chan != NULL &&
+        chan != IEEE80211_CHAN_ANYC) {
         memset(cd, 0, sizeof(apple80211_channel_data));
         cd->version = APPLE80211_VERSION;
         cd->channel.version = APPLE80211_VERSION;
-        cd->channel.channel = ieee80211_chan2number(ic, ic->ic_bss->ni_chan);
-        cd->channel.flags = ieeeChanFlag2apple(ic->ic_bss->ni_chan->ic_flags, ic->ic_bss->ni_chw);
+        cd->channel.channel = ieee80211_chan2number(ic, chan);
+        cd->channel.flags = ieeeChanFlag2apple(chan->ic_flags, ic->ic_bss->ni_chw);
         return kIOReturnSuccess;
     }
     return 6;
@@ -1055,8 +1059,18 @@ static int convertNodeToScanResult(ItlHalService *fHalService, struct ieee80211_
     result->asr_age = (uint32_t)(airport_up_time() - fNextNodeToSend->ni_age_ts);
     result->asr_cap = fNextNodeToSend->ni_capinfo;
     result->asr_channel.version = APPLE80211_VERSION;
-    result->asr_channel.channel = ieee80211_chan2number(fHalService->get80211Controller(), fNextNodeToSend->ni_chan);
-    result->asr_channel.flags = ieeeChanFlag2appleScanFlagVentura(fNextNodeToSend->ni_chan->ic_flags);
+    /*
+     * A node can be in the tree without a channel: one created from a neighbour
+     * report entry, or one still alive while the interface is being taken down.
+     * Scanning the list for the caller must not dereference it.
+     */
+    const struct ieee80211_channel *chan = fNextNodeToSend->ni_chan;
+    if (chan != NULL && chan != IEEE80211_CHAN_ANYC) {
+        result->asr_channel.channel = ieee80211_chan2number(
+            fHalService->get80211Controller(), chan);
+        result->asr_channel.flags =
+            ieeeChanFlag2appleScanFlagVentura(chan->ic_flags);
+    }
     result->asr_noise = -fHalService->getDriverInfo()->getBSSNoise();
     result->asr_rssi = -(0 - IWM_MIN_DBM - fNextNodeToSend->ni_rssi);
     memcpy(result->asr_bssid, fNextNodeToSend->ni_bssid, IEEE80211_ADDR_LEN);
@@ -1087,16 +1101,26 @@ getCOLOCATED_NETWORK_SCOPE_ID(apple80211_colocated_network_scope_id *as)
 IOReturn AirportItlwmSkywalkInterface::
 getSCAN_RESULT(struct apple80211_scan_result *sr)
 {
-    if (fNextNodeToSend == NULL) {
-        if (fScanResultWrapping) {
-            fScanResultWrapping = false;
-            return 5;
-        } else {
-            fNextNodeToSend = RB_MIN(ieee80211_tree, &fHalService->get80211Controller()->ic_tree);
-            if (fNextNodeToSend == NULL) {
+    for (;;) {
+        if (fNextNodeToSend == NULL) {
+            if (fScanResultWrapping) {
+                fScanResultWrapping = false;
                 return 5;
+            } else {
+                fNextNodeToSend = RB_MIN(ieee80211_tree, &fHalService->get80211Controller()->ic_tree);
+                if (fNextNodeToSend == NULL) {
+                    return 5;
+                }
             }
         }
+        /* A node without a channel has no result to describe; step over it. */
+        if (fNextNodeToSend->ni_chan != NULL &&
+            fNextNodeToSend->ni_chan != IEEE80211_CHAN_ANYC)
+            break;
+        fNextNodeToSend = RB_NEXT(ieee80211_tree,
+            &fHalService->get80211Controller()->ic_tree, fNextNodeToSend);
+        if (fNextNodeToSend == NULL)
+            fScanResultWrapping = true;
     }
 //    XYLog("%s ni_bssid=%s ni_essid=%s channel=%d flags=%d asr_cap=%d asr_nrates=%d asr_ssid_len=%d asr_ie_len=%d asr_rssi=%d\n", __FUNCTION__, ether_sprintf(fNextNodeToSend->ni_bssid), fNextNodeToSend->ni_essid, ieee80211_chan2ieee(ic, fNextNodeToSend->ni_chan), ieeeChanFlag2apple(fNextNodeToSend->ni_chan->ic_flags, -1), fNextNodeToSend->ni_capinfo, fNextNodeToSend->ni_rates.rs_nrates, fNextNodeToSend->ni_esslen, fNextNodeToSend->ni_rsnie_tlv == NULL ? 0 : fNextNodeToSend->ni_rsnie_tlv_len, fNextNodeToSend->ni_rssi);
     convertNodeToScanResult(fHalService, fNextNodeToSend, sr);
