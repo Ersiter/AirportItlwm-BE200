@@ -427,6 +427,106 @@ inline uint32_t shortSsid(const uint8_t *ssid, size_t length) {
     return ~crc;
 }
 
+/*
+ * Multiple BSSID (802.11ax 9.4.2.168). One radio can speak for several BSSIDs:
+ * it beacons once, its own SSID element is empty, and the other BSSIDs are
+ * described by profiles inside the Multiple BSSID element. Each profile carries
+ * that BSS's own SSID and its index, and the BSSID follows from the
+ * transmitting one by replacing its low `maxIndicator` bits with the index.
+ * Those profiles are the only place the names appear, so a radio that uses this
+ * shape is invisible without reading them.
+ */
+struct MbssidProfile {
+    uint8_t bssid[6];
+    uint8_t ssid[32];
+    uint8_t ssidLength;
+};
+
+inline void mbssidDeriveBssid(const uint8_t transmitted[6], unsigned bits,
+                              unsigned index, uint8_t out[6]) {
+    memcpy(out, transmitted, 6);
+    if (bits == 0 || bits > 48)
+        return;
+    for (unsigned bit = 0; bit < bits; ++bit) {
+        const unsigned octet = 5 - bit / 8;
+        const uint8_t mask = uint8_t(1U << (bit % 8));
+        if (index & (1U << bit))
+            out[octet] = uint8_t(out[octet] | mask);
+        else
+            out[octet] = uint8_t(out[octet] & ~mask);
+    }
+}
+
+inline unsigned decodeMbssidProfiles(const uint8_t *ies, size_t length,
+                                     const uint8_t transmitted[6],
+                                     MbssidProfile *out, unsigned max) {
+    if (!ies || !transmitted || !out || max == 0)
+        return 0;
+    size_t pos = 0;
+    const uint8_t *element = nullptr;
+    while (pos + 2 <= length) {
+        const size_t elementLength = ies[pos + 1];
+        if (pos + 2 + elementLength > length)
+            return 0;
+        if (ies[pos] == 71) {           /* Multiple BSSID */
+            element = ies + pos;
+            break;
+        }
+        pos += 2 + elementLength;
+    }
+    /* Extension id, then the MaxBSSID Indicator the BSSID is derived with. */
+    if (!element || element[1] < 2 || element[2] != 71)
+        return 0;
+    const unsigned maxIndicator = element[3];
+    const uint8_t *sub = element + 4;
+    const uint8_t *subEnd = element + 2 + element[1];
+    unsigned count = 0;
+    while (sub + 2 <= subEnd && count < max) {
+        const uint8_t subId = sub[0];
+        const size_t subLength = sub[1];
+        if (sub + 2 + subLength > subEnd)
+            break;
+        if (subId == 0) {               /* Nontransmitted BSSID Profile */
+            const uint8_t *profile = sub + 2;
+            const uint8_t *profileEnd = profile + subLength;
+            const uint8_t *ssid = nullptr;
+            unsigned index = 0;
+            bool haveIndex = false;
+            /* Nontransmitted BSSID Capability first, then that BSS's elements. */
+            const uint8_t *walk = profileEnd >= profile + 2 ? profile + 2 : profileEnd;
+            while (walk + 2 <= profileEnd) {
+                const size_t elementLength = walk[1];
+                if (walk + 2 + elementLength > profileEnd)
+                    break;
+                if (walk[0] == 0 && elementLength <= 32)
+                    ssid = walk;
+                else if (walk[0] == 85 && elementLength >= 1) {
+                    index = walk[2];
+                    haveIndex = true;
+                }
+                walk += 2 + elementLength;
+            }
+            if (ssid && haveIndex) {
+                bool visible = false;
+                for (unsigned i = 0; i < ssid[1]; ++i)
+                    if (ssid[2 + i]) {
+                        visible = true;
+                        break;
+                    }
+                if (visible) {
+                    auto &entry = out[count];
+                    mbssidDeriveBssid(transmitted, maxIndicator, index, entry.bssid);
+                    memcpy(entry.ssid, ssid + 2, ssid[1]);
+                    entry.ssidLength = ssid[1];
+                    ++count;
+                }
+            }
+        }
+        sub += 2 + subLength;
+    }
+    return count;
+}
+
 inline bool decodeScan(const void *buffer, size_t length, ScanRequest &out) {
     if (!buffer || length < 0x58)
         return false;

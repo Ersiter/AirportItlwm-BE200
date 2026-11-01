@@ -458,6 +458,8 @@ private:
     void finishWCLScan(IOReturn);
     void finishWCLJoin(uint16_t, uint16_t, IOReturn);
     void publishWCLBeacon(const ieee80211_node *, const uint8_t *, size_t);
+    void postWCLScanResult(const ieee80211_node *, const uint8_t *, const uint8_t *,
+                           size_t, uint16_t, unsigned, bool, const uint8_t *, size_t);
     IOTimerEventSource *joinTimer;
     IOTimerEventSource *wclEapolSource = nullptr;
     uint8_t joinBSSID[6];
@@ -481,6 +483,7 @@ private:
     uint32_t wclCountryRefreshes = 0;
     uint32_t wcl6GHzReceived = 0;
     uint32_t wcl6GHzPublished = 0;
+    uint32_t wclMbssidProfiles = 0;
     uint32_t wclJoinRequests = 0;
     uint32_t wclChipReadyCalls = 0;
     uint32_t wclLinkStateCalls = 0;

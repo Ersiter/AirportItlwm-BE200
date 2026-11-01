@@ -827,6 +827,31 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
         snprintf(key, sizeof(key), "AirportItlwm-WCLResult%u", slotIndex);
         instance->pciNub->setProperty(key, text);
     }
+    postWCLScanResult(node, node->ni_bssid, ssidPtr, ssidBytes, spec, channel,
+                      sixGHz, ies, length);
+    /*
+     * The radio may be speaking for other BSSIDs as well. Their names live in
+     * the profiles this beacon carries, and without them a radio that groups
+     * its networks this way appears under none of the names it advertises.
+     */
+    AirportWCL::MbssidProfile profiles[8];
+    unsigned profileCount = AirportWCL::decodeMbssidProfiles(ies, length,
+        node->ni_bssid, profiles, 8);
+    for (unsigned i = 0; i < profileCount; ++i) {
+        if (IEEE80211_ADDR_EQ(profiles[i].bssid, node->ni_bssid))
+            continue;
+        instance->pciNub->setProperty("AirportItlwm-WCLMbssidProfiles",
+            ++wclMbssidProfiles, 32);
+        postWCLScanResult(node, profiles[i].bssid, profiles[i].ssid,
+                          profiles[i].ssidLength, spec, channel, sixGHz, ies,
+                          length);
+    }
+}
+
+void AirportItlwmSkywalkInterface::postWCLScanResult(const ieee80211_node *node,
+    const uint8_t bssid[6], const uint8_t *ssid, size_t ssidBytes, uint16_t spec,
+    unsigned channel, bool sixGHz, const uint8_t *ies, size_t length)
+{
     size_t size = sizeof(AirportWCL::BeaconMetadata) + length;
     auto metadata = static_cast<AirportWCL::BeaconMetadata *>(IOMalloc(size));
     if (!metadata)
@@ -836,8 +861,8 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
     metadata->channelSpec = spec;
     metadata->channel = channel;
     metadata->ssidLength = uint32_t(ssidBytes);
-    memcpy(metadata->ssid, ssidPtr, ssidBytes);
-    memcpy(metadata->bssid, node->ni_bssid, 6);
+    memcpy(metadata->ssid, ssid, ssidBytes);
+    memcpy(metadata->bssid, bssid, 6);
     metadata->rssi = IWM_MIN_DBM + node->ni_rssi;
     metadata->interval = node->ni_intval;
     metadata->capability = node->ni_capinfo;
@@ -852,7 +877,7 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
         (ssidBytes ? AirportWCL::SSIDPresent : 0U);
     memcpy(metadata + 1, ies, length);
     size_t messageSize = sizeof(*metadata) + metadata->ieLength;
-    if (assocNotified && IEEE80211_ADDR_EQ(node->ni_bssid, joinBSSID)) {
+    if (assocNotified && IEEE80211_ADDR_EQ(bssid, joinBSSID)) {
         wclBssValid = messageSize <= sizeof(wclBssInfo);
         if (wclBssValid) {
             bzero(wclBssInfo, sizeof(wclBssInfo));
