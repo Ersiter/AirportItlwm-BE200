@@ -11851,12 +11851,10 @@ out:
 #endif
             /* A scan refused before LAR settled is a deferral, not a fault:
              * restarting the firmware here is exactly what upstream's gate
-             * exists to avoid. */
-            if (sc->sc_scan_lar_deferred) {
-                sc->sc_scan_lar_deferred = 0;
-            } else {
+             * exists to avoid. The flag stays set so the request can be issued
+             * once the domain arrives; clearing it here dropped the scan. */
+            if (!sc->sc_scan_lar_deferred)
                 iwx_schedule_recovery(sc, __FUNCTION__, __LINE__);
-            }
         }
         else if (nstate == sc->ns_nstate && arg == sc->ns_arg)
             sc->sc_newstate(ic, nstate, arg);
@@ -12681,6 +12679,18 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
             channelUsable && !iwx_mld_associated_channels_valid(sc), 32);
         bool disconnect = ic->ic_state == IEEE80211_S_RUN && !channelUsable;
         sc->sc_mcc_profile_synced = 1;
+        /*
+         * A scan asked for while the domain was still unknown was refused, not
+         * failed. Now that the domain is in, that request is due - which is the
+         * case right after wake, where the framework's first scan lands inside
+         * this window and, without this, is never tried again.
+         */
+        if (sc->sc_scan_lar_deferred) {
+            sc->sc_scan_lar_deferred = 0;
+            if (ic->ic_state != IEEE80211_S_RUN &&
+                (IC2IFP(ic)->if_flags & IFF_UP))
+                ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+        }
         if (disconnect) {
             iwx_del_task(sc, sc->sc_nswq, &sc->mld_link_task);
             int s = splnet();
