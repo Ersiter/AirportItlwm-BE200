@@ -1135,12 +1135,21 @@ ieee80211_add_rsn_body(u_int8_t *frm, struct ieee80211com *ic,
     /* write RSN Capabilities field */
     rsncaps = (ni->ni_rsncaps & (IEEE80211_RSNCAP_PTKSA_RCNT_MASK |
         IEEE80211_RSNCAP_GTKSA_RCNT_MASK));
+    /*
+     * A station associating in the 6 GHz band shall set MFPC and MFPR in its
+     * RSNE (802.11ax 12.2.3); an access point there rejects anything else. The
+     * same requirement applies while a 6 GHz AP is what we are scanning, which
+     * is the same node. Gating it on the configured F_MFPR flag left a 6 GHz
+     * association without the bit.
+     */
+    const bool sixGHz = ni->ni_chan != NULL &&
+        IEEE80211_IS_CHAN_6GHZ(ni->ni_chan);
     int mfp = (ic->ic_caps & IEEE80211_C_MFP) &&
-        (ic->ic_opmode != IEEE80211_M_STA ||
+        (sixGHz || ic->ic_opmode != IEEE80211_M_STA ||
          (ni->ni_flags & IEEE80211_NODE_MFP));
     if (mfp) {
         rsncaps |= IEEE80211_RSNCAP_MFPC;
-        if (ic->ic_flags & IEEE80211_F_MFPR)
+        if (sixGHz || (ic->ic_flags & IEEE80211_F_MFPR))
             rsncaps |= IEEE80211_RSNCAP_MFPR;
     }
     if (ic->ic_flags & IEEE80211_F_PBAR)
