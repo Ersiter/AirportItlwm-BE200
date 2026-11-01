@@ -577,8 +577,25 @@ IOReturn AirportItlwmSkywalkInterface::beginWCLScan(apple80211ScanRequest *reque
     instance->pciNub->setProperty("AirportItlwm-WCLChannelCodecVersion", 2, 32);
     instance->pciNub->setProperty("AirportItlwm-WCLScanLegacyMap", scan.channels, sizeof(scan.channels));
     instance->pciNub->setProperty("AirportItlwm-WCLScan6GHzMap", scan.channels6GHz, sizeof(scan.channels6GHz));
+    return startWCLScan(scan);
+}
+
+IOReturn AirportItlwmSkywalkInterface::startWCLScan(const AirportWCL::ScanRequest &scan)
+{
     ieee80211com *ic = fHalService->get80211Controller();
     if (!(ic->ic_if.if_flags & IFF_RUNNING)) {
+        /*
+         * After wake the driver runs its own initialisation, and the
+         * framework's first scan lands inside it. Refusing lost that request
+         * outright, so the network was only joined once the user toggled
+         * Wi-Fi. Hold it and issue it when the driver reports ready.
+         */
+        if (ic->ic_if.if_flags & IFF_UP) {
+            deferredScan = scan;
+            scanDeferred = true;
+            instance->pciNub->setProperty("AirportItlwm-WCLScanExit", "deferred");
+            return kIOReturnSuccess;
+        }
         instance->pciNub->setProperty("AirportItlwm-WCLScanExit", "not-running");
         return kIOReturnNotReady;
     }
@@ -1590,6 +1607,15 @@ void AirportItlwmSkywalkInterface::handleWCLEvent(int code, void *data)
              */
             IOReturn infraStatus = instance->postMessage(this, AirportWCL::DriverAvailable, &event, sizeof(event), false);
             instance->pciNub->setProperty("AirportItlwm-WCLDriverAvailableInfraResult", infraStatus, 32);
+            if (ready && scanDeferred) {
+                /*
+                 * The scan the framework asked for while the driver was coming
+                 * up. Issued before a deferred join so the join has a fresh
+                 * result list to pick from.
+                 */
+                scanDeferred = false;
+                startWCLScan(deferredScan);
+            }
             if (ready)
                 resumeWCLJoin();
             break;

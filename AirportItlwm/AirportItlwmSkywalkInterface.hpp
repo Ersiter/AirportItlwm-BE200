@@ -458,6 +458,7 @@ private:
     void finishWCLScan(IOReturn);
     void finishWCLJoin(uint16_t, uint16_t, IOReturn);
     void publishWCLBeacon(const ieee80211_node *, const uint8_t *, size_t);
+    IOReturn startWCLScan(const AirportWCL::ScanRequest &);
     void postWCLScanResult(const ieee80211_node *, const uint8_t *, const uint8_t *,
                            size_t, uint16_t, unsigned, bool, const uint8_t *, size_t,
                            uint16_t);
@@ -468,6 +469,8 @@ private:
     bool scanCompleted;
     bool scanSawBatch = false;
     uint64_t scanRequestedAt = 0;
+    bool scanDeferred = false;
+    AirportWCL::ScanRequest deferredScan;
     bool wclBssValid;
     bool wclLinkIndicated;
     uint8_t wclBssInfo[sizeof(AirportWCL::BeaconMetadata) + 0x800];
