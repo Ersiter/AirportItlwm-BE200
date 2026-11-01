@@ -195,6 +195,38 @@ int main()
     element(0, longName, sizeof(longName));
     assert(parseSsid(frame, length, name, sizeof(name), nameLength) == SsidStatus::TooLong);
 
+    /* The profile's own elements replace the transmitting BSS's. */
+    reset();
+    element(0, &empty, 0);           /* the set's empty SSID ... */
+    const uint8_t keep[3] = { 0xde, 0xad, 0xbe };
+    element(250, keep, sizeof(keep));/* ... an element the profile keeps ... */
+    multipleBssid(1);
+    profile("1Joey_6", 1);           /* ... and its own SSID on top */
+    endMultipleBssid();
+    n = decodeMbssidProfiles(frame, length, kTransmitted, out, 8);
+    assert(n == 1);
+    uint8_t merged[256];
+    size_t mergedLength = 0;
+    assert(AirportWCL::mergeMbssidProfile(frame, length, out[0], merged,
+                                          sizeof(merged), mergedLength));
+    unsigned ssidCount = 0, keepCount = 0, setCount = 0;
+    for (size_t pos = 0; pos + 2 <= mergedLength; pos += 2 + merged[pos + 1]) {
+        const size_t elementLength = merged[pos + 1];
+        assert(pos + 2 + elementLength <= mergedLength);
+        if (merged[pos] == 0) {
+            assert(elementLength == 7);
+            assert(memcmp(merged + pos + 2, "1Joey_6", 7) == 0);
+            ++ssidCount;
+        } else if (merged[pos] == 250) {
+            ++keepCount;
+        } else if (merged[pos] == 71) {
+            ++setCount;
+        }
+    }
+    assert(ssidCount == 1);   /* the set's empty one did not survive */
+    assert(keepCount == 1);   /* an element the profile does not restate */
+    assert(setCount == 0);    /* the set's own element is gone */
+
     printf("wcl_mbssid: ok\n");
     return 0;
 }

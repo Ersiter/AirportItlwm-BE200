@@ -488,7 +488,68 @@ struct MbssidProfile {
     uint8_t bssid[6];
     uint8_t ssid[32];
     uint8_t ssidLength;
+    /* Where this profile's own elements sit inside the frame's element chain. */
+    uint16_t profileOffset;
+    uint16_t profileLength;
 };
+
+/*
+ * The elements a nontransmitted BSS would have sent itself: everything the
+ * transmitting BSS sent, minus the Multiple BSSID element that describes the
+ * set, with every element the profile overrides replaced by the profile's own.
+ * Without this the result for that BSS carries the transmitting BSS's RSN and
+ * capabilities, which is a different network than the one it names.
+ */
+inline bool mergeMbssidProfile(const uint8_t *ies, size_t length,
+                               const MbssidProfile &profile,
+                               uint8_t *out, size_t outMax, size_t &outLength) {
+    outLength = 0;
+    if (!ies || !out)
+        return false;
+    if (size_t(profile.profileOffset) + profile.profileLength > length)
+        return false;
+    const uint8_t *own = ies + profile.profileOffset;
+    const size_t ownLength = profile.profileLength;
+
+    size_t written = 0;
+    for (size_t pos = 0; pos + 2 <= length; pos += 2 + ies[pos + 1]) {
+        const size_t elementLength = ies[pos + 1];
+        if (pos + 2 + elementLength > length)
+            return false;
+        const uint8_t id = ies[pos];
+        if (id == 71)                   /* the set's own element */
+            continue;
+        bool overridden = false;
+        for (size_t own_pos = 0; own_pos + 2 <= ownLength;
+             own_pos += 2 + own[own_pos + 1]) {
+            const size_t ownElementLength = own[own_pos + 1];
+            if (own_pos + 2 + ownElementLength > ownLength)
+                return false;
+            if (own[own_pos] == id) {
+                overridden = true;
+                break;
+            }
+        }
+        if (overridden)
+            continue;
+        if (written + 2 + elementLength > outMax)
+            return false;
+        memcpy(out + written, ies + pos, 2 + elementLength);
+        written += 2 + elementLength;
+    }
+    for (size_t own_pos = 0; own_pos + 2 <= ownLength;
+         own_pos += 2 + own[own_pos + 1]) {
+        const size_t ownElementLength = own[own_pos + 1];
+        if (own_pos + 2 + ownElementLength > ownLength)
+            return false;
+        if (written + 2 + ownElementLength > outMax)
+            return false;
+        memcpy(out + written, own + own_pos, 2 + ownElementLength);
+        written += 2 + ownElementLength;
+    }
+    outLength = written;
+    return true;
+}
 
 inline void mbssidDeriveBssid(const uint8_t transmitted[6], unsigned bits,
                               unsigned index, uint8_t out[6]) {
@@ -578,6 +639,8 @@ inline unsigned decodeMbssidProfiles(const uint8_t *ies, size_t length,
                     mbssidDeriveBssid(transmitted, maxIndicator, index, entry.bssid);
                     memcpy(entry.ssid, ssid + 2, ssid[1]);
                     entry.ssidLength = ssid[1];
+                    entry.profileOffset = uint16_t(profile - ies);
+                    entry.profileLength = uint16_t(subLength);
                     ++count;
                 }
             }

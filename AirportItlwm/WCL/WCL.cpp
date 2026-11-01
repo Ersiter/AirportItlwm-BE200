@@ -876,11 +876,26 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
             memcpy(bssid, ic->ic_wcl_scan_rnr_bssid[hint], 6);
             break;
         }
+        /*
+         * Publish the elements that BSS would have sent itself, not the
+         * transmitting one's: a profile overrides the elements it carries, and
+         * a result carrying someone else's RSN is a different network than the
+         * one it names.
+         */
+        uint8_t merged[1024];
+        size_t mergedLength = 0;
+        const uint8_t *chain = ies;
+        size_t chainLength = length;
+        if (AirportWCL::mergeMbssidProfile(ies, length, profiles[i],
+                                           merged, sizeof(merged), mergedLength)) {
+            chain = merged;
+            chainLength = mergedLength;
+        }
         instance->pciNub->setProperty("AirportItlwm-WCLMbssidProfiles",
             ++wclMbssidProfiles, 32);
         postWCLScanResult(node, bssid, profiles[i].ssid,
-                          profiles[i].ssidLength, spec, channel, sixGHz, ies,
-                          length);
+                          profiles[i].ssidLength, spec, channel, sixGHz, chain,
+                          chainLength);
     }
 }
 
