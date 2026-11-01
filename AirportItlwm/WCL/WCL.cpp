@@ -340,6 +340,26 @@ IOReturn AirportItlwmSkywalkInterface::wclCountryUpdateGated(
 
 bool AirportItlwmSkywalkInterface::initWCL()
 {
+    /*
+     * Publish the counters before anything can move them. A key that only
+     * appears once its branch runs cannot be told apart from a branch that
+     * never ran, and reading the absence of a key as "never happened" is what
+     * made the 6 GHz result look like it had no path at all.
+     */
+    instance->pciNub->setProperty("AirportItlwm-WCLBeaconEvents", uint32_t(0), 32);
+    instance->pciNub->setProperty("AirportItlwm-WCLBeaconDrops", uint32_t(0), 32);
+    instance->pciNub->setProperty("AirportItlwm-WCLBeaconRawIELength", uint32_t(0), 32);
+    instance->pciNub->setProperty("AirportItlwm-WCLBeaconIEPrefix", uint32_t(0), 32);
+    instance->pciNub->setProperty("AirportItlwm-WCLBeaconFirstIEId", uint32_t(0), 32);
+    instance->pciNub->setProperty("AirportItlwm-WCLBeaconFirstIELen", uint32_t(0), 32);
+    instance->pciNub->setProperty("AirportItlwm-WCLSsidStatus", uint32_t(0), 32);
+    instance->pciNub->setProperty("AirportItlwm-WCLSsidFromFrame", uint32_t(0), 32);
+    instance->pciNub->setProperty("AirportItlwm-WCLSsidRemembered", uint32_t(0), 32);
+    instance->pciNub->setProperty("AirportItlwm-WCLMbssidProfiles", uint32_t(0), 32);
+    instance->pciNub->setProperty("AirportItlwm-WCL6GHzBssReceived", uint32_t(0), 32);
+    instance->pciNub->setProperty("AirportItlwm-WCL6GHzBssPublished", uint32_t(0), 32);
+    instance->pciNub->setProperty("AirportItlwm-WCLScanResults", uint32_t(0), 32);
+    instance->pciNub->setProperty("AirportItlwm-WCLCountryRefreshes", uint32_t(0), 32);
 #if __IO80211_TARGET != __MAC_15_2
     auto ic = fHalService->get80211Controller();
     ic->ic_wcl_defer_user_eapol = deferWCLUserEapol;
@@ -609,6 +629,15 @@ IOReturn AirportItlwmSkywalkInterface::beginWCLScan(apple80211ScanRequest *reque
     }
     scanPending = true;
     scanCompleted = false;
+    /*
+     * A completion that belongs to the scan this request replaced can arrive
+     * after it starts. Only a completion that follows at least one batch we
+     * programmed can be ours; before that, the request has not reached the
+     * firmware yet.
+     */
+    scanSawBatch = false;
+    scanRequestedAt = 0;
+    absolutetime_to_nanoseconds(mach_absolute_time(), &scanRequestedAt);
     ic->ic_wcl_scan_requested = true;
     ic->ic_wcl_scan_active = scan.type != 2;
     ic->ic_wcl_scan_ssid_length = scan.type == 2 ? 0 : scan.ssidLength;
@@ -669,70 +698,75 @@ void AirportItlwmSkywalkInterface::completeWCLScan()
         finishWCLScan(scanCompleted ? kIOReturnSuccess : kIOReturnTimeout);
 }
 
-/*
- * The SSID element of a beacon or probe response, as sent. The node's copy is
- * only filled in for frames net80211 parsed end to end, so a result can reach
- * WCL with an empty name while the frame that produced it carries one.
- */
-static size_t wclSsidFromIEs(const uint8_t *ies, size_t length,
-                             uint8_t *out, size_t outSize)
-{
-    size_t pos = 0;
-    while (pos + 2 <= length) {
-        uint8_t id = ies[pos];
-        uint8_t len = ies[pos + 1];
-        if (pos + 2 + len > length)
-            break;
-        if (id == IEEE80211_ELEMID_SSID) {
-            if (len == 0 || len > outSize)
-                return 0;
-            size_t seen = 0;
-            for (; seen < len; ++seen) {
-                if (ies[pos + 2 + seen])
-                    break;
-            }
-            if (seen == len)
-                return 0;    /* all-zero: hidden, not a name */
-            memcpy(out, ies + pos + 2, len);
-            return len;
-        }
-        pos += 2 + len;
-    }
-    return 0;
-}
-
 void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, const uint8_t *ies, size_t length)
 {
     instance->pciNub->setProperty("AirportItlwm-WCLBeaconEvents", ++wclBeaconEvents, 32);
-    size_t iePrefix = AirportWCL::validIEPrefix(ies, length);
+    /*
+     * No FCS allowance: the event carries the element chain already trimmed to
+     * the frame's own length, so a short element at the end is real data and
+     * must not be mistaken for a trailer.
+     */
+    size_t iePrefix = AirportWCL::validIEPrefix(ies, length, 0);
     instance->pciNub->setProperty("AirportItlwm-WCLBeaconRawIELength", (uint32_t)length, 32);
     instance->pciNub->setProperty("AirportItlwm-WCLBeaconIEPrefix", (uint32_t)iePrefix, 32);
-    /*
-     * What the element chain actually opens with, so a capture can tell an
-     * empty SSID from a frame that has no SSID element at all. The SSID element
-     * is id 0: 0x00NN is a name of NN bytes, 0x0000 an empty one, any other
-     * high byte means the chain starts with something else.
-     */
-    instance->pciNub->setProperty("AirportItlwm-WCLBeaconFirstIE",
-        iePrefix >= 2 ? ((uint32_t)ies[0] << 8) | ies[1] : UINT32_MAX, 32);
-    if (!node || node->ni_esslen > 32 || !iePrefix) {
+    /* Two keys: a reader cannot tell an element id from a length in one number. */
+    instance->pciNub->setProperty("AirportItlwm-WCLBeaconFirstIEId",
+        iePrefix >= 2 ? (uint32_t)ies[0] : UINT32_MAX, 32);
+    instance->pciNub->setProperty("AirportItlwm-WCLBeaconFirstIELen",
+        iePrefix >= 2 ? (uint32_t)ies[1] : UINT32_MAX, 32);
+    if (!node || !iePrefix) {
         instance->pciNub->setProperty("AirportItlwm-WCLBeaconDrops", ++wclBeaconDrops, 32);
         instance->pciNub->setProperty("AirportItlwm-WCLBeaconDropReason",
-                                      !node ? "node" : (node->ni_esslen > 32 ? "ssid" : "ies"));
+                                      !node ? "node" : "ies");
+        return;
+    }
+    /*
+     * The channel comes before the name. A frame without a name is still a
+     * frame this radio heard on a channel, and the 6 GHz counters have to see
+     * it, or a capture cannot tell "no 6 GHz frames" from "6 GHz frames all
+     * dropped".
+     */
+    ieee80211com *ic = fHalService->get80211Controller();
+    if (!node->ni_chan || node->ni_chan == IEEE80211_CHAN_ANYC) {
+        instance->pciNub->setProperty("AirportItlwm-WCLBeaconDrops", ++wclBeaconDrops, 32);
+        instance->pciNub->setProperty("AirportItlwm-WCLBeaconDropReason", "chan");
+        return;
+    }
+    const unsigned channel = ieee80211_chan2number(ic, node->ni_chan);
+    const bool sixGHz = IEEE80211_IS_CHAN_6GHZ(node->ni_chan);
+    if (sixGHz)
+        instance->pciNub->setProperty("AirportItlwm-WCL6GHzBssReceived",
+            ++wcl6GHzReceived, 32);
+    const uint16_t spec = AirportWCL::channelSpec20(channel, wclChannelBand(node->ni_chan));
+    if (!spec) {
+        instance->pciNub->setProperty("AirportItlwm-WCLBeaconDrops", ++wclBeaconDrops, 32);
+        instance->pciNub->setProperty("AirportItlwm-WCLBeaconDropReason", "chan");
         return;
     }
     length = iePrefix;
-    uint8_t ssidBuf[IEEE80211_NWID_LEN];
+
+    uint8_t ssidBuf[IEEE80211_NWID_LEN] = {};
+    uint8_t parsedLength = 0;
+    const AirportWCL::SsidStatus ssidStatus = AirportWCL::parseSsid(
+        ies, length, ssidBuf, sizeof(ssidBuf), parsedLength);
+    instance->pciNub->setProperty("AirportItlwm-WCLSsidStatus",
+        uint32_t(ssidStatus), 32);
+    {
+        char statusKey[64];
+        snprintf(statusKey, sizeof(statusKey),
+                 "AirportItlwm-WCLSsidStatusCount-%u", uint32_t(ssidStatus));
+        auto seen = OSDynamicCast(OSNumber, instance->pciNub->getProperty(statusKey));
+        instance->pciNub->setProperty(statusKey,
+            seen ? seen->unsigned32BitValue() + 1 : 1, 32);
+    }
+
     const uint8_t *ssidPtr = node->ni_essid;
-    size_t ssidBytes = node->ni_esslen;
-    if (ssidBytes == 0) {
-        size_t fromFrame = wclSsidFromIEs(ies, length, ssidBuf, sizeof(ssidBuf));
-        if (fromFrame != 0) {
-            ssidPtr = ssidBuf;
-            ssidBytes = fromFrame;
-            instance->pciNub->setProperty("AirportItlwm-WCLSsidFromFrame",
-                ++wclSsidFromFrame, 32);
-        }
+    size_t ssidBytes = node->ni_esslen > 32 ? 0 : node->ni_esslen;
+    if (ssidBytes == 0 && ssidStatus == AirportWCL::SsidStatus::Ok) {
+        ssidPtr = ssidBuf;
+        ssidBytes = parsedLength;
+        instance->pciNub->setProperty("AirportItlwm-WCLSsidFromFrame",
+            ++wclSsidFromFrame, 32);
     }
     /*
      * Once a name is known it stays. net80211 keeps it on the node, but a node
@@ -766,23 +800,6 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
     if (ssidBytes == 0 && !joinedBssid) {
         instance->pciNub->setProperty("AirportItlwm-WCLBeaconDrops", ++wclBeaconDrops, 32);
         instance->pciNub->setProperty("AirportItlwm-WCLBeaconDropReason", "noname");
-        return;
-    }
-    ieee80211com *ic = fHalService->get80211Controller();
-    if (!node->ni_chan || node->ni_chan == IEEE80211_CHAN_ANYC) {
-        instance->pciNub->setProperty("AirportItlwm-WCLBeaconDrops", ++wclBeaconDrops, 32);
-        instance->pciNub->setProperty("AirportItlwm-WCLBeaconDropReason", "chan");
-        return;
-    }
-    unsigned channel = ieee80211_chan2number(ic, node->ni_chan);
-    bool sixGHz = IEEE80211_IS_CHAN_6GHZ(node->ni_chan);
-    if (sixGHz)
-        instance->pciNub->setProperty("AirportItlwm-WCL6GHzBssReceived",
-            ++wcl6GHzReceived, 32);
-    uint16_t spec = AirportWCL::channelSpec20(channel, wclChannelBand(node->ni_chan));
-    if (!spec) {
-        instance->pciNub->setProperty("AirportItlwm-WCLBeaconDrops", ++wclBeaconDrops, 32);
-        instance->pciNub->setProperty("AirportItlwm-WCLBeaconDropReason", "chan");
         return;
     }
     instance->pciNub->setProperty("AirportItlwm-WCLScanResults", ++wclScanResults, 32);
@@ -1631,11 +1648,25 @@ void AirportItlwmSkywalkInterface::handleWCLEvent(int code, void *data)
             break;
         }
         case IEEE80211_EVT_SCAN_BATCH:
-            if (scanPending)
+            if (scanPending) {
+                scanSawBatch = true;
                 scanSource->setTimeoutMS(WCL_SCAN_BATCH_TIMEOUT_MS);
+            }
             break;
         case IEEE80211_EVT_SCAN_DONE:
             if (scanPending) {
+                /*
+                 * Before our own first batch has gone out, a completion can
+                 * only be the one from the scan this request replaced. A batch
+                 * takes about a second, so anything inside this window is not
+                 * ours; after it, the request has had its chance and the
+                 * completion is taken as it comes.
+                 */
+                uint64_t now = 0;
+                absolutetime_to_nanoseconds(mach_absolute_time(), &now);
+                if (!scanSawBatch && scanRequestedAt &&
+                    now - scanRequestedAt < 200ULL * 1000 * 1000)
+                    break;
                 scanCompleted = true;
                 scanSource->setTimeoutMS(0);
             }

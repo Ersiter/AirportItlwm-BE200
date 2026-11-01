@@ -465,6 +465,8 @@ private:
     uint8_t joinBSSID[6];
     bool scanPending;
     bool scanCompleted;
+    bool scanSawBatch = false;
+    uint64_t scanRequestedAt = 0;
     bool wclBssValid;
     bool wclLinkIndicated;
     uint8_t wclBssInfo[sizeof(AirportWCL::BeaconMetadata) + 0x800];

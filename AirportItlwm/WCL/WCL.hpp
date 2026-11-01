@@ -436,6 +436,54 @@ inline uint32_t shortSsid(const uint8_t *ssid, size_t length) {
  * Those profiles are the only place the names appear, so a radio that uses this
  * shape is invisible without reading them.
  */
+/*
+ * What the SSID element of a frame says. Collapsing these into "no name" is
+ * what hid the 6 GHz case: a set that speaks through profiles carries an empty
+ * SSID element on purpose, and that is a different statement from a frame that
+ * has no SSID element at all or one that was cut short.
+ */
+enum class SsidStatus : uint8_t {
+    Ok,         /* visible name in out */
+    Hidden,     /* element present, zero length */
+    AllZero,    /* element present, every octet zero */
+    TooLong,    /* longer than a name may be */
+    NoElement,  /* no SSID element in the chain */
+    Truncated   /* element runs past the buffer */
+};
+
+inline SsidStatus parseSsid(const uint8_t *ies, size_t length,
+                            uint8_t *out, size_t outMax, uint8_t &outLength) {
+    outLength = 0;
+    if (!ies || !out)
+        return SsidStatus::NoElement;
+    size_t pos = 0;
+    while (pos + 2 <= length) {
+        const uint8_t id = ies[pos];
+        const size_t elementLength = ies[pos + 1];
+        if (pos + 2 + elementLength > length)
+            return SsidStatus::Truncated;
+        if (id == 0) {
+            if (elementLength == 0)
+                return SsidStatus::Hidden;
+            if (elementLength > outMax || elementLength > 32)
+                return SsidStatus::TooLong;
+            bool visible = false;
+            for (size_t i = 0; i < elementLength; ++i)
+                if (ies[pos + 2 + i]) {
+                    visible = true;
+                    break;
+                }
+            if (!visible)
+                return SsidStatus::AllZero;
+            memcpy(out, ies + pos + 2, elementLength);
+            outLength = uint8_t(elementLength);
+            return SsidStatus::Ok;
+        }
+        pos += 2 + elementLength;
+    }
+    return SsidStatus::NoElement;
+}
+
 struct MbssidProfile {
     uint8_t bssid[6];
     uint8_t ssid[32];

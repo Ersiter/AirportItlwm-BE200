@@ -151,6 +151,50 @@ int main()
     assert(derived[5] == 0x01);
     assert(derived[4] == 0x01);
 
+    /* SSID statuses: the case that matters is telling them apart. */
+    using AirportWCL::SsidStatus;
+    using AirportWCL::parseSsid;
+    uint8_t name[32];
+    uint8_t nameLength = 0;
+
+    reset();
+    const uint8_t visibleName[] = { '1', 'J', 'o', 'e', 'y', '_', '6' };
+    element(0, visibleName, sizeof(visibleName));
+    assert(parseSsid(frame, length, name, sizeof(name), nameLength) == SsidStatus::Ok);
+    assert(nameLength == 7);
+    assert(memcmp(name, "1Joey_6", 7) == 0);
+
+    reset();
+    element(0, &empty, 0);
+    nameLength = 9;
+    assert(parseSsid(frame, length, name, sizeof(name), nameLength) == SsidStatus::Hidden);
+    assert(nameLength == 0);
+
+    reset();
+    const uint8_t zeros[8] = {};
+    element(0, zeros, sizeof(zeros));
+    assert(parseSsid(frame, length, name, sizeof(name), nameLength) == SsidStatus::AllZero);
+
+    reset();
+    const uint8_t rates2[1] = { 0x82 };
+    element(1, rates2, sizeof(rates2));
+    assert(parseSsid(frame, length, name, sizeof(name), nameLength) == SsidStatus::NoElement);
+
+    /* A name element whose length runs past the buffer is truncated, not Ok. */
+    reset();
+    frame[length++] = 0;
+    frame[length++] = 20;
+    memcpy(frame + length, visibleName, sizeof(visibleName));
+    length += sizeof(visibleName);
+    assert(parseSsid(frame, length, name, sizeof(name), nameLength) == SsidStatus::Truncated);
+
+    /* Longer than a name may be. */
+    reset();
+    const uint8_t longName[33] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+                                   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
+    element(0, longName, sizeof(longName));
+    assert(parseSsid(frame, length, name, sizeof(name), nameLength) == SsidStatus::TooLong);
+
     printf("wcl_mbssid: ok\n");
     return 0;
 }

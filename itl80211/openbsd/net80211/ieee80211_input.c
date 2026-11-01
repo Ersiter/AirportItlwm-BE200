@@ -2795,11 +2795,24 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     ieee80211_setup_rates(ic, ni, rates, xrates, IEEE80211_F_DOSORT);
 #ifdef AIRPORT_WCL
     if (ic->ic_event_handler) {
-        const uint8_t *ies = (const uint8_t *)&wh[1] + 12;
-        const uint8_t *end = mtod(m, const uint8_t *) + mbuf_len(m);
-        if (end >= ies) {
-            struct ieee80211_beacon_event event = {ni, ies, (size_t)(end - ies),
-                (const uint8_t *)wh, (size_t)(end - (const uint8_t *)wh)};
+        /*
+         * The frame arrives with its FCS still attached, so both lengths are
+         * derived here once instead of being guessed again by every consumer:
+         * frame_length leaves the FCS out, ies_length leaves the header and
+         * the twelve fixed octets out as well. Only a beacon or probe response
+         * reaches this point, and both carry that fixed body, so the offset is
+         * computed from the header length rather than a band-specific number.
+         */
+        const size_t wclHdrLen = ieee80211_get_hdrlen(wh);
+        const size_t wclFrameLen = mbuf_len(m);
+        if (wclFrameLen > wclHdrLen + 12 + IEEE80211_CRC_LEN) {
+            struct ieee80211_beacon_event event = {
+                ni,
+                (const uint8_t *)wh + wclHdrLen + 12,
+                wclFrameLen - wclHdrLen - 12 - IEEE80211_CRC_LEN,
+                (const uint8_t *)wh,
+                wclFrameLen - IEEE80211_CRC_LEN
+            };
             ic->ic_event_handler(ic, IEEE80211_EVT_BEACON, &event);
         }
     }
