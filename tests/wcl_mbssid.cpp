@@ -90,6 +90,9 @@ int main()
     assert(memcmp(out[0].ssid, "1Joey_6", 7) == 0);
     assert(out[0].bssid[5] == 0x3b);
     assert(memcmp(out[0].bssid, kTransmitted, 5) == 0);
+    /* The capability of that BSS is in the profile, not in the transmitting one. */
+    assert(out[0].hasCapability);
+    assert(out[0].capability == 0x1111);
 
     /* An indicator of 3 replaces the low three bits: 0x3a -> 0x39. */
     reset();

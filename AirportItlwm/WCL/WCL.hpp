@@ -491,6 +491,13 @@ struct MbssidProfile {
     /* Where this profile's own elements sit inside the frame's element chain. */
     uint16_t profileOffset;
     uint16_t profileLength;
+    /*
+     * The Nontransmitted BSSID Capability element is the capability field of a
+     * BSS that does not send its own beacon, which is not an element a
+     * synthesized result can inherit from the transmitting one.
+     */
+    uint16_t capability;
+    bool hasCapability;
 };
 
 /*
@@ -542,6 +549,13 @@ inline bool mergeMbssidProfile(const uint8_t *ies, size_t length,
         const size_t ownElementLength = own[own_pos + 1];
         if (own_pos + 2 + ownElementLength > ownLength)
             return false;
+        /*
+         * 83 and 85 describe the profile itself, not the BSS: a BSS that sent
+         * its own beacon would carry neither, and both have already been read
+         * into the fields above.
+         */
+        if (own[own_pos] == 83 || own[own_pos] == 85)
+            continue;
         if (written + 2 + ownElementLength > outMax)
             return false;
         memcpy(out + written, own + own_pos, 2 + ownElementLength);
@@ -608,6 +622,8 @@ inline unsigned decodeMbssidProfiles(const uint8_t *ies, size_t length,
             const uint8_t *ssid = nullptr;
             unsigned index = 0;
             bool haveIndex = false;
+            uint16_t capability = 0;
+            bool hasCapability = false;
             /*
              * The profile is a plain element list: Nontransmitted BSSID
              * Capability first, then that BSS's own elements in any order.
@@ -624,6 +640,9 @@ inline unsigned decodeMbssidProfiles(const uint8_t *ies, size_t length,
                 else if (walk[0] == 85 && elementLength >= 1) {
                     index = walk[2];
                     haveIndex = true;
+                } else if (walk[0] == 83 && elementLength == 2) {
+                    capability = uint16_t(walk[2] | (walk[3] << 8));
+                    hasCapability = true;
                 }
                 walk += 2 + elementLength;
             }
@@ -641,6 +660,8 @@ inline unsigned decodeMbssidProfiles(const uint8_t *ies, size_t length,
                     entry.ssidLength = ssid[1];
                     entry.profileOffset = uint16_t(profile - ies);
                     entry.profileLength = uint16_t(subLength);
+                    entry.capability = capability;
+                    entry.hasCapability = hasCapability;
                     ++count;
                 }
             }

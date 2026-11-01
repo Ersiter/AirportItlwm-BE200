@@ -845,7 +845,7 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
         instance->pciNub->setProperty(key, text);
     }
     postWCLScanResult(node, node->ni_bssid, ssidPtr, ssidBytes, spec, channel,
-                      sixGHz, ies, length);
+                      sixGHz, ies, length, node->ni_capinfo);
     /*
      * The radio may be speaking for other BSSIDs as well. Their names live in
      * the profiles this beacon carries, and without them a radio that groups
@@ -895,13 +895,16 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
             ++wclMbssidProfiles, 32);
         postWCLScanResult(node, bssid, profiles[i].ssid,
                           profiles[i].ssidLength, spec, channel, sixGHz, chain,
-                          chainLength);
+                          chainLength,
+                          profiles[i].hasCapability ? profiles[i].capability
+                                                    : node->ni_capinfo);
     }
 }
 
 void AirportItlwmSkywalkInterface::postWCLScanResult(const ieee80211_node *node,
     const uint8_t bssid[6], const uint8_t *ssid, size_t ssidBytes, uint16_t spec,
-    unsigned channel, bool sixGHz, const uint8_t *ies, size_t length)
+    unsigned channel, bool sixGHz, const uint8_t *ies, size_t length,
+    uint16_t capability)
 {
     size_t size = sizeof(AirportWCL::BeaconMetadata) + length;
     auto metadata = static_cast<AirportWCL::BeaconMetadata *>(IOMalloc(size));
@@ -916,7 +919,7 @@ void AirportItlwmSkywalkInterface::postWCLScanResult(const ieee80211_node *node,
     memcpy(metadata->bssid, bssid, 6);
     metadata->rssi = IWM_MIN_DBM + node->ni_rssi;
     metadata->interval = node->ni_intval;
-    metadata->capability = node->ni_capinfo;
+    metadata->capability = capability;
     /*
      * Only claim the name is there when it actually is. A result that says
      * SSIDPresent while carrying an empty string is the shape WCL builds its

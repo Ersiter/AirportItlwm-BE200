@@ -459,7 +459,8 @@ private:
     void finishWCLJoin(uint16_t, uint16_t, IOReturn);
     void publishWCLBeacon(const ieee80211_node *, const uint8_t *, size_t);
     void postWCLScanResult(const ieee80211_node *, const uint8_t *, const uint8_t *,
-                           size_t, uint16_t, unsigned, bool, const uint8_t *, size_t);
+                           size_t, uint16_t, unsigned, bool, const uint8_t *, size_t,
+                           uint16_t);
     IOTimerEventSource *joinTimer;
     IOTimerEventSource *wclEapolSource = nullptr;
     uint8_t joinBSSID[6];
