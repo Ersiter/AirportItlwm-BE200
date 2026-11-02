@@ -23,7 +23,6 @@
 
 #include <net80211/ieee80211.h>
 #include <net80211/ieee80211_var.h>
-#include "sae_confirm_output.inc"
 
 /* Declarations live in the driver only; the whole test is built as C++. */
 uint16_t ieee80211_sae_verify_commit_elem(const uint8_t **scalar,
@@ -49,6 +48,8 @@ int ieee80211_sae_derive_password_elem(uint8_t *, const uint8_t *,
 int ieee80211_sae_derive_password_elem_hnp(uint8_t *, const uint8_t *,
     size_t, const uint8_t *, const uint8_t *);
 #endif
+
+#include "sae_confirm_output.inc"
 
 static const uint8_t *random_scalars;
 static size_t random_scalars_left;
@@ -184,8 +185,8 @@ test_commit_parsing(void)
             own_point + 1 + SCALAR_LEN) == IEEE80211_STATUS_SUCCESS);
 
     /*
-     * Regression: an H2E peer may append optional elements after the commit
-     * element. Rejecting those made every H2E handshake fail on the device.
+     * Fixed-part crypto parsing leaves trailing elements to the
+     * authentication state machine.
      */
     frm[IEEE80211_SAE_COMMIT_MIN_LEN + 0] = 244; /* RSNXE */
     frm[IEEE80211_SAE_COMMIT_MIN_LEN + 1] = 1;
@@ -574,6 +575,205 @@ test_commit_output(void)
 }
 
 static void
+test_auth_send_chain(void)
+{
+    const bool modes[] = {false, true};
+    for (bool mlo : modes) {
+        struct ieee80211com ic = {};
+        struct ieee80211_node ni = {};
+        const uint8_t own[6] = {2, 0, 0, 0, 0, 1};
+        const uint8_t peer[6] = {2, 0, 0, 0, 0, 2};
+        const uint8_t peer_mld[6] = {2, 0, 0, 0, 1, 2};
+        memcpy(ic.ic_myaddr, own, 6);
+        memcpy(ni.ni_macaddr, peer, 6);
+        mbuf_t open = ieee80211_get_auth(&ic, &ni, 0, 1);
+        CHECK("Auth TX: ordinary Open System remains a six-byte body",
+            open && open->len == 6 && LE_READ_2(open->data) == 0);
+        mbuf_freem(open);
+        ic.test_sae_enabled = true;
+        CHECK("Auth TX: unavailable PWE stops transmission",
+            ieee80211_get_auth(&ic, &ni, 0, 1) == nullptr);
+        uint8_t scalar[32], point[65];
+        make_scalar(scalar, 1);
+        point_for(scalar, point);
+        memcpy(ic.ic_sae_pwe, point + 1, 64);
+        ic.ic_sae_pwe_valid = 1;
+        ic.ic_xflags = IEEE80211_F_SAE_PWE;
+        ni.ni_sae.sae_h2e = 1;
+        ni.ni_rsnxecaps = IEEE80211_RSNXECAP_H2E;
+        if (mlo) {
+            ic.ic_wcl_peer_is_mlo = true;
+            ic.ic_wcl_local_mlo_addrs_valid = ic.ic_eht_cap_valid = true;
+            ni.ni_mld_valid = 1;
+            memcpy(ic.ic_wcl_local_mlo_addrs[0], own, 6);
+            memcpy(ic.ic_wcl_peer_mld_addr, peer_mld, 6);
+            memcpy(ni.ni_mld_addr, peer_mld, 6);
+        }
+        ieee80211_sae_select_auth(&ic, &ni, &ic.ic_sae_auth);
+        ni.ni_sae.sae_auth = ic.ic_sae_auth;
+        mbuf_t first = ieee80211_get_auth(&ic, &ni, 0, 1);
+        CHECK("Auth TX: Commit length and H2E header match the selected mode",
+            first && first->len == (mlo ? 116 : 104) &&
+            first->packet_len == first->len && LE_READ_2(first->data) == 3 &&
+            LE_READ_2(first->data + 2) == 1 && LE_READ_2(first->data + 4) == 126);
+        mbuf_t retry = ieee80211_get_auth(&ic, &ni, 0, 1);
+        CHECK("Auth TX: Commit retry preserves the selected identity and elements",
+            retry && first->len == retry->len &&
+            memcmp(first->data, retry->data, first->len) == 0);
+        mbuf_freem(first);
+        mbuf_freem(retry);
+        ni.ni_sae.sae_token_len = IEEE80211_SAE_H2E_TOKEN_MAX_LEN;
+        memset(ni.ni_sae.sae_token, 0x77, ni.ni_sae.sae_token_len);
+        mbuf_t token = ieee80211_get_auth(&ic, &ni, 0, 1);
+        CHECK("Auth TX: maximum token and optional MLE fit the declared allocation",
+            token && token->len == (mlo ? 373 : 361) && token->data[105] == 255 &&
+            token->data[360] == 0x77 && (!mlo || token->data[361] == 255));
+        mbuf_freem(token);
+        make_scalar(ni.ni_sae.sae_peer_scalar, 2);
+        memcpy(ni.ni_sae.sae_peer_element_x, point + 1, 32);
+        memcpy(ni.ni_sae.sae_peer_element_y, point + 33, 32);
+        ni.ni_sae.sae_state |= SAE_EVENT_PEER_COMMIT_RECEIVED;
+        mbuf_t confirm = ieee80211_get_auth(&ic, &ni, 0, 2);
+        CHECK("Auth TX: Confirm header and MLE use the selected mode",
+            confirm && confirm->len == (mlo ? 52 : 40) &&
+            LE_READ_2(confirm->data + 2) == 2 && LE_READ_2(confirm->data + 4) == 0 &&
+            (!mlo || ieee80211_sae_auth_mle_valid(confirm->data + 6,
+                confirm->len - 6, 2, 0, own)));
+        mbuf_t confirm_retry = ieee80211_get_auth(&ic, &ni, 0, 2);
+        uint8_t expected[32];
+        uint8_t own_point[65] = {4}, peer_point[65] = {4};
+        memcpy(own_point + 1, ni.ni_sae.sae_element_x, 32);
+        memcpy(own_point + 33, ni.ni_sae.sae_element_y, 32);
+        memcpy(peer_point + 1, ni.ni_sae.sae_peer_element_x, 32);
+        memcpy(peer_point + 33, ni.ni_sae.sae_peer_element_y, 32);
+        spec_confirm(expected, ni.ni_sae.sae_kck, confirm_retry->data + 6,
+            ni.ni_sae.sae_scalar, own_point, ni.ni_sae.sae_peer_scalar, peer_point);
+        CHECK("Auth TX: Confirm retry updates counter and verifier together",
+            LE_READ_2(confirm->data + 6) == 1 && LE_READ_2(confirm_retry->data + 6) == 2 &&
+            memcmp(confirm_retry->data + 8, expected, 32) == 0);
+        mbuf_freem(confirm);
+        mbuf_freem(confirm_retry);
+        ic.ic_myaddr[5] ^= 1;
+        CHECK("Auth TX: changed link identity stops stale transmission",
+            ieee80211_get_auth(&ic, &ni, 0, 2) == nullptr);
+    }
+}
+
+static void
+test_mlo_auth_identity(void)
+{
+    struct ieee80211com ic = {};
+    struct ieee80211_node ni = {};
+    struct ieee80211_sae_auth auth;
+    const uint8_t own_link[6] = {2, 0, 0, 0, 0, 1};
+    const uint8_t peer_link[6] = {2, 0, 0, 0, 0, 2};
+    const uint8_t own_mld[6] = {2, 0, 0, 0, 1, 1};
+    const uint8_t peer_mld[6] = {2, 0, 0, 0, 1, 2};
+    memcpy(ic.ic_myaddr, own_link, 6);
+    memcpy(ni.ni_macaddr, peer_link, 6);
+    CHECK("SAE identity: ordinary join uses link addresses",
+        ieee80211_sae_select_auth(&ic, &ni, &auth) == 0 && !auth.mld &&
+        memcmp(auth.ownaddr, own_link, 6) == 0 &&
+        memcmp(auth.peeraddr, peer_link, 6) == 0);
+    ic.ic_wcl_peer_is_mlo = true;
+    CHECK("SAE identity: MLO requires configured local identities",
+        ieee80211_sae_select_auth(&ic, &ni, &auth) != 0);
+    ic.ic_wcl_local_mlo_addrs_valid = ic.ic_eht_cap_valid = true;
+    ni.ni_mld_valid = 1;
+    ni.ni_rsnxecaps = IEEE80211_RSNXECAP_H2E;
+    memcpy(ic.ic_wcl_local_mlo_addrs[0], own_mld, 6);
+    memcpy(ic.ic_wcl_peer_mld_addr, peer_mld, 6);
+    memcpy(ni.ni_mld_addr, peer_mld, 6);
+    CHECK("SAE identity: MLO selects both MLD addresses",
+        ieee80211_sae_select_auth(&ic, &ni, &auth) == 0 && auth.mld &&
+        memcmp(auth.ownaddr, own_mld, 6) == 0 && memcmp(auth.peeraddr, peer_mld, 6) == 0);
+    ic.ic_sae_auth = ni.ni_sae.sae_auth = auth;
+    CHECK("SAE identity: initial PWE snapshot is current", ieee80211_sae_auth_current(&ic, &ni));
+    ni.ni_sae.sae_state = SAE_STATE_COMMITTED;
+    memcpy(ni.ni_sae.sae_ownaddr, own_link, 6);
+    CHECK("SAE identity: unchanged Commit can be retried", ieee80211_sae_auth_current(&ic, &ni));
+    ic.ic_myaddr[5] ^= 1;
+    CHECK("SAE identity: link MAC rotation invalidates Commit", !ieee80211_sae_auth_current(&ic, &ni));
+    ic.ic_myaddr[5] ^= 1;
+    ic.ic_wcl_local_mlo_addrs[0][5] ^= 1;
+    CHECK("SAE identity: local MLD rotation invalidates PWE", !ieee80211_sae_auth_current(&ic, &ni));
+    ic.ic_wcl_local_mlo_addrs[0][5] ^= 1;
+    ic.ic_wcl_peer_mld_addr[5] ^= 1;
+    CHECK("SAE identity: AP MLD change invalidates PWE", !ieee80211_sae_auth_current(&ic, &ni));
+    ic.ic_wcl_peer_mld_addr[5] ^= 1;
+    ic.ic_wcl_peer_is_mlo = false;
+    CHECK("SAE identity: mode change invalidates PWE", !ieee80211_sae_auth_current(&ic, &ni));
+    ic.ic_wcl_peer_is_mlo = true;
+    ni.ni_rsnxecaps = 0;
+    CHECK("SAE identity: MLO requires H2E", ieee80211_sae_select_auth(&ic, &ni, &auth) != 0);
+    ni.ni_rsnxecaps = IEEE80211_RSNXECAP_H2E;
+    CHECK("RSN identity: MLO keeps MLD addresses for PTK and EAPOL",
+        memcmp(ieee80211_rsn_own_addr(&ic, &ni), own_mld, 6) == 0 &&
+        memcmp(ieee80211_rsn_peer_addr(&ic, &ni), peer_mld, 6) == 0);
+    ni.ni_sae.sae_auth.mld = 0;
+    CHECK("RSN identity: ordinary join keeps link addresses",
+        memcmp(ieee80211_rsn_own_addr(&ic, &ni), own_link, 6) == 0 &&
+        memcmp(ieee80211_rsn_peer_addr(&ic, &ni), peer_link, 6) == 0);
+}
+
+static void
+test_auth_mle(void)
+{
+    const uint8_t address[6] = {2, 0, 0, 0, 1, 2};
+    const uint8_t expected[] = {255, 10, 107, 0, 0, 7, 2, 0, 0, 0, 1, 2};
+    uint8_t frame[512] = {};
+    frame[0] = 19;
+    CHECK("Auth MLE: Commit body is exactly 110 bytes",
+        ieee80211_add_auth_mle(frame + 98, address) == frame + 110);
+    CHECK("Auth MLE: Basic control and Common Info match the reference",
+        memcmp(frame + 98, expected, sizeof(expected)) == 0);
+    CHECK("Auth MLE: expected AP MLD accepted",
+        ieee80211_sae_auth_mle_valid(frame, 110, 1, 126, address));
+    bool truncated_rejected = true;
+    for (size_t len = 0; len < 110; ++len)
+        truncated_rejected &= !ieee80211_sae_auth_mle_valid(frame, len, 1, 126, address);
+    CHECK("Auth MLE: every truncated Commit rejected", truncated_rejected);
+    CHECK("Auth MLE: missing AP MLD rejected",
+        !ieee80211_sae_auth_mle_valid(frame, 98, 1, 126, address));
+    frame[109] ^= 1;
+    CHECK("Auth MLE: wrong AP MLD rejected",
+        !ieee80211_sae_auth_mle_valid(frame, 110, 1, 126, address));
+    frame[109] ^= 1;
+    frame[103] = 6;
+    CHECK("Auth MLE: short Common Info rejected",
+        !ieee80211_sae_auth_mle_valid(frame, 110, 1, 126, address));
+    frame[103] = 8;
+    CHECK("Auth MLE: Common Info beyond IE rejected",
+        !ieee80211_sae_auth_mle_valid(frame, 110, 1, 126, address));
+    frame[103] = 7;
+    frame[101] = 1;
+    CHECK("Auth MLE: non-Basic MLE rejected",
+        !ieee80211_sae_auth_mle_valid(frame, 110, 1, 126, address));
+    frame[101] = 0;
+    memset(frame + 110, 0xff, 4);
+    CHECK("Auth MLE: retained RX FCS after MLE is tolerated",
+        ieee80211_sae_auth_mle_valid(frame, 114, 1, 126, address));
+    memmove(frame + 101, frame + 98, 12);
+    memcpy(frame + 98, "\xf4\x01\x20", 3);
+    CHECK("Auth MLE: preceding optional IE is skipped",
+        ieee80211_sae_auth_mle_valid(frame, 113, 1, 126, address));
+    memset(frame, 0, sizeof(frame));
+    CHECK("Auth MLE: Confirm body is exactly 46 bytes",
+        ieee80211_add_auth_mle(frame + 34, address) == frame + 46);
+    CHECK("Auth MLE: Confirm AP identity accepted",
+        ieee80211_sae_auth_mle_valid(frame, 46, 2, 0, address));
+    CHECK("Auth MLE: Confirm requires AP identity",
+        !ieee80211_sae_auth_mle_valid(frame, 34, 2, 0, address));
+    const uint8_t token[] = {19, 0, 255, 5, 93, 't', 'o', 'k', 'n'};
+    memcpy(frame, token, sizeof(token));
+    ieee80211_add_auth_mle(frame + sizeof(token), address);
+    CHECK("Auth MLE: anti-clogging response identity accepted",
+        ieee80211_sae_auth_mle_valid(frame, sizeof(token) + 12, 1, 76, address));
+    CHECK("Auth MLE: failure response may omit MLE",
+        ieee80211_sae_auth_mle_valid(frame, 0, 2, 15, address));
+}
+
+static void
 test_confirm_retransmission(void)
 {
     struct ieee80211_node ni = {};
@@ -657,6 +857,9 @@ main(void)
     test_sae_policy();
     test_shared_secret_and_keys();
     test_commit_output();
+    test_auth_send_chain();
+    test_mlo_auth_identity();
+    test_auth_mle();
     test_confirm_retransmission();
     test_confirm();
     printf("\n%d checks, %d failures\n", checks, failures);

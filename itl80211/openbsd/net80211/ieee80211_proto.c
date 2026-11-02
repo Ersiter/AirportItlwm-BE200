@@ -1620,16 +1620,10 @@ ieee80211_auth_sae_timeout(struct ieee80211com *ic, struct ieee80211_node *ni,
 {
 	u_int16_t retry_seq;
 
-	/*
-	 * PWE = val*PT with val hashed from both MAC addresses, so the elements we
-	 * cached are only ours while the transmitter address is the one they were
-	 * derived for. Once the private address rotates, every replay carries the
-	 * old elements under a new address; the AP derives a different element and
-	 * answers CHALLENGE_FAIL however many times we repeat it. Abandon this
-	 * exchange so the join starts over with the current address.
-	 */
+	/* Commit elements belong to the selected link/MLD identities.
+	 * A changed address or authentication mode requires a fresh exchange. */
 	if (ni->ni_sae.sae_state != SAE_STATE_NOTHING &&
-	    !IEEE80211_ADDR_EQ(ni->ni_sae.sae_ownaddr, ic->ic_myaddr)) {
+	    !ieee80211_sae_auth_current(ic, ni)) {
 #ifdef AIRPORT_WCL
 		if (ic->ic_wcl_join_requested)
 			ic->ic_wcl_sae_addr_restarts++;
@@ -1667,6 +1661,18 @@ ieee80211_auth_sae(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 	    !ieee80211_node_allow_wpa3(ic, ni))
 		goto discard;
 
+	if (ic->ic_state != IEEE80211_S_AUTH &&
+	    (ic->ic_state != IEEE80211_S_ASSOC ||
+	    ni->ni_sae.sae_state != SAE_STATE_ACCEPTED))
+		goto discard;
+	if (!ieee80211_sae_auth_current(ic, ni)) {
+		ieee80211_auth_sae_failure(ic, ni);
+		return;
+	}
+	if (ni->ni_sae.sae_auth.mld &&
+	    !ieee80211_sae_auth_mle_valid(sae_data, sae_len, seq, status,
+	    ni->ni_sae.sae_auth.peeraddr))
+		goto discard;
 	if (ic->ic_state == IEEE80211_S_ASSOC &&
 	    ni->ni_sae.sae_state == SAE_STATE_ACCEPTED &&
 	    seq == IEEE80211_AUTH_OPEN_RESPONSE &&
@@ -1698,7 +1704,8 @@ ieee80211_auth_sae(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 	    ni->ni_sae.sae_state == SAE_STATE_COMMITTED &&
 	    ni->ni_sae.sae_h2e == 0) {
 		if (ieee80211_sae_derive_password_elem(ic->ic_sae_pwe,
-		    ic->ic_sae_pt, ic->ic_myaddr, ni->ni_macaddr) != 0)
+		    ic->ic_sae_pt, ic->ic_sae_auth.ownaddr,
+		    ic->ic_sae_auth.peeraddr) != 0)
 			goto discard;
 		ni->ni_sae.sae_h2e = 1;
 		ni->ni_sae.sae_state = SAE_STATE_NOTHING;
@@ -1763,7 +1770,7 @@ ieee80211_auth_sae(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 		token_len = sae_len - 2;
 		if (ni->ni_sae.sae_h2e) {
 			if (token_len < 3 || token[0] != IEEE80211_ELEMID_EXTENSION ||
-			    token[1] < 2 || token[1] != token_len - 2 ||
+			    token[1] < 2 || (size_t)token[1] + 2 > token_len ||
 			    token[2] != IEEE80211_EID_EXT_ANTI_CLOGGING_TOKEN)
 				goto token_failure;
 			token_len = token[1] - 1;

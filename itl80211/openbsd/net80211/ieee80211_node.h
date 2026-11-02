@@ -229,6 +229,7 @@ struct ieee80211_sae {
 	uint8_t sae_ownaddr[IEEE80211_ADDR_LEN];
 	uint16_t sae_send_confirm;
 	uint16_t sae_peer_send_confirm;
+	struct ieee80211_sae_auth sae_auth;
 };
 
 #define	IEEE80211_PS_MAX_QUEUE	50	/* maximum saved packets */

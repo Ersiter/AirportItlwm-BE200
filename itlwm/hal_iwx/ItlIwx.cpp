@@ -11917,6 +11917,8 @@ iwx_sae_join_task(void *psc)
 #endif
         uint8_t pt[64];
         uint8_t ownaddr[IEEE80211_ADDR_LEN];
+        struct ieee80211_sae_auth auth;
+        bool auth_valid;
         uint8_t pwe[64];
 #ifdef IEEE80211_SAE_HNP_COMPAT
         size_t password_len;
@@ -11967,6 +11969,8 @@ iwx_sae_join_task(void *psc)
                         IEEE80211_RSNXECAP_H2E) != 0;
                     memcpy(w->ownaddr, controller->ic_myaddr,
                         sizeof(w->ownaddr));
+                    w->auth_valid = ieee80211_sae_select_auth(controller,
+                        w->node, &w->auth) == 0;
                     if (w->h2e && controller->ic_sae_pt_valid) {
                         memcpy(w->pt, controller->ic_sae_pt,
                             sizeof(w->pt));
@@ -11988,17 +11992,17 @@ iwx_sae_join_task(void *psc)
             splx(s);
             return kIOReturnSuccess;
         }, that, &work);
-    if (result == kIOReturnSuccess && work.current && work.node != nullptr) {
+    if (result == kIOReturnSuccess && work.current && work.node != nullptr && work.auth_valid) {
         if (work.h2e && work.pt_valid)
             work.error = ieee80211_sae_derive_password_elem(work.pwe,
-                work.pt, work.ownaddr, work.bssid);
+                work.pt, work.auth.ownaddr, work.auth.peeraddr);
 #ifdef IEEE80211_SAE_HNP_COMPAT
         else if (!work.h2e && work.password_len != 0 &&
             work.node->ni_chan != nullptr &&
             ieee80211_sae_hnp_compat_allowed(work.h2e,
                 work.node->ni_chan->ic_freq))
             work.error = ieee80211_sae_derive_password_elem_hnp(work.pwe,
-                work.password, work.password_len, work.ownaddr, work.bssid);
+                work.password, work.password_len, work.auth.ownaddr, work.auth.peeraddr);
         explicit_bzero(work.password, sizeof(work.password));
         work.password_len = 0;
 #endif
@@ -12012,7 +12016,11 @@ iwx_sae_join_task(void *psc)
                 struct ieee80211com *controller = &softc->sc_ic;
                 auto *w = static_cast<SaeJoinWork *>(arg1);
                 int s = splnet();
-                bool current = w->current &&
+                struct ieee80211_sae_auth auth;
+                bool auth_current = w->auth_valid && w->node != nullptr &&
+                    ieee80211_sae_select_auth(controller, w->node, &auth) == 0 &&
+                    memcmp(&auth, &w->auth, sizeof(auth)) == 0;
+                bool current = w->current && auth_current &&
                     !(softc->sc_flags & IWX_FLAG_SHUTDOWN) &&
                     softc->sc_generation == w->device_generation &&
                     softc->sc_scan_generation == w->scan_generation &&
@@ -12028,6 +12036,7 @@ iwx_sae_join_task(void *psc)
                 if (current && w->error == 0) {
                     memcpy(controller->ic_sae_pwe, w->pwe,
                         sizeof(controller->ic_sae_pwe));
+                    controller->ic_sae_auth = w->auth;
                     controller->ic_sae_pwe_valid = 1;
                     controller->ic_xflags |= IEEE80211_F_SAE_PWE;
                     controller->ic_sae_defer_active = 1;

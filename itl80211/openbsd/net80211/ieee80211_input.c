@@ -3381,10 +3381,12 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
     status =  LE_READ_2(frm); frm += 2;
 
     ic->ic_assoc_status = status;
-#ifndef AIRPORT_WCL
+#ifdef AIRPORT_WCL
+    if (status != IEEE80211_STATUS_SUCCESS || !ni->ni_sae.sae_auth.mld)
+#else
     if (status == IEEE80211_STATUS_SUCCESS)
 #endif
-    { // WCL must also receive failed association responses.
+    { // MLO SAE success is reported after checking the AP MLD below.
         if (ic->ic_event_handler) {
             (*ic->ic_event_handler)(ic, IEEE80211_EVT_STA_ASSOC_DONE, NULL);
         }
@@ -3500,6 +3502,14 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
                 IEEE80211_ADDR_LEN) != 0 ||
             (ni->ni_mld_link_id != UINT8_MAX &&
              ni->ni_mld_link_id != expected_link_id)) {
+            if (ni->ni_sae.sae_auth.mld) {
+                ic->ic_assoc_status = IEEE80211_STATUS_UNSPECIFIED;
+                ic->ic_stats.is_rx_auth_fail++;
+                if (ic->ic_event_handler)
+                    (*ic->ic_event_handler)(ic, IEEE80211_EVT_STA_ASSOC_DONE, NULL);
+                ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+                return;
+            }
             mld_valid = 0;
             ic->ic_wcl_peer_is_mlo = false;
             bzero(ic->ic_wcl_peer_mld_addr,
@@ -3511,6 +3521,8 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
     } else {
         mld_valid = 0;
     }
+    if (ni->ni_sae.sae_auth.mld && ic->ic_event_handler)
+        (*ic->ic_event_handler)(ic, IEEE80211_EVT_STA_ASSOC_DONE, NULL);
 #endif
     if (mld_valid) {
         ni->ni_mld_valid = 1;

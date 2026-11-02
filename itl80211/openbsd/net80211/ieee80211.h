@@ -1342,6 +1342,13 @@ enum ieee80211_htprot {
 #define IEEE80211_SAE_TOKEN_MAX_LEN	255
 #define IEEE80211_SAE_H2E_TOKEN_MAX_LEN 254
 #define IEEE80211_EID_EXT_ANTI_CLOGGING_TOKEN 93
+#define IEEE80211_AUTH_MLE_LEN 12
+
+struct ieee80211_sae_auth {
+	uint8_t ownaddr[IEEE80211_ADDR_LEN];
+	uint8_t peeraddr[IEEE80211_ADDR_LEN];
+	uint8_t mld;
+};
 
 /*
  * 802.11ac definitions - 802.11ac-2013 .
@@ -2405,6 +2412,54 @@ static inline uint64_t airport_up_time()
     return tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 #endif
+
+static inline uint8_t *
+ieee80211_add_auth_mle(uint8_t *frm, const uint8_t *mld_addr)
+{
+	*frm++ = IEEE80211_ELEMID_EXTENSION;
+	*frm++ = 10;
+	*frm++ = IEEE80211_ELEMID_EXT_MULTI_LINK;
+	*frm++ = 0;
+	*frm++ = 0;
+	*frm++ = 7;
+	memcpy(frm, mld_addr, IEEE80211_ADDR_LEN);
+	return frm + IEEE80211_ADDR_LEN;
+}
+
+static inline int
+ieee80211_sae_auth_mle_valid(const uint8_t *frm, size_t len,
+    uint16_t seq, uint16_t status, const uint8_t *peer_addr)
+{
+	size_t fixed;
+	if (seq == IEEE80211_AUTH_OPEN_REQUEST && status == IEEE80211_STATUS_H2E)
+		fixed = IEEE80211_SAE_COMMIT_MIN_LEN;
+	else if (seq == IEEE80211_AUTH_OPEN_RESPONSE && status == IEEE80211_STATUS_SUCCESS)
+		fixed = IEEE80211_SAE_CONFIRM_MIN_LEN;
+	else if (seq == IEEE80211_AUTH_OPEN_REQUEST &&
+	    status == IEEE80211_STATUS_ANTI_CLOGGING_TOKEN_REQ)
+		fixed = 2;
+	else
+		return 1; /* Failure responses may omit the MLE. */
+	if (len < fixed)
+		return 0;
+	frm += fixed;
+	len -= fixed;
+	while (len >= 2) {
+		size_t size = 2 + frm[1];
+		if (size > len)
+			return 0;
+		if (frm[0] == IEEE80211_ELEMID_EXTENSION && frm[1] >= 10 &&
+		    frm[2] == IEEE80211_ELEMID_EXT_MULTI_LINK &&
+		    (frm[3] & IEEE80211_ML_CONTROL_TYPE_MASK) == IEEE80211_ML_CONTROL_TYPE_BASIC) {
+			/* RX may retain FCS bytes after the required authentication MLE. */
+			return frm[5] >= 7 && frm[5] <= frm[1] - 3 &&
+			    memcmp(frm + 6, peer_addr, IEEE80211_ADDR_LEN) == 0;
+		}
+		frm += size;
+		len -= size;
+	}
+	return 0;
+}
 
 #endif /* _NET80211_IEEE80211_H_ */
 

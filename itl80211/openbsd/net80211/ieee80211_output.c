@@ -1978,7 +1978,8 @@ ieee80211_get_auth(struct ieee80211com *ic, struct ieee80211_node *ni,
 
 	if (ieee80211_node_allow_wpa3(ic, ni) && status == IEEE80211_STATUS_SUCCESS) {
 		if (!ic->ic_sae_pwe_valid ||
-		    (ic->ic_xflags & IEEE80211_F_SAE_PWE) == 0)
+		    (ic->ic_xflags & IEEE80211_F_SAE_PWE) == 0 ||
+		    !ieee80211_sae_auth_current(ic, ni))
 			return NULL;
 		if (seq == IEEE80211_AUTH_OPEN_REQUEST &&
 		    ni->ni_sae.sae_state == SAE_STATE_NOTHING) {
@@ -2021,10 +2022,11 @@ ieee80211_get_auth(struct ieee80211com *ic, struct ieee80211_node *ni,
 	} else if (sae_confirm) {
 		sae_len = 2 + SHA256_DIGEST_LENGTH;
 	}
-	mbuf_gethdr(MBUF_DONTWAIT, MT_DATA, &m);
+	if ((sae_commit || sae_confirm) && ni->ni_sae.sae_auth.mld)
+		sae_len += IEEE80211_AUTH_MLE_LEN;
+	m = ieee80211_getmgmt(MBUF_DONTWAIT, MT_DATA, 2 * 3 + sae_len);
 	if (m == NULL)
 		goto sae_error;
-	mbuf_align_32(m, 2 * 3 + sae_len);
 	mbuf_pkthdr_setlen(m, 2 * 3 + sae_len);
 	mbuf_setlen(m, 2 * 3 + sae_len);
 	frm = mtod(m, u_int8_t *);
@@ -2052,6 +2054,8 @@ ieee80211_get_auth(struct ieee80211com *ic, struct ieee80211_node *ni,
 		}
 		frm = ieee80211_add_sae_confirm(frm, ni);
 	}
+	if ((sae_commit || sae_confirm) && ni->ni_sae.sae_auth.mld)
+		frm = ieee80211_add_auth_mle(frm, ni->ni_sae.sae_auth.ownaddr);
 	explicit_bzero(scalar, sizeof(scalar));
 	explicit_bzero(element_x, sizeof(element_x));
 	explicit_bzero(element_y, sizeof(element_y));
@@ -2127,6 +2131,9 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
 	int addeht = ic->ic_eht_cap_valid && addhe &&
 	    (ni->ni_flags & IEEE80211_NODE_EHTCAP);
 
+	if (ieee80211_node_allow_wpa3(ic, ni) &&
+	    !ieee80211_sae_auth_current(ic, ni))
+		return NULL;
 	m = ieee80211_getmgmt(MBUF_DONTWAIT, MT_DATA,
 	    2 + 2 +
 	    ((type == IEEE80211_FC0_SUBTYPE_REASSOC_REQ) ?

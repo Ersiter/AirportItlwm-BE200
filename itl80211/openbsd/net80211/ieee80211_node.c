@@ -1349,14 +1349,16 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
                 (ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) ? 1 : 0;
             if (ic->ic_sae_defer_active)
                 error = ic->ic_sae_pwe_valid ? 0 : -1;
+            else if (ieee80211_sae_select_auth(ic, ni, &ic->ic_sae_auth) != 0)
+                error = -1;
             else if (ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E)
                 error = ieee80211_sae_derive_password_elem(ic->ic_sae_pwe,
-                    ic->ic_sae_pt, ic->ic_myaddr, ni->ni_macaddr);
+                    ic->ic_sae_pt, ic->ic_sae_auth.ownaddr, ic->ic_sae_auth.peeraddr);
 #ifdef IEEE80211_SAE_HNP_COMPAT
             else
                 error = ieee80211_sae_derive_password_elem_hnp(
                     ic->ic_sae_pwe, ic->ic_sae_password,
-                    ic->ic_sae_password_len, ic->ic_myaddr, ni->ni_macaddr);
+                    ic->ic_sae_password_len, ic->ic_sae_auth.ownaddr, ic->ic_sae_auth.peeraddr);
 #else
             else
                 error = -1;
@@ -1366,6 +1368,7 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
                 ic->ic_sae_pwe_valid = 0;
                 ic->ic_xflags &= ~IEEE80211_F_SAE_PWE;
             } else {
+                ni->ni_sae.sae_auth = ic->ic_sae_auth;
                 ic->ic_sae_pwe_valid = 1;
                 ic->ic_xflags |= IEEE80211_F_SAE_PWE;
             }

@@ -31,6 +31,7 @@ static void clearWCLSAE(ieee80211com *ic)
 	++ic->ic_sae_generation;
     explicit_bzero(ic->ic_sae_pt, sizeof(ic->ic_sae_pt));
     explicit_bzero(ic->ic_sae_pwe, sizeof(ic->ic_sae_pwe));
+    explicit_bzero(&ic->ic_sae_auth, sizeof(ic->ic_sae_auth));
     explicit_bzero(ic->ic_sae_password, sizeof(ic->ic_sae_password));
     ic->ic_sae_password_len = 0;
     ic->ic_sae_pt_valid = ic->ic_sae_pwe_valid = 0;

@@ -595,6 +595,7 @@ struct ieee80211com {
 	u_int8_t		ic_psk[IEEE80211_PMK_LEN];
 	u_int8_t		ic_sae_pt[IEEE80211_SAE_MAX_ECC_PRIME_LEN * 2];
 	u_int8_t		ic_sae_pwe[IEEE80211_SAE_MAX_ECC_PRIME_LEN * 2];
+	struct ieee80211_sae_auth ic_sae_auth;
 	u_int8_t		ic_sae_password[63];
 	size_t			ic_sae_password_len;
 	int			ic_sae_pt_valid;
@@ -780,6 +781,54 @@ struct ieee80211_beacon_event {
     const uint8_t *frame;
     size_t frame_length;
 };
+static inline int
+ieee80211_sae_select_auth(const struct ieee80211com *ic,
+    const struct ieee80211_node *ni, struct ieee80211_sae_auth *auth)
+{
+	memset(auth, 0, sizeof(*auth));
+	IEEE80211_ADDR_COPY(auth->ownaddr, ic->ic_myaddr);
+	IEEE80211_ADDR_COPY(auth->peeraddr, ni->ni_macaddr);
+#ifdef AIRPORT_WCL
+	if (ic->ic_wcl_peer_is_mlo) {
+		if (!ic->ic_wcl_local_mlo_addrs_valid || !ic->ic_eht_cap_valid ||
+		    !ni->ni_mld_valid || !(ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E) ||
+		    !IEEE80211_ADDR_EQ(ni->ni_mld_addr, ic->ic_wcl_peer_mld_addr))
+			return -1;
+		auth->mld = 1;
+		IEEE80211_ADDR_COPY(auth->ownaddr, ic->ic_wcl_local_mlo_addrs[0]);
+		IEEE80211_ADDR_COPY(auth->peeraddr, ic->ic_wcl_peer_mld_addr);
+	}
+#endif
+	return 0;
+}
+
+static inline int
+ieee80211_sae_auth_current(const struct ieee80211com *ic,
+    const struct ieee80211_node *ni)
+{
+	struct ieee80211_sae_auth auth;
+	return ieee80211_sae_select_auth(ic, ni, &auth) == 0 &&
+	    memcmp(&auth, &ic->ic_sae_auth, sizeof(auth)) == 0 &&
+	    memcmp(&auth, &ni->ni_sae.sae_auth, sizeof(auth)) == 0 &&
+	    (ni->ni_sae.sae_state == SAE_STATE_NOTHING ||
+	    IEEE80211_ADDR_EQ(ni->ni_sae.sae_ownaddr, ic->ic_myaddr));
+}
+
+static inline const uint8_t *
+ieee80211_rsn_own_addr(const struct ieee80211com *ic,
+    const struct ieee80211_node *ni)
+{
+	return ni->ni_sae.sae_auth.mld ? ni->ni_sae.sae_auth.ownaddr : ic->ic_myaddr;
+}
+
+static inline const uint8_t *
+ieee80211_rsn_peer_addr(const struct ieee80211com *ic,
+    const struct ieee80211_node *ni)
+{
+	(void)ic;
+	return ni->ni_sae.sae_auth.mld ? ni->ni_sae.sae_auth.peeraddr : ni->ni_macaddr;
+}
+
 #endif
 
 

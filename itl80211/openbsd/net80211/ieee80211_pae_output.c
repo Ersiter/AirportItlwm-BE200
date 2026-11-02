@@ -88,8 +88,8 @@ ieee80211_send_eapol_key(struct ieee80211com *ic, mbuf_t m,
     /* no need to m_pullup here (ok by construction) */
     eh = mtod(m, struct ether_header *);
     eh->ether_type = htons(ETHERTYPE_PAE);
-    IEEE80211_ADDR_COPY(eh->ether_shost, ic->ic_myaddr);
-    IEEE80211_ADDR_COPY(eh->ether_dhost, ni->ni_macaddr);
+    IEEE80211_ADDR_COPY(eh->ether_shost, ieee80211_rsn_own_addr(ic, ni));
+    IEEE80211_ADDR_COPY(eh->ether_dhost, ieee80211_rsn_peer_addr(ic, ni));
     
     key = (struct ieee80211_eapol_key *)&eh[1];
     key->version = EAPOL_VERSION;
