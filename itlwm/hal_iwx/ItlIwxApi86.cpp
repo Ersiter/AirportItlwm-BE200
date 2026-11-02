@@ -178,6 +178,17 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
                 ++sc->sc_scan_unrestricted_fallback, 32);
         }
     }
+    /*
+     * See AirportWCL::scanBandRestricted: the framework builds its channel list
+     * from the cache this driver reported, and 6 GHz only enters that cache
+     * once the regulatory domain settles. Treating an empty 6 GHz list as "do
+     * not scan 6 GHz" is what keeps the whole band out of the Wi-Fi menu;
+     * upstream never decoded a 6 GHz list, so its restriction could not exclude
+     * the band at all.
+     */
+    const bool restrict6GHz = AirportWCL::scanBandRestricted(
+        ic->ic_wcl_scan_channels6GHz, explicitWclChannels,
+        ic->ic_wcl_join_requested || ic->ic_wcl_scan_ssid_length != 0);
 #endif
     const uint8_t channelLimit = MIN(nitems(cp->channel_config),
                                      sc->sc_capa_n_scan_channels);
@@ -243,18 +254,22 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
          * something points at it: an RNR hint, an explicit channel request, or
          * a directed scan for an SSID. Upstream trims scheduled scans to the
          * PSC grid for the same reason, and a full background sweep of all 59
-         * channels is several seconds of churn around a live association.
+         * channels is several seconds of churn around a live association. A
+         * scheduled scan keeps that trim even when the request named channels,
+         * because an unrestricted 6 GHz sweep is now reachable from one.
          */
+        const bool trimToPsc = bgscan ||
+            (!explicitWclChannels && scanActive && scanSSIDLength != 0);
         if (is6GHz && !AirportWCL::is6GHzPsc(channelNumber) && !rnrTarget &&
-            !explicitWclChannels && (bgscan || (scanActive && scanSSIDLength != 0)))
+            trimToPsc)
             continue;
 #endif
         if (!is2GHz && !is5GHz && !is6GHz)
             continue;
 #ifdef AIRPORT_WCL
         if (!AirportWCL::scanChannelSelected(ic->ic_wcl_scan_channels,
-                ic->ic_wcl_scan_channels6GHz, is6GHz, explicitWclChannels,
-                channelNumber))
+                ic->ic_wcl_scan_channels6GHz, is6GHz,
+                is6GHz ? restrict6GHz : explicitWclChannels, channelNumber))
             continue;
 #endif
         int channelBand = is6GHz ? 1 : 0;

@@ -406,6 +406,26 @@ inline bool scanChannelSelected(const uint8_t *channels, bool restricted, unsign
     return !restricted || (channel < 256 && (channels[channel / 8] & (1U << (channel % 8))));
 }
 
+/* True when the request named no channel of this band at all. */
+inline bool scanBandUnlisted(const uint8_t *channels) {
+    for (unsigned i = 0; i < 32; ++i)
+        if (channels[i] != 0)
+            return false;
+    return true;
+}
+
+/*
+ * A request that names no channel of a band says nothing about that band. The
+ * framework builds its list from the channel cache this driver reported, and
+ * 6 GHz only enters that cache once the regulatory domain settles, so an empty
+ * 6 GHz list is a symptom, not an instruction. A directed scan or a join is
+ * different: its list is the point of the request and stays authoritative.
+ */
+inline bool scanBandRestricted(const uint8_t *bandChannels, bool restricted,
+                               bool directed) {
+    return restricted && (directed || !scanBandUnlisted(bandChannels));
+}
+
 inline bool scanChannelSelected(const uint8_t *channels, const uint8_t *channels6GHz,
                                 bool is6GHz, bool restricted, unsigned channel) {
     return scanChannelSelected(is6GHz ? channels6GHz : channels, restricted, channel);

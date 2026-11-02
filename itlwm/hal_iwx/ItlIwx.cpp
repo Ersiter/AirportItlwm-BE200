@@ -8747,7 +8747,16 @@ iwx_umac_scan_fill_channels(struct iwx_softc *sc,
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_channel *c;
     uint8_t nchan;
-    
+
+#ifdef AIRPORT_WCL
+    const bool wclRestricted = ic->ic_wcl_scan_restricted &&
+        (ic->ic_wcl_scan_requested || (ic->ic_wcl_join_requested && !bgscan));
+    /* See AirportWCL::scanBandRestricted for why the band matters. */
+    const bool wclRestrict6GHz = AirportWCL::scanBandRestricted(
+        ic->ic_wcl_scan_channels6GHz, wclRestricted,
+        ic->ic_wcl_join_requested || ic->ic_wcl_scan_ssid_length != 0);
+#endif
+
     for (nchan = 0, c = &ic->ic_channels[1];
          c <= &ic->ic_channels[IEEE80211_CHAN_MAX] &&
          nchan < sc->sc_capa_n_scan_channels;
@@ -8759,9 +8768,12 @@ iwx_umac_scan_fill_channels(struct iwx_softc *sc,
 #ifdef AIRPORT_WCL
         if (!AirportWCL::scanChannelSelected(ic->ic_wcl_scan_channels,
                 ic->ic_wcl_scan_channels6GHz, IEEE80211_IS_CHAN_6GHZ(c),
-                ic->ic_wcl_scan_restricted && (ic->ic_wcl_scan_requested ||
-                    (ic->ic_wcl_join_requested && !bgscan)),
+                IEEE80211_IS_CHAN_6GHZ(c) ? wclRestrict6GHz : wclRestricted,
                 ieee80211_chan2number(ic, c)))
+            continue;
+        /* A scheduled 6 GHz sweep stays on the PSC grid. */
+        if (IEEE80211_IS_CHAN_6GHZ(c) && bgscan &&
+            !AirportWCL::is6GHzPsc(ieee80211_chan2number(ic, c)))
             continue;
 #endif
         
