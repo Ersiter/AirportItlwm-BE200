@@ -1260,14 +1260,6 @@ ieee80211_add_sae_commit(u_int8_t *frm, const struct ieee80211_node *ni)
 		memcpy(frm, ni->ni_sae.sae_token, ni->ni_sae.sae_token_len);
 		frm += ni->ni_sae.sae_token_len;
 	}
-	/*
-	 * An H2E Commit must carry the RSNXE so the peer can tell which PWE
-	 * method produced the element; without it an H2E-only AP rejects the
-	 * Commit with status 126.
-	 */
-	if (ni->ni_sae.sae_h2e) {
-		frm = ieee80211_add_rsnxe_h2e(frm);
-	}
 	return frm;
 }
 
@@ -2026,8 +2018,6 @@ ieee80211_get_auth(struct ieee80211com *ic, struct ieee80211_node *ni,
 		if (ni->ni_sae.sae_token_len != 0)
 			sae_len += ni->ni_sae.sae_token_len +
 			    (ni->ni_sae.sae_h2e ? 3 : 0);
-		if (ni->ni_sae.sae_h2e)
-			sae_len += 3;	/* RSNXE declaring H2E */
 	} else if (sae_confirm) {
 		sae_len = 2 + SHA256_DIGEST_LENGTH;
 	}

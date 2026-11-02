@@ -536,6 +536,44 @@ test_shared_secret_and_keys(void)
 }
 
 static void
+test_commit_output(void)
+{
+    struct ieee80211_node ni = {};
+    uint8_t frame[512], expected[98] = {19, 0};
+    memset(ni.ni_sae.sae_scalar, 0x11, 32);
+    memset(ni.ni_sae.sae_element_x, 0x22, 32);
+    memset(ni.ni_sae.sae_element_y, 0x33, 32);
+    memcpy(expected + 2, ni.ni_sae.sae_scalar, 32);
+    memcpy(expected + 34, ni.ni_sae.sae_element_x, 32);
+    memcpy(expected + 66, ni.ni_sae.sae_element_y, 32);
+    for (int h2e = 0; h2e != 2; ++h2e) {
+        ni.ni_sae.sae_h2e = h2e;
+        CHECK("Commit TX: token-free body is exactly 98 bytes",
+            ieee80211_add_sae_commit(frame, &ni) == frame + sizeof(expected));
+        CHECK("Commit TX: group, scalar and coordinates preserved",
+            memcmp(frame, expected, sizeof(expected)) == 0);
+    }
+    ni.ni_sae.sae_token_len = 4;
+    memcpy(ni.ni_sae.sae_token, "tokn", 4);
+    ni.ni_sae.sae_h2e = 0;
+    CHECK("Commit TX: HnP token precedes scalar",
+        ieee80211_add_sae_commit(frame, &ni) == frame + 102 &&
+        memcmp(frame + 2, "tokn", 4) == 0 &&
+        memcmp(frame + 6, expected + 2, 96) == 0);
+    ni.ni_sae.sae_h2e = 1;
+    CHECK("Commit TX: H2E token follows fixed body in its container",
+        ieee80211_add_sae_commit(frame, &ni) == frame + 105 &&
+        memcmp(frame, expected, sizeof(expected)) == 0 &&
+        frame[98] == 255 && frame[99] == 5 && frame[100] == 93 &&
+        memcmp(frame + 101, "tokn", 4) == 0);
+    ni.ni_sae.sae_token_len = IEEE80211_SAE_H2E_TOKEN_MAX_LEN;
+    memset(ni.ni_sae.sae_token, 0x77, ni.ni_sae.sae_token_len);
+    CHECK("Commit TX: maximum H2E token encodes a 255-byte IE",
+        ieee80211_add_sae_commit(frame, &ni) == frame + 355 &&
+        frame[99] == 255 && frame[354] == 0x77);
+}
+
+static void
 test_confirm_retransmission(void)
 {
     struct ieee80211_node ni = {};
@@ -618,6 +656,7 @@ main(void)
     test_h2e_pwe();
     test_sae_policy();
     test_shared_secret_and_keys();
+    test_commit_output();
     test_confirm_retransmission();
     test_confirm();
     printf("\n%d checks, %d failures\n", checks, failures);

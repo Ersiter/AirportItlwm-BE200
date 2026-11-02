@@ -14,6 +14,8 @@ mkdir -p "$out"
     sed -n '/^struct ieee80211_sae {/,/^};/p' "$root/itl80211/openbsd/net80211/ieee80211_node.h"
     printf '\nstruct ieee80211_node { struct ieee80211_sae ni_sae; };\nstatic u_int8_t *\n'
     sed -n '/^ieee80211_add_sae_confirm(/,/^}/p' "$root/itl80211/openbsd/net80211/ieee80211_output.c"
+    printf '\nstatic u_int8_t *\n'
+    sed -n '/^ieee80211_add_sae_commit(/,/^}/p' "$root/itl80211/openbsd/net80211/ieee80211_output.c"
 } > "$out/sae_confirm_output.inc"
 
 # Everything is compiled as C++: ec_p256_m31.c and i31.c use static_cast, and a
