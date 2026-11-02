@@ -1620,6 +1620,23 @@ ieee80211_auth_sae_timeout(struct ieee80211com *ic, struct ieee80211_node *ni,
 {
 	u_int16_t retry_seq;
 
+	/*
+	 * PWE = val*PT with val hashed from both MAC addresses, so the elements we
+	 * cached are only ours while the transmitter address is the one they were
+	 * derived for. Once the private address rotates, every replay carries the
+	 * old elements under a new address; the AP derives a different element and
+	 * answers CHALLENGE_FAIL however many times we repeat it. Abandon this
+	 * exchange so the join starts over with the current address.
+	 */
+	if (ni->ni_sae.sae_state != SAE_STATE_NOTHING &&
+	    !IEEE80211_ADDR_EQ(ni->ni_sae.sae_ownaddr, ic->ic_myaddr)) {
+#ifdef AIRPORT_WCL
+		if (ic->ic_wcl_join_requested)
+			ic->ic_wcl_sae_addr_restarts++;
+#endif
+		ieee80211_auth_sae_failure(ic, ni);
+		return 1;
+	}
 	if (ni->ni_sae.sae_state == SAE_STATE_COMMITTED)
 		retry_seq = IEEE80211_AUTH_OPEN_REQUEST;
 	else if (ni->ni_sae.sae_state == SAE_STATE_CONFIRMED)

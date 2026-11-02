@@ -497,6 +497,7 @@ struct ieee80211com {
     uint32_t ic_wcl_sae_token_retries;
     uint32_t ic_wcl_sae_commit_retries;
     uint32_t ic_wcl_sae_confirm_replays;
+    uint32_t ic_wcl_sae_addr_restarts;
     uint32_t ic_wcl_sae_failures;
     uint32_t ic_wcl_rsnxe_mismatch;
     uint16_t ic_wcl_sae_last_seq;

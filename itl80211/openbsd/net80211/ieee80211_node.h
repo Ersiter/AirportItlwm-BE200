@@ -223,6 +223,10 @@ struct ieee80211_sae {
 	size_t sae_token_len;
 	int sae_state;
 	int sae_h2e;		/* PWE derived with hash-to-element */
+	/* Transmitter address the commit elements were derived for. The element is
+	 * a function of both MAC addresses, so it stops being ours as soon as the
+	 * private address rotates. */
+	uint8_t sae_ownaddr[IEEE80211_ADDR_LEN];
 	uint16_t sae_send_confirm;
 	uint16_t sae_peer_send_confirm;
 };

@@ -12040,6 +12040,18 @@ iwx_sae_join_task(void *psc)
                     controller->ic_sae_pwe_valid = 0;
                     controller->ic_xflags &= ~IEEE80211_F_SAE_PWE;
                     ieee80211_new_state(controller, IEEE80211_S_SCAN, -1);
+                } else if (softc->sc_sae_join_generation == w->request_generation &&
+                    !(softc->sc_flags & IWX_FLAG_SHUTDOWN) &&
+                    controller->ic_state == w->expected_state &&
+                    (controller->ic_if.if_flags & IFF_UP)) {
+                    /*
+                     * Still the newest request and the state machine is where we
+                     * left it, so nothing else will ever issue this join. The
+                     * usual cause is the private address rotating while the
+                     * element was being derived; start over from the scan so it
+                     * is derived again for the address that is current now.
+                     */
+                    ieee80211_new_state(controller, IEEE80211_S_SCAN, -1);
                 }
                 splx(s);
                 return kIOReturnSuccess;

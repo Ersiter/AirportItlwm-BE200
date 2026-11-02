@@ -74,7 +74,7 @@ void AirportItlwmSkywalkInterface::publishWCLAuthDiagnostic(const char *event, m
     auto ic = fHalService ? fHalService->get80211Controller() : nullptr;
     char value[1280];
     snprintf(value, sizeof(value),
-        "seq=%u join_attempt=%u event=%s ic_state=%u assoc=%u first_beacon=%u native_link_ready=%u user_eapol_gate_ready=%u user_eapol_queued=%u wcl_link_up=%u assoc_events=%u first_beacon_events=%u link_events=%u join_timeouts=%u join_timeout_ms=%u user_eapol_rx_deferred=%u user_eapol_rx_delivered=%u user_eapol_rx_dropped=%u user_eapol_rx_direct=%u user_eapol_gate_drops=%u user_eapol_len=%u user_eapol_type=%u eap_code=%u eap_id=%u auth_rx=%u sae_rx=%u sae_token_retries=%u sae_commit_retries=%u sae_confirm_replays=%u sae_failures=%u sae_last_seq=%u sae_last_status=%u sae_last_rx_state=%u sae_state=%u sae_h2e=%u sae_rx_len=%u sae_rx_h2e=%u sae_pt_valid=%u sae_pwe_valid=%u rsnxe_mismatch=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x src=%02x:%02x:%02x:%02x:%02x:%02x dst=%02x:%02x:%02x:%02x:%02x:%02x",
+        "seq=%u join_attempt=%u event=%s ic_state=%u assoc=%u first_beacon=%u native_link_ready=%u user_eapol_gate_ready=%u user_eapol_queued=%u wcl_link_up=%u assoc_events=%u first_beacon_events=%u link_events=%u join_timeouts=%u join_timeout_ms=%u user_eapol_rx_deferred=%u user_eapol_rx_delivered=%u user_eapol_rx_dropped=%u user_eapol_rx_direct=%u user_eapol_gate_drops=%u user_eapol_len=%u user_eapol_type=%u eap_code=%u eap_id=%u auth_rx=%u sae_rx=%u sae_token_retries=%u sae_commit_retries=%u sae_confirm_replays=%u sae_addr_restarts=%u sae_failures=%u sae_last_seq=%u sae_last_status=%u sae_last_rx_state=%u sae_state=%u sae_h2e=%u sae_rx_len=%u sae_rx_h2e=%u sae_pt_valid=%u sae_pwe_valid=%u rsnxe_mismatch=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x src=%02x:%02x:%02x:%02x:%02x:%02x dst=%02x:%02x:%02x:%02x:%02x:%02x",
         ++wclAuthDiagnosticSequence, ic ? ic->ic_wcl_join_attempt : 0, event,
         ic ? static_cast<unsigned>(ic->ic_state) : UINT32_MAX,
         unsigned(assocNotified), unsigned(firstBeaconNotified), unsigned(wclNativeLinkReady),
@@ -87,6 +87,7 @@ void AirportItlwmSkywalkInterface::publishWCLAuthDiagnostic(const char *event, m
         ic ? ic->ic_wcl_sae_token_retries : 0,
         ic ? ic->ic_wcl_sae_commit_retries : 0,
         ic ? ic->ic_wcl_sae_confirm_replays : 0,
+        ic ? ic->ic_wcl_sae_addr_restarts : 0,
         ic ? ic->ic_wcl_sae_failures : 0,
         ic ? ic->ic_wcl_sae_last_seq : 0, ic ? ic->ic_wcl_sae_last_status : 0,
         ic ? ic->ic_wcl_sae_last_state : 0,
@@ -1313,6 +1314,7 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
     ic->ic_wcl_auth_rx_count = ic->ic_wcl_sae_rx_count = 0;
     ic->ic_wcl_sae_token_retries = 0;
     ic->ic_wcl_sae_commit_retries = ic->ic_wcl_sae_confirm_replays = 0;
+    ic->ic_wcl_sae_addr_restarts = 0;
     ic->ic_wcl_sae_failures = 0;
     wclEapolRxDeferred = wclEapolRxDelivered = wclEapolRxDropped = 0;
     wclEapolRxDirect = wclEapolRxGateDrops = 0;

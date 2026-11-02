@@ -2045,6 +2045,8 @@ ieee80211_get_auth(struct ieee80211com *ic, struct ieee80211_node *ni,
 		memcpy(ni->ni_sae.sae_element_x, element_x, sizeof(element_x));
 		memcpy(ni->ni_sae.sae_element_y, element_y, sizeof(element_y));
 		memcpy(ni->ni_sae.sae_rand, rand, sizeof(rand));
+		/* These elements belong to this transmitter address only. */
+		IEEE80211_ADDR_COPY(ni->ni_sae.sae_ownaddr, ic->ic_myaddr);
 		ni->ni_sae.sae_state |= SAE_EVENT_COMMIT_SENT;
 		frm = ieee80211_add_sae_commit(frm, ni);
 	} else if (sae_commit == 2) {
