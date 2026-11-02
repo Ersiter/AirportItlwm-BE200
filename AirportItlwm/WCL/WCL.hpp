@@ -386,9 +386,7 @@ struct ScanRequest {
     uint8_t channels6GHz[32];
 };
 
-// RX buffers may carry trailing FCS or DMA padding after the IE chain.
-// Return the length of the strictly parsed IE prefix so callers can forward
-// the valid elements without rejecting the whole frame.
+// A caller may allow a bounded RX trailer after the complete IE chain.
 inline size_t validIEPrefix(const uint8_t *data, size_t length, size_t tailAllowance = 8) {
     if (!data || length > 2048)
         return 0;
@@ -397,7 +395,7 @@ inline size_t validIEPrefix(const uint8_t *data, size_t length, size_t tailAllow
         size_t remaining = length - offset;
         if (remaining <= tailAllowance)
             break;
-        if (size_t(data[offset + 1]) + 2 > remaining)
+        if (remaining < 2 || size_t(data[offset + 1]) + 2 > remaining)
             return 0;
         offset += size_t(data[offset + 1]) + 2;
     }

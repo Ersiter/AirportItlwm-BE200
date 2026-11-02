@@ -718,11 +718,7 @@ void AirportItlwmSkywalkInterface::completeWCLScan()
 void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, const uint8_t *ies, size_t length)
 {
     instance->pciNub->setProperty("AirportItlwm-WCLBeaconEvents", ++wclBeaconEvents, 32);
-    /*
-     * No FCS allowance: the event carries the element chain already trimmed to
-     * the frame's own length, so a short element at the end is real data and
-     * must not be mistaken for a trailer.
-     */
+    // The event ends at the last complete element parsed by net80211.
     size_t iePrefix = AirportWCL::validIEPrefix(ies, length, 0);
     instance->pciNub->setProperty("AirportItlwm-WCLBeaconRawIELength", (uint32_t)length, 32);
     instance->pciNub->setProperty("AirportItlwm-WCLBeaconIEPrefix", (uint32_t)iePrefix, 32);
