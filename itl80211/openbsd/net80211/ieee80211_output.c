@@ -1272,10 +1272,12 @@ ieee80211_add_sae_commit(u_int8_t *frm, const struct ieee80211_node *ni)
 }
 
 static u_int8_t *
-ieee80211_add_sae_confirm(u_int8_t *frm, const struct ieee80211_node *ni)
+ieee80211_add_sae_confirm(u_int8_t *frm, struct ieee80211_node *ni)
 {
 	HMAC_SHA256_CTX ctx;
 
+	if (ni->ni_sae.sae_send_confirm < 0xffff)
+		ni->ni_sae.sae_send_confirm++;
 	HMAC_SHA256_Init(&ctx, ni->ni_sae.sae_kck, sizeof(ni->ni_sae.sae_kck));
 	LE_WRITE_2(frm, ni->ni_sae.sae_send_confirm);
 	HMAC_SHA256_Update(&ctx, frm, 2);
@@ -2057,8 +2059,6 @@ ieee80211_get_auth(struct ieee80211com *ic, struct ieee80211_node *ni,
 			memcpy(ni->ni_sae.sae_pmk, pmk, sizeof(pmk));
 			memcpy(ni->ni_sae.sae_pmkid, pmkid, sizeof(pmkid));
 			ni->ni_sae.sae_state |= SAE_EVENT_CONFIRM_SENT;
-			if (ni->ni_sae.sae_send_confirm < 0xffff)
-				ni->ni_sae.sae_send_confirm++;
 		}
 		frm = ieee80211_add_sae_confirm(frm, ni);
 	}

@@ -23,6 +23,7 @@
 
 #include <net80211/ieee80211.h>
 #include <net80211/ieee80211_var.h>
+#include "sae_confirm_output.inc"
 
 /* Declarations live in the driver only; the whole test is built as C++. */
 uint16_t ieee80211_sae_verify_commit_elem(const uint8_t **scalar,
@@ -535,6 +536,51 @@ test_shared_secret_and_keys(void)
 }
 
 static void
+test_confirm_retransmission(void)
+{
+    struct ieee80211_node ni = {};
+    uint8_t own_point[65], peer_point[65];
+    uint8_t first[34], retry[34], expected[32];
+
+    make_scalar(ni.ni_sae.sae_scalar, 0x11);
+    make_scalar(ni.ni_sae.sae_peer_scalar, 0x22);
+    point_for(ni.ni_sae.sae_scalar, own_point);
+    point_for(ni.ni_sae.sae_peer_scalar, peer_point);
+    memcpy(ni.ni_sae.sae_element_x, own_point + 1, 32);
+    memcpy(ni.ni_sae.sae_element_y, own_point + 33, 32);
+    memcpy(ni.ni_sae.sae_peer_element_x, peer_point + 1, 32);
+    memcpy(ni.ni_sae.sae_peer_element_y, peer_point + 33, 32);
+    memset(ni.ni_sae.sae_kck, 0x5a, sizeof(ni.ni_sae.sae_kck));
+
+    CHECK("Confirm TX: frame body is 34 bytes",
+        ieee80211_add_sae_confirm(first, &ni) == first + sizeof(first));
+    CHECK("Confirm TX: first counter is one", LE_READ_2(first) == 1);
+    spec_confirm(expected, ni.ni_sae.sae_kck, first,
+        ni.ni_sae.sae_scalar, own_point, ni.ni_sae.sae_peer_scalar, peer_point);
+    CHECK("Confirm TX: initial verifier covers the transmitted counter",
+        memcmp(first + 2, expected, sizeof(expected)) == 0);
+
+    ieee80211_add_sae_confirm(retry, &ni);
+    CHECK("Confirm TX: retry advances the counter", LE_READ_2(retry) == 2);
+    CHECK("Confirm TX: retry changes the verifier",
+        memcmp(first + 2, retry + 2, sizeof(expected)) != 0);
+    spec_confirm(expected, ni.ni_sae.sae_kck, retry,
+        ni.ni_sae.sae_scalar, own_point, ni.ni_sae.sae_peer_scalar, peer_point);
+    CHECK("Confirm TX: retry verifier covers the new counter",
+        memcmp(retry + 2, expected, sizeof(expected)) == 0);
+
+    ni.ni_sae.sae_send_confirm = 0xff;
+    ieee80211_add_sae_confirm(retry, &ni);
+    CHECK("Confirm TX: counter carry is little endian",
+        retry[0] == 0 && retry[1] == 1);
+    ni.ni_sae.sae_send_confirm = 0xfffe;
+    ieee80211_add_sae_confirm(first, &ni);
+    ieee80211_add_sae_confirm(retry, &ni);
+    CHECK("Confirm TX: counter saturates at 65535",
+        LE_READ_2(first) == 0xffff && LE_READ_2(retry) == 0xffff);
+}
+
+static void
 test_confirm(void)
 {
     uint8_t own_scalar[SCALAR_LEN], peer_scalar[SCALAR_LEN];
@@ -572,6 +618,7 @@ main(void)
     test_h2e_pwe();
     test_sae_policy();
     test_shared_secret_and_keys();
+    test_confirm_retransmission();
     test_confirm();
     printf("\n%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
