@@ -117,5 +117,7 @@ with tempfile.TemporaryDirectory(prefix='itlwm-sections-') as folder:
     subprocess.run(shlex.split(os.environ.get('CXX', 'c++')) + [
         '-std=c++14', '-Wall', '-Wextra', '-Werror', str(test), '-o', str(binary)
     ], check=True)
-    for name in ['iwlwifi-gl-c0-fm-c0-86.ucode', 'iwlwifi-so-a0-gf-a0-68.ucode']:
+    for name in ['iwlwifi-gl-c0-fm-c0-86.ucode', 'iwlwifi-gl-c0-fm-c0-92.ucode',
+                 'iwlwifi-bz-b0-fm-c0-92.ucode', 'iwlwifi-bz-b0-gf-a0-92.ucode',
+                 'iwlwifi-so-a0-gf-a0-68.ucode']:
         subprocess.run([str(binary), str(root / 'itlwm/firmware' / name)], check=True)

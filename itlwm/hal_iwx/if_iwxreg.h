@@ -1065,6 +1065,9 @@ enum iwx_fw_ini_allocation_id {
 #define IWX_RADIO_REG_SYS_MANUAL_DFT_0        0xad4078
 #define IWX_RFIC_REG_RD                0xad0470
 #define IWX_WFPM_CTRL_REG            0xa03030
+#define IWX_CNVI_AUX_MISC_CHIP       0xa200b0
+#define IWX_SD_REG_VER_GEN2          0xa2b800
+#define IWX_WFPM_OTP_CFG1_ADDR       0xa03098
 #define IWX_WFPM_AUX_CTL_AUX_IF_MAC_OWNER_MSK    0x08000000
 #define IWX_ENABLE_WFPM                0x80000000
 

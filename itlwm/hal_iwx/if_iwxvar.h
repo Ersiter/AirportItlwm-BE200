@@ -126,6 +126,7 @@
 #define IWL_CFG_MAC_TYPE_MA        0x44
 #define IWL_CFG_MAC_TYPE_BZ        0x46
 #define IWL_CFG_MAC_TYPE_GL        0x47
+#define IWL_CFG_MAC_TYPE_BZ_W      0x4B
 
 #define IWL_CFG_RF_TYPE_TH        0x105
 #define IWL_CFG_RF_TYPE_TH1        0x108
@@ -226,8 +227,8 @@ struct iwx_tx_radiotap_header {
 	 (1 << IEEE80211_RADIOTAP_RATE) |				\
 	 (1 << IEEE80211_RADIOTAP_CHANNEL))
 
-/* GL-86 contains 70 sections, including the CPU and paging separators. */
-#define IWX_UCODE_SECT_MAX 70
+/* BZ FM-92 contains 73 sections, including the CPU and paging separators. */
+#define IWX_UCODE_SECT_MAX 73
 
 /*
  * fw_status is used to determine if we've already parsed the firmware file
@@ -620,6 +621,8 @@ struct iwx_setkey_arg {
 };
 #define IWX_SETKEY_NKEYS 4
 
+#include "iwx_be_config.h"
+
 struct iwx_softc {
 	struct device sc_dev;
 	struct ieee80211com sc_ic;
@@ -802,6 +805,8 @@ struct iwx_softc {
 	int sc_cap_off; /* PCIe caps */
 
 	const char *sc_fwname;
+    IwxBE::Selection sc_be;
+    unsigned sc_fw_api;
 	struct iwx_fw_info sc_fw;
 	struct iwx_dma_info fw_mon;
 	int sc_fw_phy_config;

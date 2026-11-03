@@ -83,10 +83,10 @@ probe(IOService *provider, SInt32 *score)
     if (isMatch) {
         XYLog("%s Found\n", __FUNCTION__);
 #ifdef AIRPORT_WCL
-        if (device->configRead16(kIOPCIConfigDeviceID) == 0x272b) {
+        if (IwxBE::pciFamily(device->configRead16(kIOPCIConfigDeviceID)) != IwxBE::None) {
             IOReturn ret = device->configureInterrupts(kIOInterruptTypePCIMessagedX, 1, 1, 0);
             if (ret != kIOReturnSuccess) {
-                XYLog("BE200 MSI-X allocation failed: 0x%x\n", ret);
+                XYLog("BE MSI-X allocation failed: 0x%x\n", ret);
                 fHalService->release();
                 fHalService = NULL;
                 return NULL;

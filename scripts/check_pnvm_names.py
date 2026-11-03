@@ -1,5 +1,6 @@
 """Resolve the driver's generated PNVM names against actual firmware resources."""
 import os
+import json
 import re
 import shlex
 import subprocess
@@ -13,6 +14,10 @@ function = re.search(r'static inline const char \*reverse_strchr\(.*?\n}', heade
 start = source.index('    strlcpy(fwname_copy, sc->sc_fwname')
 end = source.index('    fwData = getFWDescByName(pnvm_name);', start)
 fragment = source[start:end]
+be = (root / 'itlwm/hal_iwx/iwx_be_config.h').read_text()
+family = re.search(r'enum Family \{[^}]+\};', be).group()
+resources_manifest = json.loads((root / 'tests/be_firmware.json').read_text())
+be_names = {item['name']: item['pnvm'] for item in resources_manifest if item['name'].endswith('.ucode')}
 program = r'''
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,13 +33,14 @@ static size_t strlcpy(char *dest, const char *src, size_t capacity) {
     return length;
 }
 #endif
+namespace IwxBE { FAMILY }
 FUNCTION
 #define strrchr(x, y) reverse_strchr((x), (y))
 static void require(int success, const char *message) {
     if (!success) { fprintf(stderr, "%s\n", message); exit(1); }
 }
 int main(int argc, char **argv) {
-    require(argc == 2, "expected a firmware name or --search-contract");
+    require(argc == 2 || argc == 3, "expected firmware name, optional paired PNVM, or --search-contract");
     if (strcmp(argv[1], "--search-contract") == 0) {
         const char *text = "-a--";
         const char *empty = "";
@@ -54,8 +60,9 @@ int main(int argc, char **argv) {
             snprintf(value, sizeof(value), "%s", name);
         }
     } property;
-    struct { const char *sc_fwname; pci_property *sc_pcitag; }
-        state = {argv[1], &property}, *sc = &state;
+    struct selection { IwxBE::Family family; const char *pnvm; };
+    struct { const char *sc_fwname; pci_property *sc_pcitag; selection sc_be; }
+        state = {argv[1], &property, {argc == 3 ? IwxBE::GL : IwxBE::None, argc == 3 ? argv[2] : nullptr}}, *sc = &state;
     char fwname_copy[64], pnvm_name[64];
     const char *find;
 FRAGMENT
@@ -65,7 +72,7 @@ FRAGMENT
 out:
     return 1;
 }
-'''.replace('FUNCTION', function).replace('FRAGMENT', fragment)
+'''.replace('FAMILY', family).replace('FUNCTION', function).replace('FRAGMENT', fragment)
 
 with tempfile.TemporaryDirectory(prefix='itlwm-pnvm-name-') as folder:
     folder = Path(folder)
@@ -75,11 +82,12 @@ with tempfile.TemporaryDirectory(prefix='itlwm-pnvm-name-') as folder:
         '-std=c++17', '-Wall', '-Wextra', str(test), '-o', str(binary)
     ], check=True)
     firmware_names = set(re.findall(r'"(iwlwifi-[^"]+\.ucode)"', source))
+    firmware_names.update(be_names)
     resources = sorted((root / 'itlwm/firmware').glob('*.pnvm'))
     assert any(path.name == 'iwlwifi-gl-c0-fm-c0.pnvm' for path in resources)
     def expected_resource(name):
-        if name == 'iwlwifi-gl-c0-fm-c0-92.ucode':
-            return 'iwlwifi-gl-c0-fm-c0-92.pnvm'
+        if name in be_names:
+            return be_names[name]
         return name.rsplit('-', 1)[0] + '.pnvm'
     assert 'iwlwifi-gl-c0-fm-c0-92.ucode' in firmware_names
     assert any(path.name == 'iwlwifi-gl-c0-fm-c0-92.pnvm' for path in resources)
@@ -87,7 +95,7 @@ with tempfile.TemporaryDirectory(prefix='itlwm-pnvm-name-') as folder:
         candidates = [name for name in firmware_names if expected_resource(name) == resource.name]
         assert candidates, f'no configured firmware for {resource.name}'
         for firmware in candidates:
-            generated = subprocess.check_output([str(binary), firmware], text=True).strip()
+            generated = subprocess.check_output([str(binary), firmware] + ([be_names[firmware]] if firmware in be_names else []), text=True).strip()
             assert generated == resource.name, f'{firmware}: generated {generated}, expected {resource.name}'
             assert (resource.parent / generated).is_file(), f'missing resource: {generated}'
             print(f'{firmware} -> {generated}: resource found', flush=True)

@@ -243,6 +243,7 @@ public:
     void    iwx_pnvm_free(struct iwx_fw_info *);
     void    iwx_free_pnvm_dma(struct iwx_softc *);
     int    iwx_read_firmware(struct iwx_softc *);
+    int    iwx_read_firmware_file(struct iwx_softc *);
     int    iwx_read_pnvm(struct iwx_softc *);
     int     iwx_load_pnvm(struct iwx_softc *);
     int     iwx_pnvm_handle_section(struct iwx_softc *, const uint8_t *, size_t);

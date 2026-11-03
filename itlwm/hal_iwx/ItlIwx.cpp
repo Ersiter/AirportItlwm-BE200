@@ -1762,6 +1762,73 @@ iwx_free_pnvm_dma(struct iwx_softc *sc)
 int ItlIwx::
 iwx_read_firmware(struct iwx_softc *sc)
 {
+    if (sc->sc_be.family == IwxBE::None)
+        return iwx_read_firmware_file(sc);
+    if (sc->sc_fw.fw_status == IWX_FW_STATUS_DONE)
+        return 0;
+    if (sc->sc_fw.fw_status == IWX_FW_STATUS_INPROGRESS)
+        return EBUSY;
+
+    unsigned mac = CSR_HW_REV_TYPE(sc->sc_hw_rev);
+    unsigned step = IWX_CSR_HW_REV_STEP(sc->sc_hw_rev);
+    if (sc->sc_be.family == IwxBE::BZ) {
+        if (!iwx_nic_lock(sc))
+            return EBUSY;
+        uint32_t control = iwx_read_umac_prph(sc, IWX_WFPM_CTRL_REG);
+        iwx_write_umac_prph(sc, IWX_WFPM_CTRL_REG, control | 0x80000000);
+        uint32_t cnvi = iwx_read_umac_prph(sc, IWX_CNVI_AUX_MISC_CHIP);
+        step = IwxBE::bzStep(mac, cnvi);
+        if (!CSR_HW_RFID_TYPE(sc->sc_hw_rf_id)) {
+            uint32_t crf = iwx_read_prph(sc, IWX_SD_REG_VER_GEN2);
+            uint32_t otp = iwx_read_umac_prph(sc, IWX_WFPM_OTP_CFG1_ADDR);
+            sc->sc_hw_rf_id = IwxBE::mappedRF(crf, cnvi, otp);
+        }
+        iwx_nic_unlock(sc);
+        if (step > 3)
+            return ENOTSUP;
+        sc->sc_hw_rev = (sc->sc_hw_rev & ~0xc) | (step << 2);
+        sc->sc_pcitag->setProperty("AirportItlwm-CNVIRevision", cnvi, 32);
+        sc->sc_pcitag->setProperty("AirportItlwm-RFID", sc->sc_hw_rf_id, 32);
+    }
+    if (!IwxBE::makePrefix(sc->sc_be, mac, step, sc->sc_hw_rf_id)) {
+        XYLog("BE unsupported MAC/RF: rev=0x%x rfid=0x%x\n", sc->sc_hw_rev, sc->sc_hw_rf_id);
+        return ENOTSUP;
+    }
+    sc->sc_pcitag->setProperty("AirportItlwm-FirmwarePrefix", sc->sc_be.prefix);
+    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareAPILimit", sc->sc_be.max_api, 32);
+    int err = ENOENT;
+    for (unsigned index = 0; IwxBE::candidate(sc->sc_be, index); ++index) {
+        sc->sc_fwname = sc->sc_be.firmware;
+        XYLog("BE firmware candidate %s PNVM %s\n", sc->sc_fwname, sc->sc_be.pnvm);
+        if (getFWDescByName(sc->sc_fwname) == NULL || getFWDescByName(sc->sc_be.pnvm) == NULL) {
+            XYLog("BE candidate resource pair unavailable\n");
+            continue;
+        }
+        err = iwx_read_firmware_file(sc);
+        if (err == ENOMEM || err == EBUSY)
+            return err;
+        if (!err && (sc->sc_fw_api != sc->sc_be.selected_api ||
+            !IwxBE::compatible(sc->sc_fw_api,
+                isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_MLD_API_SUPPORT),
+                [this, sc](unsigned group, unsigned cmd) { return iwx_lookup_cmd_ver(sc, group, cmd); }))) {
+            XYLog("BE firmware API/command ABI rejected: %s\n", sc->sc_fwname);
+            iwx_fw_info_free(&sc->sc_fw);
+            sc->sc_fw.fw_status = IWX_FW_STATUS_NONE;
+            err = ENOTSUP;
+        }
+        if (!err) {
+            sc->sc_pcitag->setProperty("AirportItlwm-FirmwareAPI", sc->sc_fw_api, 32);
+            sc->sc_pcitag->setProperty("AirportItlwm-PNVMName", sc->sc_be.pnvm);
+            sc->sc_pcitag->setProperty("AirportItlwm-FirmwareCandidateIndex", index, 32);
+            return 0;
+        }
+    }
+    return err;
+}
+
+int ItlIwx::
+iwx_read_firmware_file(struct iwx_softc *sc)
+{
     struct iwx_fw_info *fw = &sc->sc_fw;
     struct iwx_tlv_ucode_header *uhdr;
     struct iwx_ucode_tlv tlv;
@@ -1815,6 +1882,7 @@ iwx_read_firmware(struct iwx_softc *sc)
     memset(sc->sc_enabled_capa, 0, sizeof(sc->sc_enabled_capa));
     memset(sc->sc_ucode_api, 0, sizeof(sc->sc_ucode_api));
     sc->n_cmd_versions = 0;
+    sc->sc_fw_api = 0;
     memcpy(sc->sc_fw_mcc, "ZZ", sizeof(sc->sc_fw_mcc));
     sc->sc_fw_mcc_int = htole16(0x5a5a);
     
@@ -2025,8 +2093,9 @@ iwx_read_firmware(struct iwx_softc *sc)
                     err = EINVAL;
                     goto parse_out;
                 }
+                sc->sc_fw_api = le32toh(((uint32_t *)tlv_data)[0]);
                 iwx_fw_version_str(sc->sc_fwver, sizeof(sc->sc_fwver),
-                         le32toh(((uint32_t *)tlv_data)[0]),
+                         sc->sc_fw_api,
                          le32toh(((uint32_t *)tlv_data)[1]),
                          le32toh(((uint32_t *)tlv_data)[2]));
                 break;
@@ -2452,8 +2521,8 @@ iwx_read_pnvm(struct iwx_softc *sc)
     fwname_copy[find - sc->sc_fwname] = '\0';
     
     snprintf(pnvm_name, sizeof(pnvm_name), "%s.pnvm", fwname_copy);
-    if (strcmp(sc->sc_fwname, "iwlwifi-gl-c0-fm-c0-92.ucode") == 0)
-        strlcpy(pnvm_name, "iwlwifi-gl-c0-fm-c0-92.pnvm", sizeof(pnvm_name));
+    if (sc->sc_be.family != IwxBE::None)
+        strlcpy(pnvm_name, sc->sc_be.pnvm, sizeof(pnvm_name));
     sc->sc_pcitag->setProperty("AirportItlwm-PNVMName", pnvm_name);
     
     fwData = getFWDescByName(pnvm_name);
@@ -15128,9 +15197,26 @@ const struct iwl_cfg_trans_params iwl_gl_trans_cfg = {
     .low_latency_xtal = true,
 };
 
-const struct iwl_cfg iwl_be200_gl_c0_fm_c0_cfg = {
-    .name = "Intel(R) Wi-Fi 7 BE200 320MHz (experimental)",
-    .fwname = "iwlwifi-gl-c0-fm-c0-86.ucode",
+const struct iwl_cfg iwl_be_gl_cfg = {
+    .name = "Intel(R) Wi-Fi 7 BE200/BE202/Killer GL (experimental)",
+    .fwname = "auto",
+    .device_family = IWX_DEVICE_FAMILY_BZ,
+    .uhb_supported = true,
+    .max_tx_agg_size = IEEE80211_MAX_AMPDU_BUF_HT,
+    .num_rbds = IWX_RX_MQ_RING_COUNT,
+};
+
+const struct iwl_cfg_trans_params iwl_bz_trans_cfg = {
+    .integrated = 1,
+    .device_family = IWX_DEVICE_FAMILY_BZ,
+    .low_latency_xtal = true,
+    .ltr_delay = 2,
+    .xtal_latency = 12000,
+};
+
+const struct iwl_cfg iwl_be_bz_cfg = {
+    .name = "Intel(R) Wi-Fi 7 BE201/Killer BZ (experimental)",
+    .fwname = "auto",
     .device_family = IWX_DEVICE_FAMILY_BZ,
     .uhb_supported = true,
     .max_tx_agg_size = IEEE80211_MAX_AMPDU_BUF_HT,
@@ -15293,7 +15379,10 @@ const struct iwl_cfg iwl_cfg_quz_a0_hr_b0 = {
 
 static const struct pci_matchid iwx_devices[] = {
 #ifdef AIRPORT_WCL
-    {IWL_PCI_DEVICE(0x272b, 0x00f4, iwl_gl_trans_cfg)},
+    {IWL_PCI_DEVICE(0x272b, PCI_ANY_ID, iwl_gl_trans_cfg)},
+    {IWL_PCI_DEVICE(0xa840, PCI_ANY_ID, iwl_bz_trans_cfg)},
+    {IWL_PCI_DEVICE(0x7740, PCI_ANY_ID, iwl_bz_trans_cfg)},
+    {IWL_PCI_DEVICE(0x4d40, PCI_ANY_ID, iwl_bz_trans_cfg)},
 #endif
     /* Qu devices */
     {IWL_PCI_DEVICE(0x02F0, PCI_ANY_ID, iwl_qu_trans_cfg)},
@@ -16405,7 +16494,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
         return false;
     }
 #ifdef AIRPORT_WCL
-    if (pa->pa_tag->configRead16(kIOPCIConfigDeviceID) == 0x272b) {
+    if (IwxBE::pciFamily(pa->pa_tag->configRead16(kIOPCIConfigDeviceID)) != IwxBE::None) {
         sc->sc_msix = 1;
         XYLog("msix intr mode\n");
     } else
@@ -16501,17 +16590,13 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     }
     sc->sc_device_family = sc->sc_cfg_params->device_family;
 #ifdef AIRPORT_WCL
-    if (device == 0x272b) {
-        if (subsystem_vendor != PCI_VENDOR_INTEL || subsystem_device != 0x00f4 ||
-            CSR_HW_REV_TYPE(sc->sc_hw_rev) != IWL_CFG_MAC_TYPE_GL ||
-            IWX_CSR_HW_REV_STEP(sc->sc_hw_rev) != IWX_SILICON_C_STEP ||
-            CSR_HW_RFID_TYPE(sc->sc_hw_rf_id) != IWL_CFG_RF_TYPE_FM ||
-            CSR_HW_RFID_STEP(sc->sc_hw_rf_id) != IWX_SILICON_C_STEP) {
-            XYLog("BE200 unsupported GL/RF combination: sub=%04x:%04x HW_REV=0x%x RF_ID=0x%x\n",
-                  subsystem_vendor, subsystem_device, sc->sc_hw_rev, sc->sc_hw_rf_id);
+    sc->sc_be.family = IwxBE::pciFamily(device);
+    if (sc->sc_be.family != IwxBE::None) {
+        if (!IwxBE::macMatches(sc->sc_be.family, CSR_HW_REV_TYPE(sc->sc_hw_rev))) {
+            XYLog("BE PCI/MAC mismatch: device=%04x HW_REV=0x%x\n", device, sc->sc_hw_rev);
             return false;
         }
-        sc->sc_cfg = &iwl_be200_gl_c0_fm_c0_cfg;
+        sc->sc_cfg = sc->sc_be.family == IwxBE::GL ? &iwl_be_gl_cfg : &iwl_be_bz_cfg;
     }
 #endif
     for (i = 0; i < ARRAY_SIZE(iwl_dev_info_table); i++) {
@@ -16590,16 +16675,14 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
         return false;
     }
     sc->sc_fwname = sc->sc_cfg->fwname;
-    if (sc->sc_cfg == &iwl_be200_gl_c0_fm_c0_cfg) {
-        int gl_api = 86;
+    if (sc->sc_be.family == IwxBE::GL) {
+        int gl_api = 0;
         PE_parse_boot_argn("itlwm_gl_api", &gl_api, sizeof(gl_api));
-        if (gl_api != 86 && gl_api != 92) {
-            XYLog("Invalid itlwm_gl_api=%d; supported BE200 APIs: 86, 92\n", gl_api);
+        if (gl_api != 0 && gl_api != 86 && gl_api != 92) {
+            XYLog("Invalid itlwm_gl_api=%d; adapted BE APIs: 86, 92\n", gl_api);
             return false;
         }
-        if (gl_api == 92)
-            sc->sc_fwname = "iwlwifi-gl-c0-fm-c0-92.ucode";
-        sc->sc_pcitag->setProperty("AirportItlwm-BE200FirmwareAPI", gl_api, 32);
+        sc->sc_be.max_api = gl_api;
     }
     XYLog("Found PCI dev %04x/%04x, rev=0x%x, rfid=0x%x fw: %s\n",
           device, subsystem_device,
