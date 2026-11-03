@@ -15,12 +15,14 @@ mkdir -p "$out"
     sed -n '/^#define SAE_STATE_NOTHING/,/^$/p' "$root/itl80211/openbsd/net80211/ieee80211_node.h"
     sed -n '/^struct ieee80211_sae {/,/^};/p' "$root/itl80211/openbsd/net80211/ieee80211_node.h"
     sed -n '/^#define.*IEEE80211_F_SAE_PWE/p' "$root/itl80211/openbsd/net80211/ieee80211_var.h"
+    sed -n '/^enum ieee80211_akm {/,/^};/p' "$root/itl80211/openbsd/net80211/ieee80211_crypto.h"
     cat <<'EOF'
 struct ieee80211_node {
     struct ieee80211_sae ni_sae;
     uint8_t ni_macaddr[6], ni_mld_addr[6];
     int ni_mld_valid;
     uint16_t ni_rsnxecaps;
+    enum ieee80211_akm ni_rsnakms;
 };
 struct ieee80211com {
     uint8_t ic_myaddr[6], ic_wcl_peer_mld_addr[6];
@@ -33,7 +35,7 @@ struct ieee80211com {
 };
 #define AIRPORT_WCL 1
 EOF
-    for name in ieee80211_sae_select_auth ieee80211_sae_auth_current; do
+    for name in ieee80211_sae_select_auth ieee80211_sae_auth_current ieee80211_rsn_uses_mld; do
         printf '\nstatic inline int\n'
         sed -n "/^$name(/,/^}/p" "$root/itl80211/openbsd/net80211/ieee80211_var.h"
     done

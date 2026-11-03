@@ -47,10 +47,19 @@ int main(int argc, char **argv) {
         puts("separator search contract passed");
         return 0;
     }
-    struct { const char *sc_fwname; } state = {argv[1]}, *sc = &state;
+    struct pci_property {
+        char value[64] = {};
+        void setProperty(const char *key, const char *name) {
+            require(strcmp(key, "AirportItlwm-PNVMName") == 0, "PNVM property key mismatch");
+            snprintf(value, sizeof(value), "%s", name);
+        }
+    } property;
+    struct { const char *sc_fwname; pci_property *sc_pcitag; }
+        state = {argv[1], &property}, *sc = &state;
     char fwname_copy[64], pnvm_name[64];
     const char *find;
 FRAGMENT
+    require(strcmp(property.value, pnvm_name) == 0, "PNVM diagnostic mismatch");
     puts(pnvm_name);
     return 0;
 out:
@@ -60,16 +69,22 @@ out:
 
 with tempfile.TemporaryDirectory(prefix='itlwm-pnvm-name-') as folder:
     folder = Path(folder)
-    test, binary = folder / 'name.c', folder / 'name'
+    test, binary = folder / 'name.cpp', folder / 'name'
     test.write_text(program)
-    subprocess.run(shlex.split(os.environ.get('CC', 'cc')) + [
-        '-std=c11', '-Wall', '-Wextra', str(test), '-o', str(binary)
+    subprocess.run(shlex.split(os.environ.get('CXX', 'c++')) + [
+        '-std=c++17', '-Wall', '-Wextra', str(test), '-o', str(binary)
     ], check=True)
-    firmware_names = set(re.findall(r'\.fwname\s*=\s*"([^"]+)"', source))
+    firmware_names = set(re.findall(r'"(iwlwifi-[^"]+\.ucode)"', source))
     resources = sorted((root / 'itlwm/firmware').glob('*.pnvm'))
     assert any(path.name == 'iwlwifi-gl-c0-fm-c0.pnvm' for path in resources)
+    def expected_resource(name):
+        if name == 'iwlwifi-gl-c0-fm-c0-92.ucode':
+            return 'iwlwifi-gl-c0-fm-c0-92.pnvm'
+        return name.rsplit('-', 1)[0] + '.pnvm'
+    assert 'iwlwifi-gl-c0-fm-c0-92.ucode' in firmware_names
+    assert any(path.name == 'iwlwifi-gl-c0-fm-c0-92.pnvm' for path in resources)
     for resource in resources:
-        candidates = [name for name in firmware_names if name.startswith(resource.stem + '-')]
+        candidates = [name for name in firmware_names if expected_resource(name) == resource.name]
         assert candidates, f'no configured firmware for {resource.name}'
         for firmware in candidates:
             generated = subprocess.check_output([str(binary), firmware], text=True).strip()

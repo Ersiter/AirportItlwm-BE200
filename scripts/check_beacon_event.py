@@ -6,7 +6,8 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 source = (root / "itl80211/openbsd/net80211/ieee80211_input.c").read_text(encoding="utf-8")
-start = source.index("    if (ic->ic_event_handler) {", source.index("\nvoid\nieee80211_recv_probe_resp("))
+event = source.index("ic->ic_event_handler(ic, IEEE80211_EVT_BEACON, &event);")
+start = source.rindex("    if (ic->ic_event_handler) {", 0, event)
 end = source.index("\n#endif", start)
 event_block = source[start:end]
 
