@@ -435,6 +435,16 @@ inline bool is6GHzPsc(unsigned channel) {
     return channel >= 5 && channel <= 229 && (channel - 5) % 16 == 0;
 }
 
+inline uint32_t shortSsid(const uint8_t *ssid, size_t length) {
+    uint32_t crc = ~0U;
+    for (size_t i = 0; i < length; ++i) {
+        crc ^= ssid[i];
+        for (unsigned bit = 0; bit < 8; ++bit)
+            crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1U)));
+    }
+    return ~crc;
+}
+
 /*
  * What the SSID element of a frame says. Collapsing these into "no name" is
  * what hid the 6 GHz case: a set that speaks through profiles carries an empty

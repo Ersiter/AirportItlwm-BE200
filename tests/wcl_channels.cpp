@@ -20,6 +20,8 @@ static void addChannel(uint8_t *buffer, uint32_t index, uint32_t channel,
 
 int main()
 {
+    const uint8_t crcInput[] = "123456789";
+    assert(AirportWCL::shortSsid(crcInput, sizeof(crcInput) - 1) == 0xcbf43926U);
     using AirportWCL::ChannelBand;
     using AirportWCL::NativeChannelInfo;
 
