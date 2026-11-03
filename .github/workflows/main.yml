@@ -56,6 +56,8 @@ jobs:
         run: python3 scripts/check_nvm_mac.py
       - name: Check MCC response ABI handling
         run: python3 scripts/check_mcc_response.py
+      - name: Check 6 GHz HE state, MBSSID links and country policy
+        run: python3 scripts/check_6ghz_state.py
       - name: Check startup power diagnostics
         run: python3 scripts/check_startup_power.py
       - name: Check WCL channel and authentication behavior

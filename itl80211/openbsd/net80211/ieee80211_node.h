@@ -574,7 +574,7 @@ struct ieee80211_node {
 #define IEEE80211_NODE_HE_MU_EDCA 0x1000000 /* validated MU EDCA */
 #define IEEE80211_NODE_BEACON_PROT 0x2000000 /* AP advertises Beacon Protection */
 #define IEEE80211_NODE_EHTCAP    0x4000000 /* validated EHT capabilities */
-#define IEEE80211_NODE_HE6CAP    0x8000000 /* validated HE 6 GHz band capabilities */
+#define IEEE80211_NODE_HE6CAP    0x20000000 /* validated HE 6 GHz band capabilities */
 #define IEEE80211_NODE_EHTOP     0x8000000 /* validated EHT operation */
 #define IEEE80211_NODE_EHT       0x10000000 /* EHT negotiated */
 

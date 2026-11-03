@@ -1261,7 +1261,9 @@ setCOUNTRY_CODE(OSObject *object, struct apple80211_country_code_data *data)
 #ifdef AIRPORT_WCL
     if (!data)
         return kIOReturnBadArgument;
-    if (data->cc[0] == 'x' || data->cc[0] == 'X')
+    if (data->cc[0] < 'A' || data->cc[0] > 'Z' ||
+        data->cc[1] < 'A' || data->cc[1] > 'Z' ||
+        (data->cc[0] == 'Z' && data->cc[1] == 'Z'))
         return kIOReturnSuccess;
     /*
      * Keep the framework's value as the fallback reported above, and hand the
@@ -1275,9 +1277,9 @@ setCOUNTRY_CODE(OSObject *object, struct apple80211_country_code_data *data)
      * only while nothing is up, because pushing it underneath a live
      * association is what flipped the channel profile out from under the link.
      */
-    bool changed = memcmp(geo_location_cc, data->cc, sizeof(geo_location_cc)) != 0;
-    if (changed)
-        memcpy(geo_location_cc, data->cc, sizeof(geo_location_cc));
+    bool changed = memcmp(geo_location_cc, data->cc, 2) != 0;
+    memcpy(geo_location_cc, data->cc, 2);
+    geo_location_cc[2] = '\0';
     if (changed && fNetIf)
         static_cast<AirportItlwmSkywalkInterface *>(fNetIf)->handleWCLEvent(
             IEEE80211_EVT_COUNTRY_CODE_UPDATE, nullptr);

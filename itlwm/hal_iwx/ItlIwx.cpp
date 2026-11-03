@@ -126,6 +126,7 @@
 #include <net80211/ieee80211_priv.h>
 
 static bool iwx_valid_mcc(const char *mcc);
+static bool iwx_resolved_mcc(const char *mcc);
 static void iwx_setkey_queue_reset(struct iwx_softc *sc);
 
 #define super ItlHalService
@@ -644,6 +645,13 @@ iwx_valid_mcc(const char *mcc)
     return mcc && ((mcc[0] == '0' && mcc[1] == '0') ||
         (mcc[0] >= 'A' && mcc[0] <= 'Z' &&
          mcc[1] >= 'A' && mcc[1] <= 'Z'));
+}
+
+static bool
+iwx_resolved_mcc(const char *mcc)
+{
+    return iwx_valid_mcc(mcc) && !(mcc[0] == '0' && mcc[1] == '0') &&
+        !(mcc[0] == 'Z' && mcc[1] == 'Z');
 }
 
 const char *ItlIwx::
@@ -9800,9 +9808,11 @@ iwx_mcc_update(struct iwx_softc *sc, struct iwx_mcc_chub_notif *notif)
     snprintf(sc->sc_fw_mcc, sizeof(sc->sc_fw_mcc), "%c%c",
              (le16toh(notif->mcc) & 0xff00) >> 8, le16toh(notif->mcc) & 0xff);
     sc->sc_fw_mcc_int = notif->mcc;
-    memcpy(sc->sc_mcc_last, sc->sc_fw_mcc, sizeof(sc->sc_mcc_last));
-    sc->sc_mcc_last_source = notif->source_id;
-    sc->sc_mcc_last_valid = 1;
+    if (iwx_resolved_mcc(sc->sc_fw_mcc)) {
+        memcpy(sc->sc_mcc_last, sc->sc_fw_mcc, sizeof(sc->sc_mcc_last));
+        sc->sc_mcc_last_source = notif->source_id;
+        sc->sc_mcc_last_valid = 1;
+    }
 
     if (ifp->if_flags & IFF_DEBUG) {
         DPRINTFN(3, ("%s: firmware has detected regulatory domain '%s' "
@@ -12906,6 +12916,14 @@ iwx_process_mcc_request(struct iwx_softc *sc, const char *alpha2,
     if (!(sc->sc_ic.ic_if.if_flags & IFF_RUNNING))
         return EBUSY;
 
+    if (iwx_resolved_mcc(sc->sc_mcc_override)) {
+        alpha2 = sc->sc_mcc_override;
+        sourceId = IWX_MCC_SOURCE_ME;
+    } else if (!iwx_resolved_mcc(alpha2) && sc->sc_mcc_last_valid) {
+        alpha2 = sc->sc_mcc_last;
+        sourceId = sc->sc_mcc_last_source;
+    }
+
     if (!sc->sc_nvm.lar_enabled) {
         if (sc->sc_ic.ic_event_handler)
             sc->sc_ic.ic_event_handler(&sc->sc_ic,
@@ -13111,7 +13129,7 @@ iwx_init_hw(struct iwx_softc *sc)
 
         char overrideMcc[3] = {};
         PE_parse_boot_argn("itlwm_cc", overrideMcc, sizeof(overrideMcc));
-        const bool hasOverride = iwx_valid_mcc(overrideMcc);
+        const bool hasOverride = iwx_resolved_mcc(overrideMcc);
         if (hasOverride) {
             memcpy(sc->sc_mcc_override, overrideMcc,
                 sizeof(sc->sc_mcc_override));
