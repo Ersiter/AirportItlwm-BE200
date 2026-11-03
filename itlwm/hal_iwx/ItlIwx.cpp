@@ -4991,6 +4991,10 @@ iwx_sta_rx_agg(struct iwx_softc *sc, struct ieee80211_node *ni, uint8_t tid,
     
     s = splnet();
     
+    if (start && (winsize == 0 || winsize > IEEE80211_RX_BA_MAX_WINSZ)) {
+        splx(s);
+        return EINVAL;
+    }
     if (start && sc->sc_rx_ba_sessions >= IWX_MAX_RX_BA_SESSIONS) {
         ieee80211_addba_req_refuse(ic, ni, tid);
         splx(s);
@@ -6356,6 +6360,8 @@ iwx_release_frames(struct iwx_softc *sc, struct ieee80211_node *ni,
 {
     struct iwx_reorder_buf_entry *entries = &rxba->entries[0];
     uint16_t ssn = reorder_buf->head_sn;
+    const int generation = sc->sc_generation;
+    const uint8_t baid = rxba->baid;
 
     /* ignore nssn smaller than head sn - this can happen due to timeout */
     if (iwx_is_sn_less(nssn, ssn, reorder_buf->buf_size))
@@ -6384,6 +6390,9 @@ iwx_release_frames(struct iwx_softc *sc, struct ieee80211_node *ni,
         while ((m = ml_dequeue(&entries[index].frames)) != NULL) {
             iwx_rx_frame(sc, m, chanidx, rx_pkt_status, is_shortpre,
                 rate_n_flags, device_timestamp, rxi, ml);
+            if (generation != sc->sc_generation || rxba->baid != baid ||
+                reorder_buf->removed)
+                return;
             reorder_buf->num_stored--;
 
             /*
@@ -11107,6 +11116,8 @@ iwx_phy_ctxt_update(struct iwx_softc *sc, struct iwx_phy_ctxt *phyctxt,
 int ItlIwx::
 iwx_auth(struct iwx_softc *sc)
 {
+    struct iwx_node *rx_in = (struct iwx_node *)sc->sc_ic.ic_bss;
+    memset(&rx_in->dup_data, 0xff, sizeof(rx_in->dup_data));
     if (sc->sc_use_mld_api)
         return iwx_mld_auth(sc);
     XYLog("%s\n", __FUNCTION__);
@@ -14118,6 +14129,8 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
     mbuf_t m0, m;
     const size_t minsz = sizeof(pkt->len_n_flags) + sizeof(pkt->hdr);
     int qid, idx, code, handled;
+    const int generation = sc->sc_generation;
+    const uint64_t cookie = sc->sc_rx_service_cookie;
     
     //    bus_dmamap_sync(sc->sc_dmat, data->map, 0, IWX_RBUF_SIZE,
     //        BUS_DMASYNC_POSTREAD);
@@ -14618,8 +14631,27 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                 break;
             }
             
+            case IWX_WIDE_ID(IWX_LEGACY_GROUP, IWX_FRAME_RELEASE): {
+                struct iwx_frame_release *release;
+                if (iwx_rx_packet_payload_len(pkt) < sizeof(*release))
+                    break;
+                SYNC_RESP_STRUCT(release, pkt, struct iwx_frame_release *);
+                unsigned int baid = release->baid;
+                unsigned int nssn = le16toh(release->nssn) & 0xfff;
+                if (baid >= nitems(sc->sc_rxba_data))
+                    break;
+                struct iwx_rxba_data *rxba = &sc->sc_rxba_data[baid];
+                if (rxba->baid != baid || rxba->reorder_buf.removed ||
+                    rxba->reorder_buf.buf_size == 0)
+                    break;
+                iwx_release_frames(sc, sc->sc_ic.ic_bss, rxba,
+                    &rxba->reorder_buf, nssn, ml);
+                break;
+            }
             case IWX_WIDE_ID(IWX_LEGACY_GROUP, IWX_BAR_FRAME_RELEASE): {
                 struct iwx_bar_frame_release *release;
+                if (iwx_rx_packet_payload_len(pkt) < sizeof(*release))
+                    break;
                 SYNC_RESP_STRUCT(release, pkt, struct iwx_bar_frame_release *);
                 unsigned int baid = le32_get_bits(release->ba_info,
                                   IWX_BAR_FRAME_RELEASE_BAID_MASK);
@@ -14630,9 +14662,6 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                 unsigned int tid = le32_get_bits(release->sta_tid,
                                  IWX_BAR_FRAME_RELEASE_TID_MASK);
                 struct iwx_rxba_data *baid_data;
-                
-                if (iwx_rx_packet_payload_len(pkt) < sizeof(*release))
-                    break;
                 
                 if (baid == IWX_RX_REORDER_DATA_INVALID_BAID || baid >= IWX_MAX_BAID)
                     break;
@@ -14667,6 +14696,12 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                 break;
         }
         
+        if (generation != sc->sc_generation || cookie != sc->sc_rx_service_cookie) {
+            /* An attached notification buffer belongs to the new ring now. */
+            if (m0 && nmpdu != 0)
+                mbuf_freem(m0);
+            return;
+        }
         /*
          * uCode sets bit 0x80 when it originates the notification,
          * i.e. when the notification is not a direct response to a
@@ -14692,10 +14727,9 @@ void ItlIwx::
 iwx_notif_intr(struct iwx_softc *sc)
 {
     struct mbuf_list ml = MBUF_LIST_INITIALIZER();
+    const int generation = sc->sc_generation;
+    const uint64_t cookie = ++sc->sc_rx_service_cookie;
     uint16_t hw;
-    
-    //    bus_dmamap_sync(sc->sc_dmat, sc->rxq.stat_dma.map,
-    //        0, sc->rxq.stat_dma.size, BUS_DMASYNC_POSTREAD);
     
     if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210)
         hw = le16toh(*(uint16_t *)(sc->rxq.stat)) & 0xfff;
@@ -14714,24 +14748,36 @@ iwx_notif_intr(struct iwx_softc *sc)
                       rbid, desc[sc->rxq.cur].flags);
                 sc->sc_flags |= IWX_FLAG_HW_ERR;
                 iwx_schedule_recovery(sc, __FUNCTION__, __LINE__);
+                ml_purge(&ml);
                 return;
             }
         }
         struct iwx_rx_data *data = &sc->rxq.data[rbid];
-        iwx_rx_pkt(sc, data, &ml);
+        /* Claim this completion before a callback can re-enter RX service. */
         sc->rxq.cur = (sc->rxq.cur + 1) % IWX_RX_MQ_RING_COUNT;
+        iwx_rx_pkt(sc, data, &ml);
+        if (generation != sc->sc_generation) {
+            ml_purge(&ml);
+            return;
+        }
+        if (cookie != sc->sc_rx_service_cookie) {
+            if_input(&sc->sc_ic.ic_if, &ml);
+            return;
+        }
     }
-    if_input(&sc->sc_ic.ic_if, &ml);
     
     /*
      * Tell the firmware what we have processed.
      * Seems like the hardware gets upset unless we align the write by 8??
      */
     hw = (hw == 0) ? IWX_RX_MQ_RING_COUNT - 1 : hw - 1;
+    __sync_synchronize();
     if (sc->sc_device_family >= IWX_DEVICE_FAMILY_BZ)
         IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR, (hw & ~7) | IWX_HBUS_TARG_WRPTR_RX_Q(0));
     else
         IWX_WRITE(sc, IWX_RFH_Q0_FRBDCB_WIDX_TRG, hw & ~7);
+    /* Upper-stack callbacks may stop/reset the controller or re-enter RX. */
+    if_input(&sc->sc_ic.ic_if, &ml);
 }
 
 int ItlIwx::
@@ -14740,6 +14786,7 @@ iwx_intr(OSObject *object, IOInterruptEventSource* sender, int count)
 //    XYLog("Interrupt!!!\n");
     ItlIwx *that = (ItlIwx*)object;
     struct iwx_softc *sc = &that->com;
+    const int generation = sc->sc_generation;
     int handled = 0;
     int r1, r2, rv = 0;
     
@@ -14885,7 +14932,8 @@ iwx_intr(OSObject *object, IOInterruptEventSource* sender, int count)
     rv = 1;
     
 out_ena:
-    that->iwx_restore_interrupts(sc);
+    if (generation == sc->sc_generation)
+        that->iwx_restore_interrupts(sc);
 out:
     return rv;
 }
@@ -14898,6 +14946,7 @@ iwx_intr_msix(OSObject *object, IOInterruptEventSource* sender, int count)
     struct iwx_softc *sc = &that->com;
     uint32_t inta_fh, inta_hw;
     int vector = 0;
+    const int generation = sc->sc_generation;
     
     inta_fh = IWX_READ(sc, IWX_CSR_MSIX_FH_INT_CAUSES_AD);
     inta_hw = IWX_READ(sc, IWX_CSR_MSIX_HW_INT_CAUSES_AD);
@@ -14909,6 +14958,8 @@ iwx_intr_msix(OSObject *object, IOInterruptEventSource* sender, int count)
     if (inta_fh & IWX_MSIX_FH_INT_CAUSES_Q0 ||
         inta_fh & IWX_MSIX_FH_INT_CAUSES_Q1) {
         that->iwx_notif_intr(sc);
+        if (generation != sc->sc_generation)
+            return 1;
     }
     
     /* firmware chunk loaded */

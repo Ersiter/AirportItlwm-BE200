@@ -574,7 +574,7 @@ struct iwx_rxba_data {
     CTimeout *session_timer;
     struct iwx_softc *sc;
     struct iwx_reorder_buffer reorder_buf;
-    struct iwx_reorder_buf_entry entries[IEEE80211_BA_MAX_WINSZ];
+    struct iwx_reorder_buf_entry entries[IEEE80211_RX_BA_MAX_WINSZ];
 };
 
 static inline struct iwx_rxba_data *
@@ -783,6 +783,7 @@ struct iwx_softc {
 	uint32_t sc_hw_mask;
 
 	int sc_generation;
+    uint64_t sc_rx_service_cookie;
 	/* Which gate refused the last command; 0 means it was handed to the ring. */
 	uint8_t sc_cmd_error_stage;
 	uint8_t sc_driver_ready;

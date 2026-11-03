@@ -538,7 +538,7 @@ ieee80211_classify(struct ieee80211com *ic, mbuf_t m)
 int
 ieee80211_can_use_ampdu(struct ieee80211com *ic, struct ieee80211_node *ni)
 {
-	return (ni->ni_flags & IEEE80211_NODE_HT) &&
+	return (ni->ni_flags & (IEEE80211_NODE_HT | IEEE80211_NODE_HE)) &&
     (ic->ic_caps & IEEE80211_C_TX_AMPDU) &&
     !(ic->ic_opmode == IEEE80211_M_STA && ni != ic->ic_bss) &&
     /*

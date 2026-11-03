@@ -1964,6 +1964,7 @@ struct iwx_tx_queue_cfg_rsp {
 #define IWX_REPLY_RX_PHY_CMD    0xc0
 #define IWX_REPLY_RX_MPDU_CMD    0xc1
 #define IWX_BAR_FRAME_RELEASE   0xc2
+#define IWX_FRAME_RELEASE       0xc3
 #define IWX_BA_NOTIF        0xc5
 
 /* Location Aware Regulatory */
@@ -3961,6 +3962,12 @@ struct iwx_frame_release {
  * @sta_tid: STA & TID information, see &enum iwl_bar_frame_release_sta_tid.
  * @ba_info: BA information, see &enum iwl_bar_frame_release_ba_info.
  */
+struct iwx_frame_release {
+    uint8_t baid;
+    uint8_t reserved;
+    uint16_t nssn;
+} __packed; /* FRAME_RELEASE_API_S_VER_1 */
+
 struct iwx_bar_frame_release {
     uint32_t sta_tid;
     uint32_t ba_info;
