@@ -1197,6 +1197,17 @@ ieee80211_max_basic_rate(struct ieee80211com *ic)
  * select a new default/current channel if the current one is
  * inappropriate for this mode.
  */
+static int
+ieee80211_chan_in_mode(const struct ieee80211_channel *c,
+    enum ieee80211_phymode mode, u_int modeflags)
+{
+    if (IEEE80211_IS_CHAN_6GHZ(c))
+        return mode == IEEE80211_MODE_AUTO || mode == IEEE80211_MODE_11A ||
+            mode == IEEE80211_MODE_11AX;
+    return mode == IEEE80211_MODE_AUTO ? c->ic_flags != 0 :
+        (c->ic_flags & modeflags) != 0;
+}
+
 int
 ieee80211_setmode(struct ieee80211com *ic, enum ieee80211_phymode mode)
 {
@@ -1230,10 +1241,7 @@ ieee80211_setmode(struct ieee80211com *ic, enum ieee80211_phymode mode)
     modeflags = chanflags[mode];
     for (i = 0; i <= IEEE80211_CHAN_MAX; i++) {
         c = &ic->ic_channels[i];
-        if (mode == IEEE80211_MODE_AUTO) {
-            if (c->ic_flags != 0)
-                break;
-        } else if ((c->ic_flags & modeflags) != 0)
+        if (ieee80211_chan_in_mode(c, mode, modeflags))
             break;
     }
     if (i > IEEE80211_CHAN_MAX) {
@@ -1247,10 +1255,7 @@ ieee80211_setmode(struct ieee80211com *ic, enum ieee80211_phymode mode)
     memset(ic->ic_chan_active, 0, sizeof(ic->ic_chan_active));
     for (i = 0; i <= IEEE80211_CHAN_MAX; i++) {
         c = &ic->ic_channels[i];
-        if (mode == IEEE80211_MODE_AUTO) {
-            if (c->ic_flags != 0)
-                setbit(ic->ic_chan_active, i);
-        } else if ((c->ic_flags & modeflags) != 0)
+        if (ieee80211_chan_in_mode(c, mode, modeflags))
             setbit(ic->ic_chan_active, i);
     }
     /*
@@ -1392,7 +1397,7 @@ ieee80211_chan2mode(struct ieee80211com *ic,
     
     /* Deduce a legacy mode based on the channel characteristics. */
     if (IEEE80211_IS_CHAN_6GHZ(chan))
-        return IEEE80211_MODE_11AX;
+        return IEEE80211_MODE_11A;
     if (IEEE80211_IS_CHAN_5GHZ(chan))
         return IEEE80211_MODE_11A;
     else if (chan->ic_flags & (IEEE80211_CHAN_OFDM|IEEE80211_CHAN_DYN))
