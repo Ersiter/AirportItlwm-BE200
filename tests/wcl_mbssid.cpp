@@ -68,18 +68,18 @@ const Bytes owe = {1, 0, 0, 15, 172, 4, 1, 0, 0, 15, 172, 4,
 void parserTests()
 {
     Bytes ies = {0, 0};
-    addSet(ies, 3, profile("1Joey_6", 1));
+    addSet(ies, 3, profile("Lab6G_1", 1));
     auto profiles = decode(ies);
     assert(profiles.size() == 1 && profiles[0].bssid[5] == 0x3b);
     assert(profiles[0].capability == 0x1111 && profiles[0].hasDtim);
     auto child = merge(ies, profiles[0]);
     auto ssid = find(child, 0);
-    assert(ssid && ssid[1] == 7 && memcmp(ssid + 2, "1Joey_6", 7) == 0);
+    assert(ssid && ssid[1] == 7 && memcmp(ssid + 2, "Lab6G_1", 7) == 0);
     assert(!find(child, 71) && !find(child, 83) && !find(child, 85));
 
-    // Screenshot 4 supplies this prefix; the unpictured remainder is synthetic.
-    Bytes captured = {3, 0, 103, 83, 2, 17, 17, 0, 7, 49, 74, 111, 101,
-        121, 95, 54, 85, 3, 1, 1, 0, 70, 5, 51, 0, 0, 0, 0};
+    // Synthetic profile with the element layout of a Wi-Fi 7 test case.
+    Bytes captured = {3, 0, 103, 83, 2, 17, 17, 0, 7, 76, 97, 98, 54,
+        71, 95, 49, 85, 3, 1, 1, 0, 70, 5, 51, 0, 0, 0, 0};
     element(captured, 221, Bytes(76, 0));
     assert(captured.size() == 106);
     ies = {0, 0};
@@ -87,7 +87,7 @@ void parserTests()
     profiles = decode(ies);
     assert(profiles.size() == 1);
     child = merge(ies, profiles[0]);
-    assert(memcmp(find(child, 0) + 2, "1Joey_6", 7) == 0);
+    assert(memcmp(find(child, 0) + 2, "Lab6G_1", 7) == 0);
 
     // Add the index modulo 2^n, including carry and wrap of nonzero low bits.
     for (unsigned bits = 1; bits <= 8; ++bits) {
@@ -118,7 +118,7 @@ void parserTests()
     ies.clear(); addSet(ies, 3, profile("test", 1));
     for (size_t len = 0; len < ies.size(); ++len)
         assert(decode(Bytes(ies.begin(), ies.begin() + len)).empty());
-    std::puts("PASS MBSSID parser: Joey prefix, hidden parent, all indices, multiple elements, malformed and duplicate profiles");
+    std::puts("PASS MBSSID parser: synthetic Wi-Fi 7 profile, hidden parent, all indices, multiple elements, malformed and duplicate profiles");
 }
 
 void inheritanceTests()
@@ -135,7 +135,7 @@ void inheritanceTests()
     Bytes extra;
     element(extra, 48, owe);
     element(extra, 255, {108, 99});
-    addSet(ies, 3, profile("1Joey_6", 1, extra));
+    addSet(ies, 3, profile("Lab6G_1", 1, extra));
     auto p = decode(ies)[0];
     auto child = merge(ies, p);
     assert(AirportWCL::rsnIsOWE(find(child, 48), owe.size() + 2));

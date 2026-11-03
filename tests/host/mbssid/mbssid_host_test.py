@@ -69,13 +69,13 @@ void rxTests(){
   m.data[34]=1;results.clear();ieee80211_recv_probe_resp(&ic,&m,&ni,&rxi,0);
  };
  Bytes ies={0,0};element(ies,1,{0x8c,0x98,0xb0});Bytes extra;element(extra,48,owe);
- addSet(ies,3,profile("1Joey_6",1,extra));receive(ies);
+ addSet(ies,3,profile("Lab6G_1",1,extra));receive(ies);
  assert(results.size()==2&&results[0].profile&&!results[1].profile);
  auto&child=results[0];auto*wh=(const ieee80211_frame*)child.frame.data();
  assert(wh->i_addr2[5]==0x3b&&wh->i_addr3[5]==0x3b&&child.frame[34]==0x11&&child.frame[35]==0x11);
  assert(memcmp(child.metadata.transmitted,transmitted,6)==0&&child.metadata.index==1&&child.metadata.indicator==3);
  Bytes merged(child.frame.begin()+36,child.frame.end());
- assert(memcmp(find(merged,0)+2,"1Joey_6",7)==0&&find(merged,1));
+ assert(memcmp(find(merged,0)+2,"Lab6G_1",7)==0&&find(merged,1));
  assert(AirportWCL::rsnIsOWE(find(merged,48),owe.size()+2));
  assert(!find(merged,71)&&allocations==1&&frees==1);
  // This is the downstream parser boundary: child frame and parent have distinct identities.
