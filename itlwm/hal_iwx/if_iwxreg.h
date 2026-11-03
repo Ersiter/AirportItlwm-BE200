@@ -3962,12 +3962,6 @@ struct iwx_frame_release {
  * @sta_tid: STA & TID information, see &enum iwl_bar_frame_release_sta_tid.
  * @ba_info: BA information, see &enum iwl_bar_frame_release_ba_info.
  */
-struct iwx_frame_release {
-    uint8_t baid;
-    uint8_t reserved;
-    uint16_t nssn;
-} __packed; /* FRAME_RELEASE_API_S_VER_1 */
-
 struct iwx_bar_frame_release {
     uint32_t sta_tid;
     uint32_t ba_info;
