@@ -16590,7 +16590,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
         return false;
     }
     sc->sc_fwname = sc->sc_cfg->fwname;
-    if (sc->sc_cfg == &iwl_gl_c0_fm_c0) {
+    if (sc->sc_cfg == &iwl_be200_gl_c0_fm_c0_cfg) {
         int gl_api = 86;
         PE_parse_boot_argn("itlwm_gl_api", &gl_api, sizeof(gl_api));
         if (gl_api != 86 && gl_api != 92) {

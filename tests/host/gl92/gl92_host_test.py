@@ -91,7 +91,7 @@ code=r'''
 struct ieee80211_channel {unsigned number,band;};
 struct ieee80211com {};
 struct config {const char*fwname;};
-static config iwl_gl_c0_fm_c0{"iwlwifi-gl-c0-fm-c0-86.ucode"};
+static config iwl_be200_gl_c0_fm_c0_cfg{"iwlwifi-gl-c0-fm-c0-86.ucode"};
 struct property {int api=0;void setProperty(const char*,int value,int){api=value;}};
 struct iwx_softc {ieee80211com sc_ic;config*sc_cfg;const char*sc_fwname;property*sc_pcitag;int phy=4,rlc=2;};
 struct iwx_phy_ctxt {unsigned id,color;ieee80211_channel*channel;};
@@ -124,7 +124,7 @@ code+='static bool select(iwx_softc*sc){\n'+selection+'return true;\n}\n'+phy
 code+='\nint ItlIwx::route(iwx_softc*sc,iwx_phy_ctxt*ctxt,uint8_t chains_static,uint8_t chains_dynamic,uint32_t action,uint32_t apply_time){\n'+dispatch+'\nreturn -42;\n}\n'
 code+=r'''
 int main(){
- property prop;iwx_softc sc{};sc.sc_cfg=&iwl_gl_c0_fm_c0;sc.sc_pcitag=&prop;
+ property prop;iwx_softc sc{};sc.sc_cfg=&iwl_be200_gl_c0_fm_c0_cfg;sc.sc_pcitag=&prop;
  for(int api:{0,86,92}){argument=api;assert(select(&sc));assert(prop.api==(api?api:86));assert(strstr(sc.sc_fwname,api==92?"-92.ucode":"-86.ucode"));}
  argument=93;assert(!select(&sc));
  config other{"other.ucode"};sc.sc_cfg=&other;assert(select(&sc)&&strcmp(sc.sc_fwname,"other.ucode")==0);
