@@ -3518,7 +3518,8 @@ struct iwx_phy_context_cmd {
     uint32_t rxchain_info;
     uint32_t dsp_cfg_flags;
     uint32_t reserved;
-} __packed; /* PHY_CONTEXT_CMD_API_VER_3 */
+} __packed; /* PHY_CONTEXT_CMD_API_VER_3/4/5; rxchain_info reserved/zero in v4/v5 */
+static_assert(sizeof(iwx_phy_context_cmd) == 32, "PHY context v3/v4/v5 command ABI");
 
 
 #define IWX_RX_INFO_PHY_CNT 8

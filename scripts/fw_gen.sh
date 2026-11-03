@@ -6,9 +6,6 @@
 #  Created by qcwap on 2020/3/10.
 #  Copyright © 2020 钟先耀. All rights reserved.
 target_file="${PROJECT_DIR}/include/FwBinary.cpp"
-if [ -f "$target_file" ]; then
-exit 0
-fi
 while [ $# -gt 0 ];
 do
     case $1 in
@@ -21,4 +18,7 @@ do
 done
 
 script_file="${PROJECT_DIR}/scripts/zlib_compress_fw.py"
+if [ -f "$target_file" ] && [ -z "$(find "$fw_files" "$script_file" "$0" -type f -newer "$target_file" -print -quit)" ]; then
+    exit 0
+fi
 python3 "${script_file}" "${target_file}" "${fw_files}"

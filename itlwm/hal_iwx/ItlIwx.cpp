@@ -2207,7 +2207,13 @@ iwx_read_firmware(struct iwx_softc *sc)
     
     KASSERT(err == 0, "err == 0");
     
-    XYLog("firmware parse done\n");
+    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareName", sc->sc_fwname);
+    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareVersion", sc->sc_fwver);
+    sc->sc_pcitag->setProperty("AirportItlwm-PHYContextCommandVersion",
+        iwx_lookup_cmd_ver(sc, IWX_LONG_GROUP, IWX_PHY_CONTEXT_CMD), 32);
+    sc->sc_pcitag->setProperty("AirportItlwm-MLDLinkCommandVersion",
+        iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD), 32);
+    XYLog("firmware parse done: %s %s\n", sc->sc_fwname, sc->sc_fwver);
     
 parse_out:
     if (err) {
@@ -2445,8 +2451,10 @@ iwx_read_pnvm(struct iwx_softc *sc)
         goto out;
     fwname_copy[find - sc->sc_fwname] = '\0';
     
-    snprintf(pnvm_name, sizeof(pnvm_name), "%s.pnvm",
-         fwname_copy);
+    snprintf(pnvm_name, sizeof(pnvm_name), "%s.pnvm", fwname_copy);
+    if (strcmp(sc->sc_fwname, "iwlwifi-gl-c0-fm-c0-92.ucode") == 0)
+        strlcpy(pnvm_name, "iwlwifi-gl-c0-fm-c0-92.pnvm", sizeof(pnvm_name));
+    sc->sc_pcitag->setProperty("AirportItlwm-PNVMName", pnvm_name);
     
     fwData = getFWDescByName(pnvm_name);
 
@@ -4870,7 +4878,8 @@ iwx_setup_he_rates(struct iwx_softc *sc)
         uint8_t sta_version = iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP,
             IWX_MLD_STA_CONFIG_CMD);
         mld_he_api = mac_version == 2 &&
-            (link_version == 1 || link_version == IWX_FW_CMD_VER_UNKNOWN) &&
+            (link_version == 1 || link_version == 2 ||
+                link_version == IWX_FW_CMD_VER_UNKNOWN) &&
             (sta_version == 1 || sta_version == 2 ||
                 sta_version == IWX_FW_CMD_VER_UNKNOWN);
     } else {
@@ -4960,7 +4969,7 @@ iwx_setup_he_rates(struct iwx_softc *sc)
             IWX_MAC_CONF_GROUP, IWX_EMLSR_TRANS_FAIL_NOTIF);
         ic->ic_mld_emlsr_supported =
             mac_cfg_version == 2 &&
-            (link_cfg_version == 1 ||
+            (link_cfg_version == 1 || link_cfg_version == 2 ||
                 link_cfg_version == IWX_FW_CMD_VER_UNKNOWN) &&
             queue_cfg_version == 3 && baid_cfg_version == 2 &&
             (mode_notif_version == 1 || mode_notif_version == 2) &&
@@ -7352,7 +7361,8 @@ iwx_phy_ctxt_cmd_v3(struct iwx_softc *sc, struct iwx_phy_ctxt *ctxt,
     cmd.rxchain_info |= htole32(idle_cnt << IWX_PHY_RX_CHAIN_CNT_POS);
     cmd.rxchain_info |= htole32(active_cnt <<
                                 IWX_PHY_RX_CHAIN_MIMO_CNT_POS);
-    if (iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP, 0x08) == 2)
+    /* v4 reserves this word; v5 reuses it for optional SBB parameters. */
+    if (iwx_lookup_cmd_ver(sc, IWX_LONG_GROUP, IWX_PHY_CONTEXT_CMD) >= 4)
         cmd.rxchain_info = 0;
     int err = iwx_send_cmd_pdu(sc, IWX_PHY_CONTEXT_CMD, 0, sizeof(cmd), &cmd);
     if (err || action == IWX_FW_CTXT_ACTION_REMOVE ||
@@ -7433,7 +7443,7 @@ iwx_phy_ctxt_cmd(struct iwx_softc *sc, struct iwx_phy_ctxt *ctxt,
     struct ieee80211_channel *chan = ctxt->channel;
     
     uint8_t phy_ver = iwx_lookup_cmd_ver(sc, IWX_LONG_GROUP, IWX_PHY_CONTEXT_CMD);
-    if (phy_ver == 3 || phy_ver == 4)
+    if (phy_ver == 3 || phy_ver == 4 || phy_ver == 5)
         return iwx_phy_ctxt_cmd_v3(sc, ctxt, chains_static,
                                    chains_dynamic, action, apply_time);
     
@@ -16579,10 +16589,21 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
               sc->sc_hw_rev, sc->sc_hw_rf_id);
         return false;
     }
+    sc->sc_fwname = sc->sc_cfg->fwname;
+    if (sc->sc_cfg == &iwl_gl_c0_fm_c0) {
+        int gl_api = 86;
+        PE_parse_boot_argn("itlwm_gl_api", &gl_api, sizeof(gl_api));
+        if (gl_api != 86 && gl_api != 92) {
+            XYLog("Invalid itlwm_gl_api=%d; supported BE200 APIs: 86, 92\n", gl_api);
+            return false;
+        }
+        if (gl_api == 92)
+            sc->sc_fwname = "iwlwifi-gl-c0-fm-c0-92.ucode";
+        sc->sc_pcitag->setProperty("AirportItlwm-BE200FirmwareAPI", gl_api, 32);
+    }
     XYLog("Found PCI dev %04x/%04x, rev=0x%x, rfid=0x%x fw: %s\n",
           device, subsystem_device,
-          sc->sc_hw_rev, sc->sc_hw_rf_id, sc->sc_cfg->fwname);
-    sc->sc_fwname = sc->sc_cfg->fwname;
+          sc->sc_hw_rev, sc->sc_hw_rf_id, sc->sc_fwname);
     sc->sc_device_family = sc->sc_cfg->device_family;
     sc->sc_integrated = sc->sc_cfg_params->integrated;
     sc->sc_ltr_delay = sc->sc_cfg_params->ltr_delay;

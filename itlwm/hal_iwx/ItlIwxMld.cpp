@@ -1479,7 +1479,8 @@ iwx_mld_auth(struct iwx_softc *sc)
     int link_version = iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD);
 
     if (ic->ic_opmode != IEEE80211_M_STA ||
-        (link_version != 1 && link_version != IWX_FW_CMD_VER_UNKNOWN) ||
+        (link_version != 1 && link_version != 2 &&
+            link_version != IWX_FW_CMD_VER_UNKNOWN) ||
         !isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_SESSION_PROT_CMD)) {
         record_error(ENOTSUP);
         return ENOTSUP;

@@ -291,7 +291,8 @@ struct iwx_mld_link_config_cmd {
 	uint8_t ibss_bssid_addr[6];
 	uint16_t reserved_for_ibss_bssid_addr;
 	uint32_t reserved1[8];
-} __packed; /* LINK_CONTEXT_CONFIG_CMD_API_S_VER_1 */
+} __packed; /* LINK_CONTEXT_CONFIG_CMD_API_S_VER_1, _VER_2 (listen_lmac reserved) */
+static_assert(sizeof(iwx_mld_link_config_cmd) == 208, "MLD LINK v1/v2 command ABI");
 
 struct iwx_mld_he_pkt_ext_v2 {
 	uint8_t pkt_ext_qam_th[2][5][2];
