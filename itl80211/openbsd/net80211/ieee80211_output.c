@@ -2165,7 +2165,8 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
             ieee80211_eht_mcs_nss_size(&ic->ic_he_cap_elem,
                 &ic->ic_eht_cap_elem, 0) : 0) +
 	    (ieee80211_node_allow_wpa3(ic, ni) ? 2 + 1 : 0) +
-        (ni->ni_rsnakms == IEEE80211_AKM_OWE ? IEEE80211_OWE_IE_LEN : 0)
+        (ni->ni_rsnakms == IEEE80211_AKM_OWE ? IEEE80211_OWE_IE_LEN : 0) +
+        (ni->ni_mbssid_index ? 5 : 0)
 #ifdef AIRPORT_WCL
         + ieee80211_mld_assoc_req_size(ic)
 #endif
@@ -2231,6 +2232,13 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
         LE_WRITE_2(frm, IEEE80211_OWE_GROUP); frm += 2;
         memcpy(frm, ni->ni_owe.public_key, IEEE80211_OWE_PUBLIC_LEN);
         frm += IEEE80211_OWE_PUBLIC_LEN;
+    }
+    if (ni->ni_mbssid_index) {
+        *frm++ = IEEE80211_ELEMID_XCAPS;
+        *frm++ = 3;
+        *frm++ = 0;
+        *frm++ = 0;
+        *frm++ = uint8_t(IEEE80211_EXTCAP_M_BSSID >> 16);
     }
     ni->ni_he_requested = addhe;
     if (ni->ni_he_requested)

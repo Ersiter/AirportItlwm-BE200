@@ -67,6 +67,7 @@
 
 #include <net80211/ieee80211_var.h>
 #include <net80211/ieee80211_priv.h>
+#include <net80211/ieee80211_mbssid.h>
 
 mbuf_t ieee80211_input_hwdecrypt(struct ieee80211com *,
                                  struct ieee80211_node *, mbuf_t,
@@ -2138,9 +2139,10 @@ parse_eht_operation:
  * [tlv] HT Capabilities (802.11n)
  * [tlv] HT Operation (802.11n)
  */
-void
-ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
-                          struct ieee80211_node *rni, struct ieee80211_rxinfo *rxi, int isprobe)
+static void
+ieee80211_recv_probe_resp_bss(struct ieee80211com *ic, mbuf_t m,
+    struct ieee80211_node *rni, struct ieee80211_rxinfo *rxi, int isprobe,
+    const IEEE80211Mbssid::Profile *profile)
 {
     struct ieee80211_node *ni = NULL;
     const struct ieee80211_frame *wh;
@@ -2793,6 +2795,15 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
     memcpy(ni->ni_tstamp, tstamp, sizeof(ni->ni_tstamp));
     ni->ni_intval = bintval;
     ni->ni_capinfo = capinfo;
+    if (profile) {
+        IEEE80211_ADDR_COPY(ni->ni_mbssid_transmitted, profile->transmitted);
+        ni->ni_mbssid_index = profile->index;
+        ni->ni_mbssid_indicator = profile->indicator;
+        if (profile->hasDtim) {
+            ni->ni_dtimperiod = profile->dtimPeriod;
+            ni->ni_dtimcount = profile->dtimCount;
+        }
+    }
     ni->ni_erp = erp;
     /* NB: must be after ni_chan is setup */
     ieee80211_setup_rates(ic, ni, rates, xrates, IEEE80211_F_DOSORT);
@@ -2824,6 +2835,49 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
             (*ic->ic_newassoc)(ic, ni, 1);
     }
 #endif
+}
+
+/* Expand profiles before publishing the transmitting BSS, including hidden sets. */
+void
+ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
+    struct ieee80211_node *rni, struct ieee80211_rxinfo *rxi, int isprobe)
+{
+    const size_t fixed = sizeof(struct ieee80211_frame) + 12;
+    if (mbuf_len(m) >= fixed) {
+        const uint8_t *frame = mtod(m, const uint8_t *);
+        const struct ieee80211_frame *wh = (const struct ieee80211_frame *)frame;
+        const uint8_t *ies = frame + fixed;
+        const size_t available = mbuf_len(m) - fixed;
+        size_t length = 0;
+        while (available - length >= 2 &&
+            size_t(ies[length + 1]) + 2 <= available - length)
+            length += 2 + ies[length + 1];
+        IEEE80211Mbssid::Cursor cursor = {};
+        IEEE80211Mbssid::Profile profile;
+        mbuf_t child = NULL;
+        while (IEEE80211Mbssid::nextProfile(ies, length, wh->i_addr3, cursor, profile)) {
+            if (child == NULL &&
+                mbuf_getcluster(MBUF_DONTWAIT, MT_DATA, MCLBYTES, &child) != 0)
+                break;
+            uint8_t *copy = mtod(child, uint8_t *);
+            size_t merged = 0;
+            if (!IEEE80211Mbssid::mergeProfile(ies, length, profile,
+                copy + fixed, MCLBYTES - fixed, merged))
+                continue;
+            memcpy(copy, frame, fixed);
+            struct ieee80211_frame *childwh = (struct ieee80211_frame *)copy;
+            IEEE80211_ADDR_COPY(childwh->i_addr2, profile.bssid);
+            IEEE80211_ADDR_COPY(childwh->i_addr3, profile.bssid);
+            copy[fixed - 2] = uint8_t(profile.capability);
+            copy[fixed - 1] = uint8_t(profile.capability >> 8);
+            mbuf_setlen(child, fixed + merged);
+            mbuf_pkthdr_setlen(child, fixed + merged);
+            ieee80211_recv_probe_resp_bss(ic, child, rni, rxi, isprobe, &profile);
+        }
+        if (child != NULL)
+            mbuf_freem(child);
+    }
+    ieee80211_recv_probe_resp_bss(ic, m, rni, rxi, isprobe, NULL);
 }
 
 #ifndef IEEE80211_STA_ONLY

@@ -694,6 +694,10 @@ iwx_mld_modify_link_fill(struct iwx_softc *sc, struct iwx_node *in,
 
     if ((changes & IWX_MLD_LINK_CONTEXT_MODIFY_HE_PARAMS) &&
         (ni->ni_flags & IEEE80211_NODE_HE)) {
+        if (ni->ni_mbssid_index) {
+            IEEE80211_ADDR_COPY(cmd->ref_bssid_addr, ni->ni_mbssid_transmitted);
+            cmd->bssid_index = ni->ni_mbssid_index;
+        }
         uint32_t he_op = ni->ni_he_oper_params;
         cmd->htc_trig_based_pkt_ext = he_op &
             IEEE80211_HE_OPERATION_DFLT_PE_DURATION_MASK;

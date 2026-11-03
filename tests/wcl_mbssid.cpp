@@ -1,235 +1,191 @@
 #include "../AirportItlwm/WCL/WCL.hpp"
-
+#include "../itl80211/openbsd/net80211/ieee80211_mbssid.h"
 #include <assert.h>
 #include <stdio.h>
-#include <string.h>
+#include <vector>
 
 namespace {
+using Bytes = std::vector<uint8_t>;
+const uint8_t transmitted[6] = {2, 0, 0, 0, 1, 0x3a};
 
-uint8_t frame[512];
-size_t length = 0;
-size_t mbLengthAt = 0;
-
-void element(uint8_t id, const uint8_t *payload, size_t size)
+void element(Bytes &ies, uint8_t id, const Bytes &data)
 {
-    frame[length++] = id;
-    frame[length++] = uint8_t(size);
-    if (size)
-        memcpy(frame + length, payload, size);
-    length += size;
+    assert(data.size() <= 255);
+    ies.push_back(id);
+    ies.push_back(uint8_t(data.size()));
+    ies.insert(ies.end(), data.begin(), data.end());
 }
 
-/* Nontransmitted BSSID Profile, laid out the way the captured frame does it:
- * the capability element, then that BSS's SSID, then its index. */
-void profile(const char *ssid, uint8_t index)
+Bytes profile(const char *name, uint8_t index, const Bytes &extra = {})
 {
-    uint8_t body[128];
-    size_t n = 0;
-    body[n++] = 83;              /* Nontransmitted BSSID Capability */
-    body[n++] = 2;
-    body[n++] = 0x11;
-    body[n++] = 0x11;
-    body[n++] = 0;               /* SSID element */
-    body[n++] = uint8_t(strlen(ssid));
-    memcpy(body + n, ssid, strlen(ssid));
-    n += strlen(ssid);
-    body[n++] = 85;              /* Multiple BSSID-Index */
-    body[n++] = 3;               /* BSSID index, DTIM period, DTIM count */
-    body[n++] = index;
-    body[n++] = 1;
-    body[n++] = 0;
-    frame[length++] = 0;         /* subelement: Nontransmitted BSSID Profile */
-    frame[length++] = uint8_t(n);
-    memcpy(frame + length, body, n);
-    length += n;
+    Bytes own = {83, 2, 0x11, 0x11};
+    element(own, 0, Bytes(name, name + strlen(name)));
+    element(own, 85, {index, 1, 0});
+    own.insert(own.end(), extra.begin(), extra.end());
+    return own;
 }
 
-/* Element id 71, then the MaxBSSID Indicator, then the subelements. */
-void multipleBssid(uint8_t maxIndicator)
+void addSet(Bytes &ies, uint8_t bits, const Bytes &own)
 {
-    frame[length++] = 71;
-    frame[length++] = 0;         /* filled in by endMultipleBssid */
-    mbLengthAt = length - 1;
-    frame[length++] = maxIndicator;
+    Bytes set = {bits};
+    element(set, 0, own);
+    element(ies, 71, set);
 }
 
-/* The element length covers the subelements, so it is known only at the end. */
-void endMultipleBssid()
+std::vector<IEEE80211Mbssid::Profile> decode(const Bytes &ies,
+    const uint8_t *tx = transmitted)
 {
-    frame[mbLengthAt] = uint8_t(length - mbLengthAt - 1);
+    IEEE80211Mbssid::Cursor cursor = {};
+    IEEE80211Mbssid::Profile p;
+    std::vector<IEEE80211Mbssid::Profile> result;
+    while (IEEE80211Mbssid::nextProfile(ies.data(), ies.size(), tx, cursor, p))
+        result.push_back(p);
+    return result;
 }
 
-void reset()
+Bytes merge(const Bytes &ies, const IEEE80211Mbssid::Profile &p)
 {
-    length = 0;
-    memset(frame, 0, sizeof(frame));
+    Bytes out(2048);
+    size_t length;
+    assert(IEEE80211Mbssid::mergeProfile(ies.data(), ies.size(), p,
+        out.data(), out.size(), length));
+    out.resize(length);
+    return out;
 }
 
-const uint8_t kTransmitted[6] = { 0x6e, 0x7f, 0xf0, 0x0d, 0xb5, 0x3a };
-
-} // namespace
-
-int main()
+const uint8_t *find(const Bytes &ies, unsigned id, int ext = -1)
 {
-    using AirportWCL::MbssidProfile;
-    using AirportWCL::decodeMbssidProfiles;
-    using AirportWCL::mbssidDeriveBssid;
-    MbssidProfile out[8];
-    const uint8_t empty = 0;
+    assert(IEEE80211Mbssid::validElements(ies.data(), ies.size()));
+    for (size_t pos = 0; pos < ies.size(); pos += 2 + ies[pos + 1])
+        if (ies[pos] == id && (ext < 0 || (ies[pos + 1] && ies[pos + 2] == ext)))
+            return ies.data() + pos;
+    return nullptr;
+}
 
-    /* The captured 6 GHz shape: empty SSID, the name in a profile, and an
-     * indicator of 1 so the two BSSIDs differ in the last bit. */
-    reset();
-    element(0, &empty, 0);
-    multipleBssid(1);
-    profile("1Joey_6", 1);
-    endMultipleBssid();
-    unsigned n = decodeMbssidProfiles(frame, length, kTransmitted, out, 8);
-    assert(n == 1);
-    assert(out[0].ssidLength == 7);
-    assert(memcmp(out[0].ssid, "1Joey_6", 7) == 0);
-    assert(out[0].bssid[5] == 0x3b);
-    assert(memcmp(out[0].bssid, kTransmitted, 5) == 0);
-    /* The capability of that BSS is in the profile, not in the transmitting one. */
-    assert(out[0].hasCapability);
-    assert(out[0].capability == 0x1111);
+const Bytes owe = {1, 0, 0, 15, 172, 4, 1, 0, 0, 15, 172, 4,
+    1, 0, 0, 15, 172, 18, 192, 0};
 
-    /* An indicator of 3 replaces the low three bits: 0x3a -> 0x39. */
-    reset();
-    element(0, &empty, 0);
-    multipleBssid(3);
-    profile("1Joey_6", 1);
-    endMultipleBssid();
-    n = decodeMbssidProfiles(frame, length, kTransmitted, out, 8);
-    assert(n == 1);
-    assert(out[0].bssid[5] == 0x39);
+void parserTests()
+{
+    Bytes ies = {0, 0};
+    addSet(ies, 3, profile("1Joey_6", 1));
+    auto profiles = decode(ies);
+    assert(profiles.size() == 1 && profiles[0].bssid[5] == 0x3b);
+    assert(profiles[0].capability == 0x1111 && profiles[0].hasDtim);
+    auto child = merge(ies, profiles[0]);
+    auto ssid = find(child, 0);
+    assert(ssid && ssid[1] == 7 && memcmp(ssid + 2, "1Joey_6", 7) == 0);
+    assert(!find(child, 71) && !find(child, 83) && !find(child, 85));
 
-    /* Two profiles under a wider indicator both come out. */
-    reset();
-    element(0, &empty, 0);
-    multipleBssid(2);
-    profile("1Joey_6", 1);
-    profile("backhaul", 2);
-    endMultipleBssid();
-    n = decodeMbssidProfiles(frame, length, kTransmitted, out, 8);
-    assert(n == 2);
-    assert(out[0].bssid[5] == 0x39);
-    assert(out[1].bssid[5] == 0x3a);
-    assert(memcmp(out[1].ssid, "backhaul", 8) == 0);
+    // Screenshot 4 supplies this prefix; the unpictured remainder is synthetic.
+    Bytes captured = {3, 0, 103, 83, 2, 17, 17, 0, 7, 49, 74, 111, 101,
+        121, 95, 54, 85, 3, 1, 1, 0, 70, 5, 51, 0, 0, 0, 0};
+    element(captured, 221, Bytes(76, 0));
+    assert(captured.size() == 106);
+    ies = {0, 0};
+    element(ies, 71, captured);
+    profiles = decode(ies);
+    assert(profiles.size() == 1);
+    child = merge(ies, profiles[0]);
+    assert(memcmp(find(child, 0) + 2, "1Joey_6", 7) == 0);
 
-    /* A profile with no name is not a name and must not become one. */
-    reset();
-    element(0, &empty, 0);
-    multipleBssid(1);
-    profile("", 1);
-    endMultipleBssid();
-    assert(decodeMbssidProfiles(frame, length, kTransmitted, out, 8) == 0);
-
-    /* An index outside the set is not an address we can derive. */
-    reset();
-    element(0, &empty, 0);
-    multipleBssid(1);
-    profile("1Joey_6", 2);
-    endMultipleBssid();
-    assert(decodeMbssidProfiles(frame, length, kTransmitted, out, 8) == 0);
-
-    /* No Multiple BSSID element: nothing to say. */
-    reset();
-    const uint8_t rates[1] = { 0x82 };
-    element(1, rates, 1);
-    assert(decodeMbssidProfiles(frame, length, kTransmitted, out, 8) == 0);
-
-    /* A frame cut short must be refused, not walked past its end. */
-    reset();
-    element(0, &empty, 0);
-    multipleBssid(2);
-    profile("1Joey_6", 1);
-    endMultipleBssid();
-    assert(decodeMbssidProfiles(frame, length - 3, kTransmitted, out, 8) == 0);
-
-    /* An indicator wider than one octet still derives the right address. */
-    uint8_t derived[6];
-    const uint8_t base[6] = { 0x02, 0x00, 0x00, 0x00, 0x01, 0xff };
-    mbssidDeriveBssid(base, 9, 0x101, derived);
-    assert(derived[5] == 0x01);
-    assert(derived[4] == 0x01);
-
-    /* SSID statuses: the case that matters is telling them apart. */
-    using AirportWCL::SsidStatus;
-    using AirportWCL::parseSsid;
-    uint8_t name[32];
-    uint8_t nameLength = 0;
-
-    reset();
-    const uint8_t visibleName[] = { '1', 'J', 'o', 'e', 'y', '_', '6' };
-    element(0, visibleName, sizeof(visibleName));
-    assert(parseSsid(frame, length, name, sizeof(name), nameLength) == SsidStatus::Ok);
-    assert(nameLength == 7);
-    assert(memcmp(name, "1Joey_6", 7) == 0);
-
-    reset();
-    element(0, &empty, 0);
-    nameLength = 9;
-    assert(parseSsid(frame, length, name, sizeof(name), nameLength) == SsidStatus::Hidden);
-    assert(nameLength == 0);
-
-    reset();
-    const uint8_t zeros[8] = {};
-    element(0, zeros, sizeof(zeros));
-    assert(parseSsid(frame, length, name, sizeof(name), nameLength) == SsidStatus::AllZero);
-
-    reset();
-    const uint8_t rates2[1] = { 0x82 };
-    element(1, rates2, sizeof(rates2));
-    assert(parseSsid(frame, length, name, sizeof(name), nameLength) == SsidStatus::NoElement);
-
-    /* A name element whose length runs past the buffer is truncated, not Ok. */
-    reset();
-    frame[length++] = 0;
-    frame[length++] = 20;
-    memcpy(frame + length, visibleName, sizeof(visibleName));
-    length += sizeof(visibleName);
-    assert(parseSsid(frame, length, name, sizeof(name), nameLength) == SsidStatus::Truncated);
-
-    /* Longer than a name may be. */
-    reset();
-    const uint8_t longName[33] = { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-                                   1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 };
-    element(0, longName, sizeof(longName));
-    assert(parseSsid(frame, length, name, sizeof(name), nameLength) == SsidStatus::TooLong);
-
-    /* The profile's own elements replace the transmitting BSS's. */
-    reset();
-    element(0, &empty, 0);           /* the set's empty SSID ... */
-    const uint8_t keep[3] = { 0xde, 0xad, 0xbe };
-    element(250, keep, sizeof(keep));/* ... an element the profile keeps ... */
-    multipleBssid(1);
-    profile("1Joey_6", 1);           /* ... and its own SSID on top */
-    endMultipleBssid();
-    n = decodeMbssidProfiles(frame, length, kTransmitted, out, 8);
-    assert(n == 1);
-    uint8_t merged[256];
-    size_t mergedLength = 0;
-    assert(AirportWCL::mergeMbssidProfile(frame, length, out[0], merged,
-                                          sizeof(merged), mergedLength));
-    unsigned ssidCount = 0, keepCount = 0, setCount = 0;
-    for (size_t pos = 0; pos + 2 <= mergedLength; pos += 2 + merged[pos + 1]) {
-        const size_t elementLength = merged[pos + 1];
-        assert(pos + 2 + elementLength <= mergedLength);
-        if (merged[pos] == 0) {
-            assert(elementLength == 7);
-            assert(memcmp(merged + pos + 2, "1Joey_6", 7) == 0);
-            ++ssidCount;
-        } else if (merged[pos] == 250) {
-            ++keepCount;
-        } else if (merged[pos] == 71) {
-            ++setCount;
+    // Add the index modulo 2^n, including carry and wrap of nonzero low bits.
+    for (unsigned bits = 1; bits <= 8; ++bits) {
+        for (unsigned index = 1; index < (1U << bits); ++index) {
+            uint8_t tx[6] = {2, 0, 0, 0, 1, 255};
+            ies.clear(); addSet(ies, uint8_t(bits), profile("test", uint8_t(index)));
+            profiles = decode(ies, tx);
+            assert(profiles.size() == 1);
+            const unsigned mask = (1U << bits) - 1;
+            assert(profiles[0].bssid[5] == ((255U & ~mask) | ((255U + index) & mask)));
+            assert(memcmp(profiles[0].bssid, tx, 5) == 0);
         }
     }
-    assert(ssidCount == 1);   /* the set's empty one did not survive */
-    assert(keepCount == 1);   /* an element the profile does not restate */
-    assert(setCount == 0);    /* the set's own element is gone */
+    // All profiles across several elements, including hidden children and duplicates.
+    ies.clear();
+    for (unsigned i = 1; i <= 12; ++i)
+        addSet(ies, 4, profile(i == 2 ? "" : "test", uint8_t(i)));
+    addSet(ies, 4, profile("duplicate", 1));
+    assert(decode(ies).size() == 12);
+    for (uint8_t badIndex : {uint8_t(0), uint8_t(8)}) {
+        ies.clear(); addSet(ies, 3, profile("test", badIndex));
+        assert(decode(ies).empty());
+    }
+    Bytes own = profile("test", 1);
+    own.push_back(0); // A valid prefix followed by a truncated element is rejected.
+    ies.clear(); addSet(ies, 3, own);
+    assert(decode(ies).empty());
+    ies.clear(); addSet(ies, 3, profile("test", 1));
+    for (size_t len = 0; len < ies.size(); ++len)
+        assert(decode(Bytes(ies.begin(), ies.begin() + len)).empty());
+    std::puts("PASS MBSSID parser: Joey prefix, hidden parent, all indices, multiple elements, malformed and duplicate profiles");
+}
 
-    printf("wcl_mbssid: ok\n");
-    return 0;
+void inheritanceTests()
+{
+    Bytes ies = {0, 0};
+    Bytes parentRsn = owe;
+    parentRsn[17] = 8; // Parent SAE, child OWE.
+    element(ies, 48, parentRsn);
+    element(ies, 255, {35, 10});
+    element(ies, 255, {36, 20});
+    element(ies, 255, {108, 30});
+    element(ies, 255, {107, 0, 0});
+    element(ies, 5, {2, 3, 0, 0});
+    Bytes extra;
+    element(extra, 48, owe);
+    element(extra, 255, {108, 99});
+    addSet(ies, 3, profile("1Joey_6", 1, extra));
+    auto p = decode(ies)[0];
+    auto child = merge(ies, p);
+    assert(AirportWCL::rsnIsOWE(find(child, 48), owe.size() + 2));
+    assert(find(child, 255, 35)[3] == 10 && find(child, 255, 36)[3] == 20);
+    assert(find(child, 255, 108)[3] == 99 && !find(child, 255, 107));
+    assert(find(child, 5)[2] == 0 && find(child, 5)[3] == 1);
+
+    // The child can explicitly omit an ordinary IE and one extension ID.
+    extra.clear();
+    element(extra, 255, {56, 1, 48, 1, 35});
+    ies.resize(p.offset - 5); // Remove the entire previous Multiple BSSID element.
+    addSet(ies, 3, profile("open", 1, extra));
+    child = merge(ies, decode(ies)[0]);
+    assert(!find(child, 48) && !find(child, 255, 35));
+    assert(find(child, 255, 36) && find(child, 255, 108));
+    assert(!find(child, 255, 56));
+
+    extra.clear(); element(extra, 255, {56, 2, 48}); // Invalid list lengths.
+    ies.clear(); addSet(ies, 3, profile("invalid", 1, extra));
+    p = decode(ies)[0];
+    uint8_t out[256]; size_t outLength = 99;
+    assert(!IEEE80211Mbssid::mergeProfile(ies.data(), ies.size(), p,
+        out, sizeof(out), outLength) && outLength == 0);
+    ies.clear(); addSet(ies, 3, profile("test", 1));
+    p = decode(ies)[0];
+    assert(!IEEE80211Mbssid::mergeProfile(ies.data(), ies.size(), p, out, 1, outLength));
+    // Fragments of an excluded parent MLE travel with that element.
+    ies.clear();
+    Bytes parentMle(255, 0); parentMle[0] = 107;
+    element(ies, 255, parentMle); element(ies, 242, {1, 2, 3});
+    addSet(ies, 3, profile("test", 1));
+    child = merge(ies, decode(ies)[0]);
+    assert(!find(child, 255, 107) && !find(child, 242));
+    ies.clear(); parentMle[0] = 35;
+    element(ies, 255, parentMle); element(ies, 242, {1, 2, 3});
+    addSet(ies, 3, profile("test", 1));
+    child = merge(ies, decode(ies)[0]);
+    assert(find(child, 255, 35) && find(child, 242));
+    std::puts("PASS MBSSID inheritance: child OWE RSN, independent HE/EHT extensions, MLD identity, DTIM and Non-Inheritance");
+}
+}
+
+#ifdef MBSSID_RX_WRAPPER
+void rxTests();
+#endif
+int main()
+{
+    parserTests();
+    inheritanceTests();
+#ifdef MBSSID_RX_WRAPPER
+    rxTests();
+#endif
 }

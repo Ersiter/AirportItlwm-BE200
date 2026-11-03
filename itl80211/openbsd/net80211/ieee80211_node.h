@@ -371,6 +371,9 @@ struct ieee80211_node {
 	/* header */
 	u_int8_t		ni_macaddr[IEEE80211_ADDR_LEN];
 	u_int8_t		ni_bssid[IEEE80211_ADDR_LEN];
+    uint8_t         ni_mbssid_transmitted[IEEE80211_ADDR_LEN];
+    uint8_t         ni_mbssid_index;
+    uint8_t         ni_mbssid_indicator;
 	u_int8_t		ni_mld_addr[IEEE80211_ADDR_LEN];
 	u_int8_t		ni_mld_link_id;
 	u_int8_t		ni_mld_valid;

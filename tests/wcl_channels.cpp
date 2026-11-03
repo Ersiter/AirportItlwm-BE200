@@ -150,8 +150,6 @@ int main()
     assert(AirportWCL::is6GHzPsc(229));
     assert(!AirportWCL::is6GHzPsc(1));
     assert(!AirportWCL::is6GHzPsc(9));
-    const uint8_t crcInput[] = "123456789";
-    assert(AirportWCL::shortSsid(crcInput, sizeof(crcInput) - 1) == 0xcbf43926U);
 
     uint8_t mappedLegacy[32] = {}, mapped6GHz[32] = {};
     mappedLegacy[1 / 8] |= 1U << (1 % 8);

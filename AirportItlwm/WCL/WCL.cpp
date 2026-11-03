@@ -759,6 +759,9 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
         return;
     }
     length = iePrefix;
+    if (node->ni_mbssid_index)
+        instance->pciNub->setProperty("AirportItlwm-WCLMbssidProfiles",
+            ++wclMbssidProfiles, 32);
 
     uint8_t ssidBuf[IEEE80211_NWID_LEN] = {};
     uint8_t parsedLength = 0;
@@ -861,59 +864,6 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
     }
     postWCLScanResult(node, node->ni_bssid, ssidPtr, ssidBytes, spec, channel,
                       sixGHz, ies, length, node->ni_capinfo);
-    /*
-     * The radio may be speaking for other BSSIDs as well. Their names live in
-     * the profiles this beacon carries, and without them a radio that groups
-     * its networks this way appears under none of the names it advertises.
-     */
-    AirportWCL::MbssidProfile profiles[8];
-    unsigned profileCount = AirportWCL::decodeMbssidProfiles(ies, length,
-        node->ni_bssid, profiles, 8);
-    for (unsigned i = 0; i < profileCount; ++i) {
-        if (IEEE80211_ADDR_EQ(profiles[i].bssid, node->ni_bssid))
-            continue;
-        /*
-         * The RNR a 2.4/5 GHz beacon carried already names the 6 GHz BSSIDs its
-         * radio has, paired with the CRC32 of each one's SSID. Where such a
-         * pair matches this profile, take its address: that is the access
-         * point's own statement of where the network is, and it holds even for
-         * implementations whose index does not follow the bit layout the
-         * derivation assumes.
-         */
-        uint8_t bssid[6];
-        memcpy(bssid, profiles[i].bssid, 6);
-        const uint32_t crc = AirportWCL::shortSsid(profiles[i].ssid,
-                                                   profiles[i].ssidLength);
-        for (uint8_t hint = 0; hint < ic->ic_wcl_scan_rnr_count; ++hint) {
-            if (ic->ic_wcl_scan_rnr_channel[hint] != channel ||
-                ic->ic_wcl_scan_rnr_short_ssid[hint] != crc)
-                continue;
-            memcpy(bssid, ic->ic_wcl_scan_rnr_bssid[hint], 6);
-            break;
-        }
-        /*
-         * Publish the elements that BSS would have sent itself, not the
-         * transmitting one's: a profile overrides the elements it carries, and
-         * a result carrying someone else's RSN is a different network than the
-         * one it names.
-         */
-        uint8_t merged[1024];
-        size_t mergedLength = 0;
-        const uint8_t *chain = ies;
-        size_t chainLength = length;
-        if (AirportWCL::mergeMbssidProfile(ies, length, profiles[i],
-                                           merged, sizeof(merged), mergedLength)) {
-            chain = merged;
-            chainLength = mergedLength;
-        }
-        instance->pciNub->setProperty("AirportItlwm-WCLMbssidProfiles",
-            ++wclMbssidProfiles, 32);
-        postWCLScanResult(node, bssid, profiles[i].ssid,
-                          profiles[i].ssidLength, spec, channel, sixGHz, chain,
-                          chainLength,
-                          profiles[i].hasCapability ? profiles[i].capability
-                                                    : node->ni_capinfo);
-    }
 }
 
 void AirportItlwmSkywalkInterface::postWCLScanResult(const ieee80211_node *node,
