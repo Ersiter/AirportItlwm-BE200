@@ -6062,6 +6062,21 @@ iwx_ccmp_decap(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni,
    return 0;
 }
 
+/* Called after MMIE selection and hardware MIC validation. */
+static int
+iwx_check_mgmt_replay(struct iwx_softc *sc, mbuf_t m, struct ieee80211_key *key)
+{
+    const uint8_t *mmie = (const uint8_t *)mbuf_data(m) + mbuf_len(m) -
+        ieee80211_cipher_mmie_len(key->k_cipher);
+    uint64_t ipn = LE_READ_6(mmie + 4);
+    if (ipn <= key->k_mgmt_rsc) {
+        sc->sc_ic.ic_stats.is_cmac_replays++;
+        return 1;
+    }
+    key->k_mgmt_rsc = ipn;
+    return 0;
+}
+
 int ItlIwx::
 iwx_rx_hwdecrypt(struct iwx_softc *sc, mbuf_t m, uint32_t rx_pkt_status,
                  struct ieee80211_rxinfo *rxi)
@@ -6085,9 +6100,10 @@ iwx_rx_hwdecrypt(struct iwx_softc *sc, mbuf_t m, uint32_t rx_pkt_status,
         return 0;
     
     ni = ieee80211_find_rxnode(ic, wh);
+    struct ieee80211_node *security_ni = ieee80211_mld_primary_node(ic, ni);
     if (type == IEEE80211_FC0_TYPE_MGT &&
         subtype == IEEE80211_FC0_SUBTYPE_BEACON &&
-        (ni->ni_flags & IEEE80211_NODE_BEACON_PROT)) {
+        (security_ni->ni_flags & IEEE80211_NODE_BEACON_PROT)) {
         key = ieee80211_get_rxkey(ic, m, ni);
         if (key != NULL) {
             if (!(key->k_flags & IEEE80211_KEY_BIGTK) ||
@@ -6103,22 +6119,26 @@ iwx_rx_hwdecrypt(struct iwx_softc *sc, mbuf_t m, uint32_t rx_pkt_status,
                 ret = 1;
                 goto out;
             }
+            if (iwx_check_mgmt_replay(sc, m, key)) {
+                ret = 1;
+                goto out;
+            }
             rxi->rxi_flags |= IEEE80211_RXI_HWDEC;
         }
     }
     if (type == IEEE80211_FC0_TYPE_MGT &&
         IEEE80211_IS_MULTICAST(wh->i_addr1) &&
         !(wh->i_fc[1] & IEEE80211_FC1_PROTECTED) &&
-        (ni->ni_flags & IEEE80211_NODE_MFP) &&
-        (ni->ni_flags & IEEE80211_NODE_RXMGMTPROT) &&
+        (security_ni->ni_flags & IEEE80211_NODE_MFP) &&
+        (security_ni->ni_flags & IEEE80211_NODE_RXMGMTPROT) &&
         (subtype == IEEE80211_FC0_SUBTYPE_DISASSOC ||
          subtype == IEEE80211_FC0_SUBTYPE_DEAUTH ||
          subtype == IEEE80211_FC0_SUBTYPE_ACTION) &&
-        (ni->ni_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP_GMAC_128 ||
-         ni->ni_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP_GMAC_256)) {
+        (security_ni->ni_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP_GMAC_128 ||
+         security_ni->ni_rsngroupmgmtcipher == IEEE80211_CIPHER_BIP_GMAC_256)) {
         key = ieee80211_get_rxkey(ic, m, ni);
         if (key == NULL || !(key->k_flags & IEEE80211_KEY_IGTK) ||
-            key->k_cipher != ni->ni_rsngroupmgmtcipher ||
+            key->k_cipher != security_ni->ni_rsngroupmgmtcipher ||
             key->k_len != ieee80211_cipher_keylen(key->k_cipher) ||
             (rx_pkt_status & IWX_RX_MPDU_RES_STATUS_SEC_ENC_MSK) ==
                 IWX_RX_MPDU_RES_STATUS_SEC_NO_ENC ||
@@ -6131,16 +6151,20 @@ iwx_rx_hwdecrypt(struct iwx_softc *sc, mbuf_t m, uint32_t rx_pkt_status,
             ret = 1;
             goto out;
         }
+        if (iwx_check_mgmt_replay(sc, m, key)) {
+            ret = 1;
+            goto out;
+        }
         rxi->rxi_flags |= IEEE80211_RXI_HWDEC;
     }
     /* Handle hardware decryption. */
     if (((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) != IEEE80211_FC0_TYPE_CTL)
         && (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) &&
-        (ni->ni_flags & IEEE80211_NODE_RXPROT) &&
+        (security_ni->ni_flags & IEEE80211_NODE_RXPROT) &&
         ((!IEEE80211_IS_MULTICAST(wh->i_addr1) &&
-          ni->ni_rsncipher == IEEE80211_CIPHER_CCMP) ||
+          security_ni->ni_rsncipher == IEEE80211_CIPHER_CCMP) ||
          (IEEE80211_IS_MULTICAST(wh->i_addr1) &&
-          ni->ni_rsngroupcipher == IEEE80211_CIPHER_CCMP))) {
+          security_ni->ni_rsngroupcipher == IEEE80211_CIPHER_CCMP))) {
         if ((rx_pkt_status & IWX_RX_MPDU_RES_STATUS_SEC_ENC_MSK) !=
             IWX_RX_MPDU_RES_STATUS_SEC_CCM_ENC) {
             ic->ic_stats.is_ccmp_dec_errs++;
@@ -11518,7 +11542,7 @@ iwx_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
      * unauthorised with nothing left to authorise it; let the handshake fail
      * and restart instead.
      */
-    if (mgmt_key)
+    if (mgmt_key || (k->k_flags & IEEE80211_KEY_MLO))
         return err;
 
     if (sc->sc_setkey_nkeys >= nitems(sc->sc_setkey_arg))

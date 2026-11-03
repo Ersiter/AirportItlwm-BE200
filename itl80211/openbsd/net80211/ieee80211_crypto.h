@@ -122,6 +122,7 @@ struct ieee80211_key {
 #define IEEE80211_KEY_TX	0x00000002	/* Tx+Rx */
 #define IEEE80211_KEY_IGTK	0x00000004	/* integrity group key */
 #define IEEE80211_KEY_BIGTK	0x00000008	/* beacon integrity group key */
+#define IEEE80211_KEY_MLO	0x00000010	/* group key scoped to one link */
 #define IEEE80211_KEY_SWCRYPTO	0x00000080	/* loaded for software crypto */
 
 	u_int			k_len;
@@ -156,7 +157,11 @@ struct	ieee80211_node;
 void	ieee80211_crypto_attach(struct _ifnet *);
 void	ieee80211_crypto_detach(struct _ifnet *);
 
+struct ieee80211_key *ieee80211_get_rxgroupkeys(struct ieee80211com *, const uint8_t *);
 void	ieee80211_crypto_clear_groupkeys(struct ieee80211com *);
+#ifdef AIRPORT_WCL
+void ieee80211_mld_clear_groupkeys(struct ieee80211com *);
+#endif
 struct	ieee80211_key *ieee80211_get_txkey(struct ieee80211com *,
 	    const struct ieee80211_frame *, struct ieee80211_node *);
 struct	ieee80211_key *ieee80211_get_rxkey(struct ieee80211com *,

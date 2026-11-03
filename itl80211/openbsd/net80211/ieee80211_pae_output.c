@@ -333,6 +333,21 @@ ieee80211_send_4way_msg1(struct ieee80211com *ic, struct ieee80211_node *ni)
 }
 #endif	/* IEEE80211_STA_ONLY */
 
+#ifdef AIRPORT_WCL
+static uint8_t *
+ieee80211_add_mlo_mac_kde(uint8_t *frm, struct ieee80211com *ic,
+    struct ieee80211_node *ni)
+{
+    *frm++ = IEEE80211_ELEMID_VENDOR;
+    *frm++ = 10;
+    memcpy(frm, IEEE80211_OUI, 3);
+    frm += 3;
+    *frm++ = IEEE80211_KDE_MACADDR;
+    memcpy(frm, ieee80211_rsn_own_addr(ic, ni), IEEE80211_ADDR_LEN);
+    return frm + IEEE80211_ADDR_LEN;
+}
+#endif
+
 /*
  * Send 4-Way Handshake Message 2 to the authenticator.
  */
@@ -346,6 +361,13 @@ ieee80211_send_4way_msg2(struct ieee80211com *ic, struct ieee80211_node *ni,
     u_int16_t info;
     u_int8_t *frm;
     size_t pktlen = 0;
+#ifdef AIRPORT_WCL
+    if (ni->ni_sae.sae_auth.mld) {
+        pktlen += 12;
+        for (int i = 1; i < ic->ic_mld_link_count; i++)
+            pktlen += 13;
+    }
+#endif
     
     ni->ni_rsn_supp_state = RSNA_SUPP_PTKNEGOTIATING;
     if (ni->ni_rsnprotos == IEEE80211_PROTO_WPA)
@@ -385,6 +407,22 @@ ieee80211_send_4way_msg2(struct ieee80211com *ic, struct ieee80211_node *ni,
             ni->ni_sae.sae_state == SAE_STATE_ACCEPTED)
             frm = ieee80211_add_rsnxe(frm, ic, ni);
     }
+#ifdef AIRPORT_WCL
+    if (ni->ni_sae.sae_auth.mld) {
+        frm = ieee80211_add_mlo_mac_kde(frm, ic, ni);
+        for (int i = 1; i < ic->ic_mld_link_count; i++) {
+            struct ieee80211_mld_link_info *link = &ic->ic_mld_links[i];
+            *frm++ = IEEE80211_ELEMID_VENDOR;
+            *frm++ = 11;
+            memcpy(frm, IEEE80211_OUI, 3);
+            frm += 3;
+            *frm++ = IEEE80211_KDE_MLO_LINK;
+            *frm++ = link->ap_link_id;
+            memcpy(frm, link->local_addr, IEEE80211_ADDR_LEN);
+            frm += IEEE80211_ADDR_LEN;
+        }
+    }
+#endif
     size_t l = frm - (u_int8_t *)key;
     mbuf_pkthdr_setlen(m, l);
     mbuf_setlen(m, l);
@@ -491,7 +529,12 @@ ieee80211_send_4way_msg4(struct ieee80211com *ic, struct ieee80211_node *ni)
     u_int16_t info;
     
     ni->ni_rsn_supp_state = RNSA_SUPP_PTKDONE;
-    m = ieee80211_get_eapol_key(MBUF_DONTWAIT, MT_DATA, 0);
+    size_t kde_len = 0;
+#ifdef AIRPORT_WCL
+    if (ni->ni_sae.sae_auth.mld)
+        kde_len = 12;
+#endif
+    m = ieee80211_get_eapol_key(MBUF_DONTWAIT, MT_DATA, kde_len);
     if (m == NULL)
         return ENOMEM;
     key = mtod(m, struct ieee80211_eapol_key *);
@@ -513,9 +556,12 @@ ieee80211_send_4way_msg4(struct ieee80211com *ic, struct ieee80211_node *ni)
     /* write the key info field */
     BE_WRITE_2(key->info, info);
     
-    /* empty key data field */
-    mbuf_pkthdr_setlen(m, sizeof(*key));
-    mbuf_setlen(m, sizeof(*key));
+#ifdef AIRPORT_WCL
+    if (kde_len)
+        ieee80211_add_mlo_mac_kde((uint8_t *)&key[1], ic, ni);
+#endif
+    mbuf_pkthdr_setlen(m, sizeof(*key) + kde_len);
+    mbuf_setlen(m, sizeof(*key) + kde_len);
 
     /* Preserve the pre-key TX policy if this M4 waits in the output queue. */
     if ((ic->ic_flags & IEEE80211_F_RSNON) &&

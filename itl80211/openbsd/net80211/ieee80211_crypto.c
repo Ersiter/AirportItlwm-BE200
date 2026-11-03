@@ -111,10 +111,41 @@ ieee80211_crypto_detach(struct _ifnet *ifp)
 #endif
 }
 
+#ifdef AIRPORT_WCL
+void
+ieee80211_mld_clear_groupkeys(struct ieee80211com *ic)
+{
+    for (int i = 0; i < ic->ic_mld_link_count; i++) {
+        struct ieee80211_mld_link_info *link = &ic->ic_mld_links[i];
+        for (int kid = 0; kid < IEEE80211_GROUP_NKID; kid++) {
+            struct ieee80211_key *k = &link->keys[kid];
+            if (k->k_cipher != IEEE80211_CIPHER_NONE)
+                (*ic->ic_delete_key)(ic, link->ni, k);
+            explicit_bzero(k, sizeof(*k));
+        }
+    }
+}
+
+static struct ieee80211_mld_link_info *
+ieee80211_mld_key_link(struct ieee80211com *ic, const uint8_t *addr, int tx)
+{
+    for (int i = 0; i < ic->ic_mld_link_count; i++) {
+        struct ieee80211_mld_link_info *link = &ic->ic_mld_links[i];
+        if (link->assoc_accepted && link->ni != NULL &&
+            IEEE80211_ADDR_EQ(addr, tx ? link->local_addr : link->ni->ni_macaddr))
+            return link;
+    }
+    return NULL;
+}
+#endif
+
 void
 ieee80211_crypto_clear_groupkeys(struct ieee80211com *ic)
 {
 	int i;
+#ifdef AIRPORT_WCL
+    ieee80211_mld_clear_groupkeys(ic);
+#endif
 
 	for (i = 0; i < IEEE80211_GROUP_NKID; i++) {
         struct ieee80211_key *k = &ic->ic_nw_keys[i];
@@ -234,6 +265,16 @@ ieee80211_get_txkey(struct ieee80211com *ic, const struct ieee80211_frame *wh,
         ni->ni_rsncipher != IEEE80211_CIPHER_USEGROUP)
         return &ni->ni_pairwise_key;
 
+#ifdef AIRPORT_WCL
+    if (ni->ni_sae.sae_auth.mld) {
+        struct ieee80211_mld_link_info *link =
+            ieee80211_mld_key_link(ic, wh->i_addr2, 1);
+        if (link == NULL)
+            return NULL;
+        kid = (ni->ni_flags & IEEE80211_NODE_MFP) ? link->igtk_kid : link->def_txkey;
+        return &link->keys[kid];
+    }
+#endif
     /* All other cases (including WEP) use a group key. */
     if (ni->ni_flags & IEEE80211_NODE_MFP)
         kid = ic->ic_igtk_kid;
@@ -241,6 +282,18 @@ ieee80211_get_txkey(struct ieee80211com *ic, const struct ieee80211_frame *wh,
         kid = ic->ic_def_txkey;
 
     return &ic->ic_nw_keys[kid];
+}
+
+struct ieee80211_key *
+ieee80211_get_rxgroupkeys(struct ieee80211com *ic, const uint8_t *addr)
+{
+#ifdef AIRPORT_WCL
+    if (ic->ic_bss->ni_sae.sae_auth.mld) {
+        struct ieee80211_mld_link_info *link = ieee80211_mld_key_link(ic, addr, 0);
+        return link != NULL ? link->keys : NULL;
+    }
+#endif
+    return ic->ic_nw_keys;
 }
 
 struct ieee80211_key *
@@ -252,10 +305,16 @@ ieee80211_get_rxkey(struct ieee80211com *ic, mbuf_t m,
    u_int16_t kid;
    u_int8_t *ivp, *mmie;
    int hdrlen, firstkid, lastkid, mmie_len;
+   struct ieee80211_key *groupkeys = ic->ic_nw_keys;
 
    ni = ieee80211_mld_primary_node(ic, ni);
 
    wh = mtod(m, struct ieee80211_frame *);
+   if (IEEE80211_IS_MULTICAST(wh->i_addr1)) {
+       groupkeys = ieee80211_get_rxgroupkeys(ic, wh->i_addr2);
+       if (groupkeys == NULL)
+           return NULL;
+   }
    if ((ic->ic_flags & IEEE80211_F_RSNON) &&
        !IEEE80211_IS_MULTICAST(wh->i_addr1) &&
        ni->ni_rsncipher != IEEE80211_CIPHER_USEGROUP) {
@@ -270,7 +329,7 @@ ieee80211_get_rxkey(struct ieee80211com *ic, mbuf_t m,
            return NULL;
        ivp = (u_int8_t *)wh + hdrlen;
        kid = ivp[3] >> 6;
-       k = &ic->ic_nw_keys[kid];
+       k = &groupkeys[kid];
    } else {
        /* retrieve the IGTK or BIGTK id using its cipher-specific MMIE */
        if ((wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK) ==
@@ -282,7 +341,7 @@ ieee80211_get_rxkey(struct ieee80211com *ic, mbuf_t m,
            lastkid = 5;
        }
        for (kid = firstkid; kid <= lastkid; kid++) {
-           k = &ic->ic_nw_keys[kid];
+           k = &groupkeys[kid];
            if ((firstkid == 6 && !(k->k_flags & IEEE80211_KEY_BIGTK)) ||
                (firstkid == 4 && !(k->k_flags & IEEE80211_KEY_IGTK)))
                continue;

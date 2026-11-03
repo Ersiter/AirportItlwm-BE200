@@ -2575,6 +2575,7 @@ ieee80211_mld_clear_links(struct ieee80211com *ic)
 {
 	uint8_t i;
 
+    ieee80211_mld_clear_groupkeys(ic);
 	for (i = 1; i < ic->ic_mld_link_count; i++) {
 		if (ic->ic_mld_links[i].ni != NULL)
 			ieee80211_release_node(ic, ic->ic_mld_links[i].ni);

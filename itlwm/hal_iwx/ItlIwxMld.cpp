@@ -1101,6 +1101,14 @@ iwx_mld_set_key(struct iwx_softc *sc, struct ieee80211_node *ni,
     int is_bigtk = (k->k_flags & IEEE80211_KEY_BIGTK) != 0;
     int mgmt_key = is_igtk || is_bigtk;
     int err;
+    uint32_t sta_mask = sc->sc_mld_sta_mask;
+    if (k->k_flags & IEEE80211_KEY_MLO) {
+        int slot = iwx_mld_link_slot(&sc->sc_ic, ni);
+        if (slot < 0 || slot >= sc->sc_ic.ic_mld_link_count ||
+            sc->sc_mld_sta_ids[slot] >= 32)
+            return remove ? 0 : ENXIO;
+        sta_mask &= 1U << sc->sc_mld_sta_ids[slot];
+    }
 
     if (iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP, IWX_MLD_SEC_KEY_CMD) != 1) {
         iwx_mld_record_key_reject(sc, ni, k, remove, "cmd-version");
@@ -1147,7 +1155,7 @@ iwx_mld_set_key(struct iwx_softc *sc, struct ieee80211_node *ni,
     }
     if (!(sc->sc_flags & IWX_FLAG_STA_ACTIVE))
         return remove ? 0 : ENXIO;
-    if (!sc->sc_mld_sta_mask)
+    if (!sta_mask)
         return remove ? 0 : ENXIO;
     if (mgmt_key || (k->k_flags & IEEE80211_KEY_GROUP))
         flags |= IWX_MLD_SEC_KEY_FLAG_MCAST_KEY;
@@ -1160,13 +1168,14 @@ iwx_mld_set_key(struct iwx_softc *sc, struct ieee80211_node *ni,
     memset(&cmd, 0, sizeof(cmd));
     cmd.action = htole32(remove ? IWX_FW_CTXT_ACTION_REMOVE : IWX_FW_CTXT_ACTION_ADD);
     if (remove) {
-        cmd.u.remove.sta_mask = htole32(sc->sc_mld_sta_mask);
+        cmd.u.remove.sta_mask = htole32(sta_mask);
         cmd.u.remove.key_id = htole32(k->k_id);
         cmd.u.remove.key_flags = htole32(flags);
     } else {
-        cmd.u.add.sta_mask = htole32(sc->sc_mld_sta_mask);
+        cmd.u.add.sta_mask = htole32(sta_mask);
         cmd.u.add.key_id = htole32(k->k_id);
         cmd.u.add.key_flags = htole32(flags);
+        cmd.u.add.rx_seq = htole64(mgmt_key ? k->k_mgmt_rsc : k->k_rsc[0]);
         cmd.u.add.tx_seq = htole64(k->k_tsc);
         memcpy(cmd.u.add.key, k->k_key, k->k_len);
     }
@@ -1213,6 +1222,14 @@ iwx_mld_rm_sta_local(struct iwx_softc *sc, struct iwx_node *in)
         if (ieee80211_is_bip_cipher(key->k_cipher))
             ieee80211_delete_key(ic, &in->in_ni, key);
         explicit_bzero(key, sizeof(*key));
+    }
+    for (int i = 0; i < ic->ic_mld_link_count; i++) {
+        for (int kid = 0; kid < IEEE80211_GROUP_NKID; kid++) {
+            struct ieee80211_key *key = &ic->ic_mld_links[i].keys[kid];
+            if (key->k_cipher != IEEE80211_CIPHER_NONE)
+                ieee80211_delete_key(ic, ic->ic_mld_links[i].ni, key);
+            explicit_bzero(key, sizeof(*key));
+        }
     }
     explicit_bzero(&in->in_ni.ni_pairwise_key, sizeof(in->in_ni.ni_pairwise_key));
 
@@ -1359,6 +1376,22 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
             if (ieee80211_is_bip_cipher(key->k_cipher))
                 ieee80211_delete_key(&sc->sc_ic, &in->in_ni, key);
             explicit_bzero(key, sizeof(*key));
+        }
+        for (int slot = 0; slot < sc->sc_ic.ic_mld_link_count; slot++) {
+            struct ieee80211_mld_link_info *link = &sc->sc_ic.ic_mld_links[slot];
+            for (int kid = 0; kid < IEEE80211_GROUP_NKID; kid++) {
+                struct ieee80211_key *key = &link->keys[kid];
+                if (key->k_cipher == IEEE80211_CIPHER_NONE)
+                    continue;
+                err = iwx_mld_set_key(sc, link->ni, key, 1);
+                if (err) {
+                    iwx_mld_record_state_failure(sc, "deauth", "link-key-remove",
+                        err, IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_MLD_SEC_KEY_CMD), slot);
+                    return err;
+                }
+                ieee80211_delete_key(&sc->sc_ic, link->ni, key);
+                explicit_bzero(key, sizeof(*key));
+            }
         }
         struct ieee80211_key *key = &in->in_ni.ni_pairwise_key;
         if (key->k_cipher == IEEE80211_CIPHER_CCMP) {

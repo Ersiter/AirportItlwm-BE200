@@ -984,11 +984,12 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
             }
 
             if (subtype == IEEE80211_FC0_SUBTYPE_BEACON &&
-                (ni->ni_flags & IEEE80211_NODE_BEACON_PROT) &&
-                (((ic->ic_nw_keys[6].k_flags & IEEE80211_KEY_BIGTK) != 0) ||
-                 ((ic->ic_nw_keys[7].k_flags & IEEE80211_KEY_BIGTK) != 0)) &&
-                !(rxi->rxi_flags & IEEE80211_RXI_HWDEC))
-                goto out;
+                (security_ni->ni_flags & IEEE80211_NODE_BEACON_PROT) &&
+                !(rxi->rxi_flags & IEEE80211_RXI_HWDEC)) {
+                struct ieee80211_key *keys = ieee80211_get_rxgroupkeys(ic, wh->i_addr2);
+                if (keys != NULL && ((keys[6].k_flags | keys[7].k_flags) & IEEE80211_KEY_BIGTK))
+                    goto out;
+            }
             
 #if NBPFILTER > 0
             if (bpf_mtap(ic->ic_rawbpf, m, BPF_DIRECTION_IN) != 0) {

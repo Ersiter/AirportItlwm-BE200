@@ -63,6 +63,8 @@ void	ieee80211_recv_4way_msg2(struct ieee80211com *,
 #endif
 int	ieee80211_must_update_group_key(struct ieee80211_key *, const uint8_t *,
                                     int);
+static void ieee80211_reset_key_slot(struct ieee80211com *,
+    struct ieee80211_node *, struct ieee80211_key *);
 void	ieee80211_recv_4way_msg3(struct ieee80211com *,
                                  struct ieee80211_eapol_key *, struct ieee80211_node *);
 #ifndef IEEE80211_STA_ONLY
@@ -203,6 +205,174 @@ done:
     mbuf_freem(m);
 }
 
+
+#ifdef AIRPORT_WCL
+struct ieee80211_mlo_kdes {
+    const uint8_t *mac;
+    const uint8_t *link[IEEE80211_MLD_MAX_LINKS];
+    const uint8_t *key[IEEE80211_MLD_MAX_LINKS][3];
+};
+
+static int
+ieee80211_parse_mlo_kdes(struct ieee80211com *ic, const uint8_t *frm,
+    size_t len, struct ieee80211_mlo_kdes *kdes)
+{
+    memset(kdes, 0, sizeof(*kdes));
+    while (len != 0) {
+        if ((len == 1 && frm[0] == 0) ||
+            (len >= 2 && frm[0] == IEEE80211_ELEMID_VENDOR && frm[1] == 0)) {
+            for (size_t i = 1; i < len; i++)
+                if (frm[i] != 0)
+                    return EINVAL;
+            break;
+        }
+        if (len < 2 || (size_t)frm[1] + 2 > len)
+            return EINVAL;
+        if (frm[0] == IEEE80211_ELEMID_VENDOR && frm[1] >= 4 &&
+            memcmp(frm + 2, IEEE80211_OUI, 3) == 0) {
+            int type = frm[5], id, slot;
+            const uint8_t **dest = NULL;
+            if (type == IEEE80211_KDE_MACADDR) {
+                if (frm[1] != 10 || kdes->mac != NULL)
+                    return EINVAL;
+                kdes->mac = frm + 6;
+            } else if (type >= IEEE80211_KDE_MLO_GTK &&
+                type <= IEEE80211_KDE_MLO_LINK) {
+                int prefix = type == IEEE80211_KDE_MLO_LINK ? 7 :
+                    type == IEEE80211_KDE_MLO_GTK ? 7 : 9;
+                if (frm[1] < 4 + prefix)
+                    return EINVAL;
+                id = type == IEEE80211_KDE_MLO_LINK ? frm[6] & 15 :
+                    type == IEEE80211_KDE_MLO_GTK ? frm[6] >> 4 : frm[14] >> 4;
+                for (slot = 0; slot < ic->ic_mld_link_count; slot++)
+                    if (ic->ic_mld_links[slot].ap_link_id == id)
+                        break;
+                if (slot < ic->ic_mld_link_count) {
+                    dest = type == IEEE80211_KDE_MLO_LINK ? &kdes->link[slot] :
+                        &kdes->key[slot][type - IEEE80211_KDE_MLO_GTK];
+                    if (*dest != NULL)
+                        return EINVAL;
+                    *dest = frm;
+                }
+            }
+        }
+        len -= frm[1] + 2;
+        frm += frm[1] + 2;
+    }
+    return 0;
+}
+
+static int
+ieee80211_validate_mlo_keys(struct ieee80211com *ic,
+    struct ieee80211_node *ni, const struct ieee80211_mlo_kdes *kdes, int initial)
+{
+    int found = 0;
+    if (initial && (kdes->mac == NULL ||
+        !IEEE80211_ADDR_EQ(kdes->mac, ieee80211_rsn_peer_addr(ic, ni))))
+        return EINVAL;
+    for (int i = 0; i < ic->ic_mld_link_count; i++) {
+        struct ieee80211_mld_link_info *link = &ic->ic_mld_links[i];
+        const uint8_t *p = kdes->link[i];
+        if (initial) {
+            if (p == NULL || link->ni == NULL ||
+                !IEEE80211_ADDR_EQ(p + 7, link->ni->ni_macaddr) || !(p[6] & 0x10))
+                return EINVAL;
+            size_t left = p[1] - 11;
+            const uint8_t *rsn = p + 13;
+            if (left < 2 || rsn[0] != IEEE80211_ELEMID_RSN || rsn[1] + 2 > left ||
+                link->ni->ni_rsnie == NULL || rsn[1] != link->ni->ni_rsnie[1] ||
+                memcmp(rsn, link->ni->ni_rsnie, rsn[1] + 2) != 0)
+                return EINVAL;
+            left -= rsn[1] + 2;
+            const uint8_t *rsnxe = rsn + rsn[1] + 2;
+            if (p[6] & 0x20) {
+                if (left < 2 || rsnxe[0] != IEEE80211_ELEMID_RSNXE ||
+                    rsnxe[1] + 2 != left ||
+                    !ieee80211_rsnxe_matches(link->ni->ni_rsnxe,
+                        link->ni->ni_rsnxe_len, rsnxe, left))
+                    return EINVAL;
+            } else if (left != 0 || link->ni->ni_rsnxe_len != 0)
+                return EINVAL;
+        }
+        if (!link->assoc_accepted)
+            continue;
+        for (int kind = 0; kind < 3; kind++) {
+            p = kdes->key[i][kind];
+            int required = kind == 0 || (kind == 1 && (ni->ni_flags & IEEE80211_NODE_MFP)) ||
+                (kind == 2 && (ni->ni_flags & IEEE80211_NODE_BEACON_PROT));
+            if (p == NULL) {
+                if (initial && required)
+                    return EINVAL;
+                continue;
+            }
+            int keylen = ieee80211_cipher_keylen(kind == 0 ?
+                ni->ni_rsngroupcipher : ni->ni_rsngroupmgmtcipher);
+            int prefix = kind == 0 ? 7 : 9;
+            if (!required || keylen == 0 || p[1] != 4 + prefix + keylen)
+                return EINVAL;
+            if (kind != 0) {
+                int kid = LE_READ_2(p + 6);
+                if (kid < 2 + 2 * kind || kid > 3 + 2 * kind)
+                    return EINVAL;
+            } else
+                found++;
+        }
+    }
+    return found != 0 ? 0 : EINVAL;
+}
+
+static int
+ieee80211_install_mlo_keys(struct ieee80211com *ic, struct ieee80211_node *ni,
+    const struct ieee80211_mlo_kdes *kdes)
+{
+    for (int i = 0; i < ic->ic_mld_link_count; i++) {
+        struct ieee80211_mld_link_info *link = &ic->ic_mld_links[i];
+        if (!link->assoc_accepted)
+            continue;
+        for (int kind = 0; kind < 3; kind++) {
+            const uint8_t *p = kdes->key[i][kind];
+            if (p == NULL)
+                continue;
+            int kid = kind == 0 ? p[6] & 3 : LE_READ_2(p + 6);
+            int offset = kind == 0 ? 13 : 15;
+            enum ieee80211_cipher cipher = kind == 0 ? ni->ni_rsngroupcipher : ni->ni_rsngroupmgmtcipher;
+            int keylen = ieee80211_cipher_keylen(cipher);
+            struct ieee80211_key *k = &link->keys[kid];
+            if (ieee80211_must_update_group_key(k, p + offset, keylen)) {
+                ieee80211_reset_key_slot(ic, link->ni, k);
+                k->k_id = kid;
+                k->k_cipher = cipher;
+                k->k_flags = IEEE80211_KEY_MLO | (kind == 0 ? IEEE80211_KEY_GROUP :
+                    kind == 1 ? IEEE80211_KEY_IGTK : IEEE80211_KEY_BIGTK);
+                k->k_len = keylen;
+                memcpy(k->k_key, p + offset, keylen);
+                uint64_t pn = LE_READ_6(p + (kind == 0 ? 7 : 8));
+                if (kind == 0) {
+                    if (p[6] & 4)
+                        k->k_flags |= IEEE80211_KEY_TX;
+                    for (int tid = 0; tid < IEEE80211_NUM_TID; tid++)
+                        k->k_rsc[tid] = pn;
+                } else
+                    k->k_mgmt_rsc = pn;
+                int err = (*ic->ic_set_key)(ic, link->ni, k);
+                if (err != 0) {
+                    ieee80211_reset_key_slot(ic, link->ni, k);
+                    return err;
+                }
+            }
+            if (kind == 0)
+                link->def_txkey = kid;
+            else if (kind == 1) {
+                link->igtk_kid = kid;
+                ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT | IEEE80211_NODE_RXMGMTPROT;
+                link->ni->ni_flags |= IEEE80211_NODE_TXMGMTPROT | IEEE80211_NODE_RXMGMTPROT;
+            }
+        }
+    }
+    return 0;
+}
+#endif
+
 /*
  * Process Message 1 of the 4-Way Handshake (sent by Authenticator).
  */
@@ -259,6 +429,15 @@ ieee80211_recv_4way_msg1(struct ieee80211com *ic,
         }
         frm += 2 + frm[1];
     }
+#ifdef AIRPORT_WCL
+    if (ni->ni_sae.sae_auth.mld) {
+        struct ieee80211_mlo_kdes kdes;
+        if (ieee80211_parse_mlo_kdes(ic, (const uint8_t *)&key[1],
+                BE_READ_2(key->paylen), &kdes) != 0 || kdes.mac == NULL ||
+            !IEEE80211_ADDR_EQ(kdes.mac, ieee80211_rsn_peer_addr(ic, ni)))
+            return;
+    }
+#endif
     /* check that the PMKID KDE is valid (if present) */
     if (pmkid != NULL && pmkid[1] != 4 + 16)
         return;
@@ -406,6 +585,11 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
     const u_int8_t *rsnie1, *rsnie2, *rsnxe, *gtk, *igtk, *bigtk;
     u_int16_t info, reason = 0;
     int keylen, deferlink = 0;
+    int mlo = 0;
+#ifdef AIRPORT_WCL
+    struct ieee80211_mlo_kdes kdes;
+    mlo = ni->ni_sae.sae_auth.mld;
+#endif
     
 #ifndef IEEE80211_STA_ONLY
     if (ic->ic_opmode != IEEE80211_M_STA &&
@@ -515,8 +699,17 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         }
         frm += 2 + frm[1];
     }
-    /* first WPA/RSN IE is mandatory */
-    if (rsnie1 == NULL) {
+#ifdef AIRPORT_WCL
+    if (mlo && (((info & (EAPOL_KEY_ENCRYPTED | EAPOL_KEY_INSTALL | EAPOL_KEY_SECURE)) !=
+            (EAPOL_KEY_ENCRYPTED | EAPOL_KEY_INSTALL | EAPOL_KEY_SECURE)) ||
+        ieee80211_parse_mlo_kdes(ic, (const uint8_t *)&key[1], BE_READ_2(key->paylen), &kdes) != 0 ||
+        ieee80211_validate_mlo_keys(ic, ni, &kdes, 1) != 0)) {
+        reason = IEEE80211_REASON_RSN_DIFFERENT_IE;
+        goto deauth;
+    }
+#endif
+    /* first WPA/RSN IE is mandatory for a single-link association */
+    if (!mlo && rsnie1 == NULL) {
         DPRINTF(("missing RSN IE\n"));
         return;
     }
@@ -530,12 +723,12 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         DPRINTF(("IGTK KDE found but GTK KDE missing\n"));
         return;
     }
-    if (ieee80211_node_allow_wpa3(ic, ni) && igtk == NULL) {
+    if (!mlo && ieee80211_node_allow_wpa3(ic, ni) && igtk == NULL) {
         reason = IEEE80211_REASON_AUTH_LEAVE;
         goto deauth;
     }
     /* Match the AP's pre-association RSNXE snapshot in the MIC-protected M3. */
-    if (ieee80211_node_allow_wpa3(ic, ni) && ni->ni_sae.sae_h2e &&
+    if (!mlo && ieee80211_node_allow_wpa3(ic, ni) && ni->ni_sae.sae_h2e &&
         (rsnxe == NULL ||
          !ieee80211_rsnxe_matches(ni->ni_rsnxe, ni->ni_rsnxe_len,
              rsnxe, (size_t)rsnxe[1] + 2))) {
@@ -554,8 +747,8 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
      * Check that first WPA/RSN IE is identical to the one received in
      * the beacon or probe response frame.
      */
-    if (ni->ni_rsnie == NULL || rsnie1[1] != ni->ni_rsnie[1] ||
-        memcmp(rsnie1, ni->ni_rsnie, 2 + rsnie1[1]) != 0) {
+    if (!mlo && (ni->ni_rsnie == NULL || rsnie1[1] != ni->ni_rsnie[1] ||
+        memcmp(rsnie1, ni->ni_rsnie, 2 + rsnie1[1]) != 0)) {
         reason = IEEE80211_REASON_RSN_DIFFERENT_IE;
         goto deauth;
     }
@@ -564,7 +757,7 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
      * If a second RSN information element is present, use its pairwise
      * cipher suite or deauthenticate.
      */
-    if (rsnie2 != NULL) {
+    if (!mlo && rsnie2 != NULL) {
         struct ieee80211_rsnparams rsn;
         
         if (ieee80211_parse_rsn(ic, rsnie2, &rsn) == 0) {
@@ -615,7 +808,7 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
             reason = IEEE80211_REASON_AUTH_LEAVE;
             goto deauth;
         }
-        prsc = (gtk == NULL) ? LE_READ_6(key->rsc) : 0;
+        prsc = (!mlo && gtk == NULL) ? LE_READ_6(key->rsc) : 0;
         
         /* map PTK to 802.11 key */
         k = &ni->ni_pairwise_key;
@@ -642,6 +835,15 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         XYLog("%s: unexpected pairwise key update received from %s\n",
               ic->ic_if.if_xname, ether_sprintf(ni->ni_macaddr));
     
+#ifdef AIRPORT_WCL
+    if (mlo) {
+        if (ieee80211_install_mlo_keys(ic, ni, &kdes) != 0) {
+            reason = IEEE80211_REASON_AUTH_LEAVE;
+            goto deauth;
+        }
+    } else
+#endif
+    {
     if (gtk != NULL) {
         u_int8_t kid;
         
@@ -758,6 +960,7 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
                     goto deauth;
             }
         }
+    }
     }
     if (info & EAPOL_KEY_INSTALL)
         ni->ni_flags |= IEEE80211_NODE_TXRXPROT;
@@ -986,6 +1189,20 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
         }
         frm += 2 + frm[1];
     }
+#ifdef AIRPORT_WCL
+    if (ni->ni_sae.sae_auth.mld) {
+        struct ieee80211_mlo_kdes kdes;
+        if (ieee80211_parse_mlo_kdes(ic, (const uint8_t *)&key[1], BE_READ_2(key->paylen), &kdes) != 0 ||
+            ieee80211_validate_mlo_keys(ic, ni, &kdes, 0) != 0 ||
+            ieee80211_install_mlo_keys(ic, ni, &kdes) != 0) {
+            reason = IEEE80211_REASON_AUTH_LEAVE;
+            goto deauth;
+        }
+        ni->ni_replaycnt = BE_READ_8(key->replaycnt);
+        ieee80211_send_group_msg2(ic, ni, NULL);
+        return;
+    }
+#endif
     /* check that the GTK KDE is present */
     if (gtk == NULL) {
         DPRINTF(("GTK KDE missing\n"));

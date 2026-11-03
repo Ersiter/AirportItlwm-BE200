@@ -420,6 +420,9 @@ struct ieee80211_mld_link_info {
 	uint8_t assoc_accepted;
 	uint16_t assoc_id;
 	uint8_t local_addr[IEEE80211_ADDR_LEN];
+	struct ieee80211_key keys[IEEE80211_GROUP_NKID];
+	uint8_t igtk_kid;
+	uint8_t def_txkey;
 };
 #endif
 
