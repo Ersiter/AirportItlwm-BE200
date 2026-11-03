@@ -1126,6 +1126,11 @@ ieee80211_add_rsn_body(u_int8_t *frm, struct ieee80211com *ic,
         *frm++ = 8;
         count++;
     }
+    if (!wpa && (ni->ni_rsnakms & IEEE80211_AKM_OWE)) {
+        memcpy(frm, oui, 3); frm += 3;
+        *frm++ = 18;
+        count++;
+    }
     /* write AKM Suite List Count field */
     LE_WRITE_2(pcount, count);
 
@@ -2134,6 +2139,8 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
 	if (ieee80211_node_allow_wpa3(ic, ni) &&
 	    !ieee80211_sae_auth_current(ic, ni))
 		return NULL;
+    if (ni->ni_rsnakms == IEEE80211_AKM_OWE && ni->ni_owe.state != 1)
+        return NULL;
 	m = ieee80211_getmgmt(MBUF_DONTWAIT, MT_DATA,
 	    2 + 2 +
 	    ((type == IEEE80211_FC0_SUBTYPE_REASSOC_REQ) ?
@@ -2157,7 +2164,8 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
         (addeht ? 2 + 1 + sizeof(struct ieee80211_eht_cap_elem_fixed) +
             ieee80211_eht_mcs_nss_size(&ic->ic_he_cap_elem,
                 &ic->ic_eht_cap_elem, 0) : 0) +
-	    (ieee80211_node_allow_wpa3(ic, ni) ? 2 + 1 : 0)
+	    (ieee80211_node_allow_wpa3(ic, ni) ? 2 + 1 : 0) +
+        (ni->ni_rsnakms == IEEE80211_AKM_OWE ? IEEE80211_OWE_IE_LEN : 0)
 #ifdef AIRPORT_WCL
         + ieee80211_mld_assoc_req_size(ic)
 #endif
@@ -2216,6 +2224,14 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
     if (addvht)
         frm = ieee80211_add_vhtcaps(frm, ic);
     
+    if (ni->ni_rsnakms == IEEE80211_AKM_OWE) {
+        *frm++ = IEEE80211_ELEMID_EXTENSION;
+        *frm++ = IEEE80211_OWE_IE_LEN - 2;
+        *frm++ = IEEE80211_ELEMID_EXT_OWE_DH_PARAM;
+        LE_WRITE_2(frm, IEEE80211_OWE_GROUP); frm += 2;
+        memcpy(frm, ni->ni_owe.public_key, IEEE80211_OWE_PUBLIC_LEN);
+        frm += IEEE80211_OWE_PUBLIC_LEN;
+    }
     ni->ni_he_requested = addhe;
     if (ni->ni_he_requested)
         frm = ieee80211_add_hecaps(frm, ic, ni);

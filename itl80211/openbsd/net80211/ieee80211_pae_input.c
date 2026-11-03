@@ -142,16 +142,18 @@ ieee80211_eapol_key_input(struct ieee80211com *ic, mbuf_t m,
     
     /* discard EAPOL-Key frames with an unknown descriptor version */
     desc = info & EAPOL_KEY_VERSION_MASK;
-    if (ieee80211_node_allow_wpa3(ic, ni) &&
-        ni->ni_sae.sae_state == SAE_STATE_ACCEPTED) {
+    if (ni->ni_rsnakms == IEEE80211_AKM_OWE ||
+        (ieee80211_node_allow_wpa3(ic, ni) &&
+         ni->ni_sae.sae_state == SAE_STATE_ACCEPTED)) {
         if (desc != EAPOL_KEY_DESC_USE_AKM)
             goto done;
     } else if (desc < EAPOL_KEY_DESC_V1 || desc > EAPOL_KEY_DESC_V3)
         goto done;
     
     if (ieee80211_is_sha256_akm((enum ieee80211_akm)ni->ni_rsnakms)) {
-        if (ieee80211_node_allow_wpa3(ic, ni) &&
-            ni->ni_sae.sae_state == SAE_STATE_ACCEPTED) {
+        if (ni->ni_rsnakms == IEEE80211_AKM_OWE ||
+            (ieee80211_node_allow_wpa3(ic, ni) &&
+             ni->ni_sae.sae_state == SAE_STATE_ACCEPTED)) {
             if (desc != EAPOL_KEY_DESC_USE_AKM)
                 goto done;
         } else if (desc != EAPOL_KEY_DESC_V3)
@@ -430,7 +432,7 @@ ieee80211_recv_4way_msg1(struct ieee80211com *ic,
         frm += 2 + frm[1];
     }
 #ifdef AIRPORT_WCL
-    if (ni->ni_sae.sae_auth.mld) {
+    if (ieee80211_rsn_uses_mld(ic, ni)) {
         struct ieee80211_mlo_kdes kdes;
         if (ieee80211_parse_mlo_kdes(ic, (const uint8_t *)&key[1],
                 BE_READ_2(key->paylen), &kdes) != 0 || kdes.mac == NULL ||
@@ -455,6 +457,11 @@ ieee80211_recv_4way_msg1(struct ieee80211com *ic,
     } else if (ieee80211_node_allow_wpa3(ic, ni) &&
         ni->ni_sae.sae_state == SAE_STATE_ACCEPTED) {
         memcpy(ni->ni_pmk, ni->ni_sae.sae_pmk, IEEE80211_PMK_LEN);
+    } else if (ni->ni_rsnakms == IEEE80211_AKM_OWE) {
+        if (ni->ni_owe.state != 2 || !(ni->ni_flags & IEEE80211_NODE_PMK) ||
+            (pmkid != NULL && timingsafe_bcmp(pmkid + 6, ni->ni_pmkid,
+                IEEE80211_PMKID_LEN) != 0))
+            return;
     } else    /* use pre-shared key */
         memcpy(ni->ni_pmk, ic->ic_psk, IEEE80211_PMK_LEN);
     ni->ni_flags |= IEEE80211_NODE_PMK;
@@ -588,7 +595,7 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
     int mlo = 0;
 #ifdef AIRPORT_WCL
     struct ieee80211_mlo_kdes kdes;
-    mlo = ni->ni_sae.sae_auth.mld;
+    mlo = ieee80211_rsn_uses_mld(ic, ni);
 #endif
     
 #ifndef IEEE80211_STA_ONLY
@@ -1190,7 +1197,7 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
         frm += 2 + frm[1];
     }
 #ifdef AIRPORT_WCL
-    if (ni->ni_sae.sae_auth.mld) {
+    if (ieee80211_rsn_uses_mld(ic, ni)) {
         struct ieee80211_mlo_kdes kdes;
         if (ieee80211_parse_mlo_kdes(ic, (const uint8_t *)&key[1], BE_READ_2(key->paylen), &kdes) != 0 ||
             ieee80211_validate_mlo_keys(ic, ni, &kdes, 0) != 0 ||

@@ -72,7 +72,8 @@ enum ieee80211_akm {
 	IEEE80211_AKM_PSK		= 0x00000002,
 	IEEE80211_AKM_SHA256_8021X	= 0x00000004,	/* 11w */
 	IEEE80211_AKM_SHA256_PSK	= 0x00000008,	/* 11w */
-	IEEE80211_AKM_SAE		= 0x00000010
+	IEEE80211_AKM_SAE		= 0x00000010,
+	IEEE80211_AKM_OWE		= 0x00000020
 };
 
 #define IEEE80211_TKIP_HDRLEN	8
@@ -111,7 +112,8 @@ static __inline int
 ieee80211_is_sha256_akm(enum ieee80211_akm akm)
 {
 	return akm == IEEE80211_AKM_SHA256_8021X ||
-	    akm == IEEE80211_AKM_SHA256_PSK || akm == IEEE80211_AKM_SAE;
+	    akm == IEEE80211_AKM_SHA256_PSK || akm == IEEE80211_AKM_SAE ||
+	    akm == IEEE80211_AKM_OWE;
 }
 
 struct ieee80211_key {
@@ -195,6 +197,8 @@ void	ieee80211_derive_ptk(enum ieee80211_akm, const u_int8_t *,
 	    const u_int8_t *, const u_int8_t *, const u_int8_t *,
 	    const u_int8_t *, struct ieee80211_ptk *);
 int	ieee80211_cipher_keylen(enum ieee80211_cipher);
+int ieee80211_owe_prepare(struct ieee80211_node *);
+int ieee80211_owe_process_response(struct ieee80211_node *, const uint8_t *, size_t);
 
 int	ieee80211_wep_set_key(struct ieee80211com *, struct ieee80211_key *);
 void	ieee80211_wep_delete_key(struct ieee80211com *,

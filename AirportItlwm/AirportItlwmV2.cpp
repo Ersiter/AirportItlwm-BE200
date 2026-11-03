@@ -1147,6 +1147,9 @@ getCARD_CAPABILITIES(OSObject *object,
     // Tahoe WCLDeviceConfiguration::isEhtSupported reads byte 17, bit 4.
     if (ic->ic_eht_cap_valid)
         cd->capabilities[17] |= 0x10;
+    // Tahoe WCLDeviceConfiguration::isOWESupport reads byte 12, bit 0.
+    if ((caps & IEEE80211_C_RSN) && (caps & IEEE80211_C_MFP))
+        cd->capabilities[12] |= 0x01;
     // Native WCL is6GSupported reads capability byte 11, bit 6.
     for (unsigned i = 1; i <= IEEE80211_CHAN_MAX; ++i)
         if (isset(ic->ic_chan_active, i) &&
@@ -1156,6 +1159,7 @@ getCARD_CAPABILITIES(OSObject *object,
         }
     pciNub->setProperty("AirportItlwm-EHTCapValid", ic->ic_eht_cap_valid, 32);
     pciNub->setProperty("AirportItlwm-CapByte11", cd->capabilities[11], 32);
+    pciNub->setProperty("AirportItlwm-CapByte12", cd->capabilities[12], 32);
     pciNub->setProperty("AirportItlwm-CapByte17", cd->capabilities[17], 32);
 #else
     cd->capabilities[2] = 0xFF; // BURST, WME, SHORT_GI_40MHZ, SHORT_GI_20MHZ, WOW, TSN, ?, ?

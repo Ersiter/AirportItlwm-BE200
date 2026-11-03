@@ -100,8 +100,9 @@ ieee80211_send_eapol_key(struct ieee80211com *ic, mbuf_t m,
     info = BE_READ_2(key->info);
     /* use V3 or use-AKM descriptor if KDF is SHA256-based */
     if (ieee80211_is_sha256_akm((enum ieee80211_akm)ni->ni_rsnakms)) {
-        if (ieee80211_node_allow_wpa3(ic, ni) &&
-            ni->ni_sae.sae_state == SAE_STATE_ACCEPTED)
+        if (ni->ni_rsnakms == IEEE80211_AKM_OWE ||
+            (ieee80211_node_allow_wpa3(ic, ni) &&
+             ni->ni_sae.sae_state == SAE_STATE_ACCEPTED))
             info |= EAPOL_KEY_DESC_USE_AKM;
         else
             info |= EAPOL_KEY_DESC_V3;
@@ -362,7 +363,7 @@ ieee80211_send_4way_msg2(struct ieee80211com *ic, struct ieee80211_node *ni,
     u_int8_t *frm;
     size_t pktlen = 0;
 #ifdef AIRPORT_WCL
-    if (ni->ni_sae.sae_auth.mld) {
+    if (ieee80211_rsn_uses_mld(ic, ni)) {
         pktlen += 12;
         for (int i = 1; i < ic->ic_mld_link_count; i++)
             pktlen += 13;
@@ -408,7 +409,7 @@ ieee80211_send_4way_msg2(struct ieee80211com *ic, struct ieee80211_node *ni,
             frm = ieee80211_add_rsnxe(frm, ic, ni);
     }
 #ifdef AIRPORT_WCL
-    if (ni->ni_sae.sae_auth.mld) {
+    if (ieee80211_rsn_uses_mld(ic, ni)) {
         frm = ieee80211_add_mlo_mac_kde(frm, ic, ni);
         for (int i = 1; i < ic->ic_mld_link_count; i++) {
             struct ieee80211_mld_link_info *link = &ic->ic_mld_links[i];
@@ -531,7 +532,7 @@ ieee80211_send_4way_msg4(struct ieee80211com *ic, struct ieee80211_node *ni)
     ni->ni_rsn_supp_state = RNSA_SUPP_PTKDONE;
     size_t kde_len = 0;
 #ifdef AIRPORT_WCL
-    if (ni->ni_sae.sae_auth.mld)
+    if (ieee80211_rsn_uses_mld(ic, ni))
         kde_len = 12;
 #endif
     m = ieee80211_get_eapol_key(MBUF_DONTWAIT, MT_DATA, kde_len);

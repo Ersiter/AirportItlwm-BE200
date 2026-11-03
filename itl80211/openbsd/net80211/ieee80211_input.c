@@ -1812,6 +1812,8 @@ ieee80211_parse_rsn_akm(const u_int8_t selector[4])
                 return IEEE80211_AKM_SHA256_PSK;
             case 8:    /* SAE */
                 return IEEE80211_AKM_SAE;
+            case 18:   /* OWE */
+                return IEEE80211_AKM_OWE;
         }
     }
     return IEEE80211_AKM_NONE;    /* ignore unknown AKMs */
@@ -3383,11 +3385,12 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
 
     ic->ic_assoc_status = status;
 #ifdef AIRPORT_WCL
-    if (status != IEEE80211_STATUS_SUCCESS || !ni->ni_sae.sae_auth.mld)
+    if (status != IEEE80211_STATUS_SUCCESS ||
+        (!ni->ni_sae.sae_auth.mld && ni->ni_rsnakms != IEEE80211_AKM_OWE))
 #else
-    if (status == IEEE80211_STATUS_SUCCESS)
+    if (status == IEEE80211_STATUS_SUCCESS && ni->ni_rsnakms != IEEE80211_AKM_OWE)
 #endif
-    { // MLO SAE success is reported after checking the AP MLD below.
+    { // MLO SAE and OWE success is reported after checking the AP MLD below.
         if (ic->ic_event_handler) {
             (*ic->ic_event_handler)(ic, IEEE80211_EVT_STA_ASSOC_DONE, NULL);
         }
@@ -3405,6 +3408,7 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
         return;
     }
     associd = LE_READ_2(frm); frm += 2;
+    const uint8_t *assoc_ies = frm;
     
     rates = xrates = edcaie = wmmie = htcaps = htop = vhtcap = vhtopmode = hecap = heopmode = he6ghzcap = NULL;
     while (frm + 2 <= efrm) {
@@ -3487,6 +3491,17 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
         DPRINTF(("invalid supported rates element\n"));
         return;
     }
+    if (ni->ni_rsnakms == IEEE80211_AKM_OWE) {
+        if (!IEEE80211_ADDR_EQ(wh->i_addr2, ni->ni_bssid) ||
+            ieee80211_owe_process_response(ni, assoc_ies, frm - assoc_ies) != 0) {
+            ic->ic_assoc_status = IEEE80211_STATUS_IE_INVALID;
+            ic->ic_stats.is_rx_auth_fail++;
+            if (ic->ic_event_handler)
+                (*ic->ic_event_handler)(ic, IEEE80211_EVT_STA_ASSOC_DONE, NULL);
+            ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+            return;
+        }
+    }
     if (mle != NULL)
         mle_len = ieee80211_mle_copy(mle, efrm, mle_data, sizeof(mle_data));
     int mld_valid = ieee80211_parse_mld_basic(
@@ -3503,7 +3518,7 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
                 IEEE80211_ADDR_LEN) != 0 ||
             (ni->ni_mld_link_id != UINT8_MAX &&
              ni->ni_mld_link_id != expected_link_id)) {
-            if (ni->ni_sae.sae_auth.mld) {
+            if (ieee80211_rsn_uses_mld(ic, ni)) {
                 ic->ic_assoc_status = IEEE80211_STATUS_UNSPECIFIED;
                 ic->ic_stats.is_rx_auth_fail++;
                 if (ic->ic_event_handler)
@@ -3634,6 +3649,8 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
     } else if (ic->ic_flags & IEEE80211_F_WEPON)
         ni->ni_flags |= IEEE80211_NODE_TXRXPROT;
     
+    if (ni->ni_rsnakms == IEEE80211_AKM_OWE && ic->ic_event_handler)
+        (*ic->ic_event_handler)(ic, IEEE80211_EVT_STA_ASSOC_DONE, NULL);
     ieee80211_new_state(ic, IEEE80211_S_RUN,
                         IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
 }

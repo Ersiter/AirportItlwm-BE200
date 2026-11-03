@@ -757,7 +757,7 @@ inline bool validRSNOverride(const uint8_t *ie, size_t length) {
         ie[4] == 0xf2 && ie[5] == 1 && ie[6] == 1 && ie[7] == 0;
 }
 
-enum class LegacyAuth { Invalid, Open, Wep, Personal, PersonalSAE, Enterprise };
+enum class LegacyAuth { Invalid, Open, Wep, Personal, PersonalSAE, Enterprise, EnhancedOpen };
 
 enum class DerivedCredentialKind : uint8_t { Personal, SAE };
 struct DerivedCredentialCache {
@@ -783,11 +783,32 @@ inline bool matchesDerivedCredential(const DerivedCredentialCache &cache,
         memcmp(cache.credential, credential, credentialLength) == 0;
 }
 
+inline bool rsnIsOWE(const uint8_t *ie, size_t length) {
+    if (!validRSNOverride(ie, length) || length < 20 || ie[0] != 48)
+        return false;
+    const uint8_t ccmp[] = {0, 0x0f, 0xac, 4};
+    const uint8_t owe[] = {0, 0x0f, 0xac, 18};
+    if (memcmp(ie + 4, ccmp, 4) != 0)
+        return false;
+    size_t offset = 8;
+    unsigned pairs = read16(ie + offset);
+    offset += 2;
+    if (pairs != 1 || offset + 4 + 2 > length || memcmp(ie + offset, ccmp, 4))
+        return false;
+    offset += 4;
+    unsigned akms = read16(ie + offset);
+    offset += 2;
+    return akms == 1 && offset + 4 <= length && memcmp(ie + offset, owe, 4) == 0;
+}
+
 inline LegacyAuth classifyLegacyAuth(const JoinRequest &j) {
     // Values from apple80211_authtype/cipher_type, used by the WCL association request.
     if (!validRSNOverride(j.rsn, j.rsnLength)) return LegacyAuth::Invalid;
     if (j.lowerAuth != 1) return LegacyAuth::Invalid;
+    if (rsnIsOWE(j.rsn, j.rsnLength))
+        return !j.upperAuth && !j.keyLength ? LegacyAuth::EnhancedOpen : LegacyAuth::Invalid;
     if (!j.upperAuth) {
+        if (j.rsnLength) return LegacyAuth::Invalid;
         if (!j.keyLength) return LegacyAuth::Open;
         if (j.keyIndex < 4 && ((j.keyLength == 5 && j.keyCipher == 1) ||
                               (j.keyLength == 13 && j.keyCipher == 2)))

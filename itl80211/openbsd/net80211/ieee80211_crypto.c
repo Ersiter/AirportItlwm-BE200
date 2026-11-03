@@ -58,6 +58,7 @@
 #include <crypto/aes.h>
 #include <crypto/cmac.h>
 #include <crypto/key_wrap.h>
+#include <crypto/ec_p256_m31.h>
 
 void    ieee80211_prf(const u_int8_t *, size_t, const u_int8_t *, size_t,
         const u_int8_t *, size_t, u_int8_t *, size_t);
@@ -569,6 +570,107 @@ ieee80211_derive_pmkid(enum ieee80211_akm akm, const u_int8_t *pmk,
 		ieee80211_pmkid_sha256(pmk, aa, spa, pmkid);
 	else
 		ieee80211_pmkid_sha1(pmk, aa, spa, pmkid);
+}
+
+
+int
+ieee80211_owe_prepare(struct ieee80211_node *ni)
+{
+    const br_ec_impl *ec = &br_ec_p256_m31;
+    const unsigned char *order;
+    size_t order_len;
+    uint8_t point[65], bits;
+    int i, tries;
+
+    explicit_bzero(&ni->ni_owe, sizeof(ni->ni_owe));
+    explicit_bzero(ni->ni_pmk, sizeof(ni->ni_pmk));
+    explicit_bzero(ni->ni_pmkid, sizeof(ni->ni_pmkid));
+    ni->ni_flags &= ~(IEEE80211_NODE_PMK | IEEE80211_NODE_PMKID);
+    order = ec->order(BR_EC_secp192r1, &order_len);
+    for (tries = 0; tries < 100; tries++) {
+        arc4random_buf(ni->ni_owe.private_key, sizeof(ni->ni_owe.private_key));
+        bits = 0;
+        for (i = 0; i < 32; i++)
+            bits |= ni->ni_owe.private_key[i];
+        if (bits && memcmp(ni->ni_owe.private_key, order, order_len) < 0)
+            break;
+    }
+    if (tries == 100 || ec->mulgen(point, ni->ni_owe.private_key, 32,
+            BR_EC_secp192r1) != sizeof(point)) {
+        explicit_bzero(&ni->ni_owe, sizeof(ni->ni_owe));
+        explicit_bzero(point, sizeof(point));
+        return EINVAL;
+    }
+    memcpy(ni->ni_owe.public_key, point + 1, IEEE80211_OWE_PUBLIC_LEN);
+    ni->ni_owe.state = 1;
+    explicit_bzero(point, sizeof(point));
+    return 0;
+}
+
+int
+ieee80211_owe_process_response(struct ieee80211_node *ni,
+    const uint8_t *ies, size_t len)
+{
+    const uint8_t *dh = NULL;
+    uint8_t point[65] = {}, salt[66] = {}, prk[32] = {}, hash[32] = {};
+    const uint8_t counter = 1;
+    SHA2_CTX sha;
+    HMAC_SHA256_CTX hmac;
+    int error = EINVAL;
+
+    if (ni->ni_owe.state != 1)
+        goto out;
+    while (len != 0) {
+        if (len < 2 || (size_t)ies[1] + 2 > len)
+            goto out;
+        if (ies[0] == IEEE80211_ELEMID_EXTENSION && ies[1] >= 1 &&
+            ies[2] == IEEE80211_ELEMID_EXT_OWE_DH_PARAM) {
+            if (dh != NULL || ies[1] != IEEE80211_OWE_IE_LEN - 2)
+                goto out;
+            dh = ies;
+        }
+        len -= ies[1] + 2;
+        ies += ies[1] + 2;
+    }
+    if (dh == NULL || LE_READ_2(dh + 3) != IEEE80211_OWE_GROUP ||
+        !br_ec_p256_hnp_point(point, dh + 5, 0) ||
+        !br_ec_p256_m31.mul(point, sizeof(point), ni->ni_owe.private_key,
+            sizeof(ni->ni_owe.private_key), BR_EC_secp192r1))
+        goto out;
+
+    /* RFC 8110: HKDF-extract(C || A || group, x-coordinate shared secret). */
+    memcpy(salt, ni->ni_owe.public_key, 32);
+    memcpy(salt + 32, dh + 5, 32);
+    LE_WRITE_2(salt + 64, IEEE80211_OWE_GROUP);
+    HMAC_SHA256_Init(&hmac, salt, sizeof(salt));
+    HMAC_SHA256_Update(&hmac, point + 1, 32);
+    HMAC_SHA256_Final(prk, &hmac);
+    HMAC_SHA256_Init(&hmac, prk, sizeof(prk));
+    HMAC_SHA256_Update(&hmac, (const uint8_t *)"OWE Key Generation", 18);
+    HMAC_SHA256_Update(&hmac, &counter, 1);
+    HMAC_SHA256_Final(ni->ni_pmk, &hmac);
+    SHA256Init(&sha);
+    SHA256Update(&sha, salt, 64);
+    SHA256Final(hash, &sha);
+    memcpy(ni->ni_pmkid, hash, IEEE80211_PMKID_LEN);
+    ni->ni_flags |= IEEE80211_NODE_PMK;
+    ni->ni_owe.state = 2;
+    error = 0;
+out:
+    explicit_bzero(ni->ni_owe.private_key, sizeof(ni->ni_owe.private_key));
+    if (error) {
+        explicit_bzero(&ni->ni_owe, sizeof(ni->ni_owe));
+        explicit_bzero(ni->ni_pmk, sizeof(ni->ni_pmk));
+        explicit_bzero(ni->ni_pmkid, sizeof(ni->ni_pmkid));
+        ni->ni_flags &= ~(IEEE80211_NODE_PMK | IEEE80211_NODE_PMKID);
+    }
+    explicit_bzero(point, sizeof(point));
+    explicit_bzero(salt, sizeof(salt));
+    explicit_bzero(prk, sizeof(prk));
+    explicit_bzero(hash, sizeof(hash));
+    explicit_bzero(&hmac, sizeof(hmac));
+    explicit_bzero(&sha, sizeof(sha));
+    return error;
 }
 
 typedef union _ANY_CTX {

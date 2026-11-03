@@ -308,6 +308,8 @@ ieee80211_ess_setwpaparms(struct ieee80211_ess *ess,
         ess->rsnakms |= IEEE80211_AKM_SHA256_8021X;
     if (wpa->i_akms & IEEE80211_WPA_AKM_SAE)
         ess->rsnakms |= IEEE80211_AKM_SAE;
+    if (wpa->i_akms & IEEE80211_WPA_AKM_OWE)
+        ess->rsnakms |= IEEE80211_AKM_OWE;
     if (ess->rsnakms == 0)	/* set to default (PSK) */
         ess->rsnakms = IEEE80211_AKM_PSK;
     
@@ -1147,6 +1149,15 @@ ieee80211_match_bss(struct ieee80211com *ic, struct ieee80211_node *ni,
         if ((ni->ni_rsnciphers & ic->ic_rsnciphers) == 0)
             fail |= IEEE80211_NODE_ASSOCFAIL_WPA_PROTO;
         
+        if ((ni->ni_rsnakms & ic->ic_rsnakms & IEEE80211_AKM_OWE) &&
+            (!(ni->ni_rsnprotos & IEEE80211_PROTO_RSN) ||
+             ni->ni_rsngroupcipher != IEEE80211_CIPHER_CCMP ||
+             !(ni->ni_rsnciphers & ic->ic_rsnciphers & IEEE80211_CIPHER_CCMP) ||
+             (IEEE80211_IS_CHAN_6GHZ(ni->ni_chan) &&
+              (!(ic->ic_caps & IEEE80211_C_MFP) ||
+               !(ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC)))))
+            fail |= IEEE80211_NODE_ASSOCFAIL_WPA_PROTO;
+
         /* Management ciphers must be supported by the selected firmware path. */
         if ((ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC) &&
             (!ieee80211_is_bip_cipher(ni->ni_rsngroupmgmtcipher) ||
@@ -1288,6 +1299,7 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
     ni->ni_flags &= ~IEEE80211_NODE_PMKID;
     explicit_bzero(ni->ni_pmkid, sizeof(ni->ni_pmkid));
     explicit_bzero(&ni->ni_sae, sizeof(ni->ni_sae));
+    explicit_bzero(&ni->ni_owe, sizeof(ni->ni_owe));
     ni->ni_sae.sae_state = SAE_STATE_NOTHING;
     
     ic->ic_curmode = ieee80211_chan2mode(ic, ni->ni_chan);
@@ -1302,6 +1314,12 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
         ieee80211_choose_rsnparams(ic);
     else if (ic->ic_flags & IEEE80211_F_WEPON)
         ni->ni_rsncipher = IEEE80211_CIPHER_USEGROUP;
+
+    if (ni->ni_rsnakms == IEEE80211_AKM_OWE &&
+        ieee80211_owe_prepare(ni) != 0) {
+        ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+        return;
+    }
 
     if (ieee80211_node_allow_wpa3(ic, ni) &&
         !ic->ic_sae_defer_active && ic->ic_sae_defer_join != NULL) {
@@ -1689,6 +1707,8 @@ ieee80211_choose_rsnparams(struct ieee80211com *ic)
         (ic->ic_caps & IEEE80211_C_MFP) &&
         (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC)) {
         ni->ni_rsnakms = IEEE80211_AKM_SAE;
+    } else if (ni->ni_rsnakms & IEEE80211_AKM_OWE) {
+        ni->ni_rsnakms = IEEE80211_AKM_OWE;
     } else if ((ic->ic_flags & IEEE80211_F_PSK) && (ni->ni_rsnakms &
                                              (IEEE80211_AKM_PSK | IEEE80211_AKM_SHA256_PSK))) {
         /* AP supports PSK AKMP and a PSK is configured */
@@ -1785,6 +1805,7 @@ ieee80211_node_cleanup(struct ieee80211com *ic, struct ieee80211_node *ni)
         ni->ni_rsnie_tlv_len = 0;
     }
     explicit_bzero(&ni->ni_sae, sizeof(ni->ni_sae));
+    explicit_bzero(&ni->ni_owe, sizeof(ni->ni_owe));
     ni->ni_rsnxecaps = 0;
     explicit_bzero(ni->ni_rsnxe, sizeof(ni->ni_rsnxe));
     ni->ni_rsnxe_len = 0;
@@ -2231,6 +2252,7 @@ ieee80211_free_node(struct ieee80211com *ic, struct ieee80211_node *ni)
     ieee80211_ba_del(ni);
     ieee80211_ba_free(ni);
     explicit_bzero(&ni->ni_sae, sizeof(ni->ni_sae));
+    explicit_bzero(&ni->ni_owe, sizeof(ni->ni_owe));
     RB_REMOVE(ieee80211_tree, &ic->ic_tree, ni);
     ic->ic_nnodes--;
 #ifndef IEEE80211_STA_ONLY
@@ -3541,6 +3563,7 @@ ieee80211_node_leave_rsn(struct ieee80211com *ic, struct ieee80211_node *ni)
     explicit_bzero(ni->ni_rsnxe, sizeof(ni->ni_rsnxe));
     ni->ni_rsnxe_len = 0;
     explicit_bzero(&ni->ni_sae, sizeof(ni->ni_sae));
+    explicit_bzero(&ni->ni_owe, sizeof(ni->ni_owe));
     if (ni == ic->ic_bss) {
         explicit_bzero(ic->ic_sae_pwe, sizeof(ic->ic_sae_pwe));
         ic->ic_sae_pwe_valid = 0;

@@ -1064,6 +1064,16 @@ IOReturn AirportItlwmSkywalkInterface::beginWCLJoin(apple80211AssocCandidates *r
 
 IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &join)
 {
+    ieee80211com *ic = fHalService->get80211Controller();
+    if (join.lowerAuth == APPLE80211_AUTHTYPE_OPEN && !join.upperAuth &&
+        !join.keyLength && !join.rsnLength) {
+        auto node = ieee80211_find_node(ic, join.bssid);
+        if (node && node->ni_rsnie && AirportWCL::rsnIsOWE(node->ni_rsnie,
+                size_t(node->ni_rsnie[1]) + 2)) {
+            join.rsnLength = size_t(node->ni_rsnie[1]) + 2;
+            memcpy(join.rsn, node->ni_rsnie, join.rsnLength);
+        }
+    }
     auto auth = AirportWCL::classifyLegacyAuth(join);
     auto credentialKind = auth == AirportWCL::LegacyAuth::Personal ?
         AirportWCL::DerivedCredentialKind::Personal : AirportWCL::DerivedCredentialKind::SAE;
@@ -1079,12 +1089,13 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
         auth == AirportWCL::LegacyAuth::Wep ? "wep" :
         auth == AirportWCL::LegacyAuth::Personal ? "personal" :
         auth == AirportWCL::LegacyAuth::PersonalSAE ? "sae" :
-        auth == AirportWCL::LegacyAuth::Enterprise ? "enterprise" : "invalid");
+        auth == AirportWCL::LegacyAuth::Enterprise ? "enterprise" :
+        auth == AirportWCL::LegacyAuth::EnhancedOpen ? "owe" : "invalid");
     bool personal = auth == AirportWCL::LegacyAuth::Personal;
     bool sae = auth == AirportWCL::LegacyAuth::PersonalSAE;
+    bool owe = auth == AirportWCL::LegacyAuth::EnhancedOpen;
     bool enterprise = auth == AirportWCL::LegacyAuth::Enterprise;
     bool supported = auth != AirportWCL::LegacyAuth::Invalid;
-    ieee80211com *ic = fHalService->get80211Controller();
     purgeWCLUserEapol();
     /*
      * A join preempts a scan. The HAL aborts the command, but WCL has to retire
@@ -1183,7 +1194,7 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
     ic->ic_flags &= ~(IEEE80211_F_AUTO_JOIN | IEEE80211_F_PSK);
     ic->ic_wcl_enterprise = enterprise;
 
-    if (personal || sae || enterprise) {
+    if (personal || sae || enterprise || owe) {
         ieee80211_wpaparams wpa = {};
         wpa.i_enabled = 1;
         if (join.upperAuth & (APPLE80211_AUTHTYPE_WPA | APPLE80211_AUTHTYPE_WPA_PSK))
@@ -1191,7 +1202,7 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
         if (join.upperAuth & (APPLE80211_AUTHTYPE_WPA2 | APPLE80211_AUTHTYPE_WPA2_PSK |
                               APPLE80211_AUTHTYPE_SHA256_PSK | APPLE80211_AUTHTYPE_SHA256_8021X))
             wpa.i_protos |= IEEE80211_WPA_PROTO_WPA2;
-        if (sae)
+        if (sae || owe)
             wpa.i_protos |= IEEE80211_WPA_PROTO_WPA2;
         if (join.upperAuth & (APPLE80211_AUTHTYPE_WPA_PSK | APPLE80211_AUTHTYPE_WPA2_PSK))
             wpa.i_akms |= IEEE80211_WPA_AKM_PSK;
@@ -1203,8 +1214,10 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
             wpa.i_akms |= IEEE80211_WPA_AKM_SHA256_8021X;
         if (sae)
             wpa.i_akms |= IEEE80211_WPA_AKM_SAE;
+        if (owe)
+            wpa.i_akms |= IEEE80211_WPA_AKM_OWE;
         wpa.i_ciphers = IEEE80211_WPA_CIPHER_CCMP | IEEE80211_WPA_CIPHER_TKIP;
-        if (sae)
+        if (sae || owe)
             wpa.i_ciphers = IEEE80211_WPA_CIPHER_CCMP;
         if (join.rsnLength >= 8 && join.rsn[0] == IEEE80211_ELEMID_RSN &&
             join.rsn[4] == 0 && join.rsn[5] == 0x0f && join.rsn[6] == 0xac) {

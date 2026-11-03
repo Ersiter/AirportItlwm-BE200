@@ -208,6 +208,15 @@ enum ieee80211_node_psstate {
 #define SAE_STATE_ACCEPTED	(SAE_EVENT_COMMIT_SENT | SAE_EVENT_CONFIRM_SENT | \
 	SAE_EVENT_PEER_COMMIT_RECEIVED | SAE_EVENT_PEER_CONFIRM_RECEIVED)
 
+#define IEEE80211_OWE_GROUP 19
+#define IEEE80211_OWE_PUBLIC_LEN 32
+#define IEEE80211_OWE_IE_LEN 37
+struct ieee80211_owe {
+    uint8_t private_key[32];
+    uint8_t public_key[IEEE80211_OWE_PUBLIC_LEN];
+    uint8_t state; /* 0: empty, 1: DH request ready, 2: PMK derived */
+};
+
 struct ieee80211_sae {
 	uint8_t sae_scalar[IEEE80211_SAE_MAX_ECC_PRIME_LEN];
 	uint8_t sae_element_x[IEEE80211_SAE_MAX_ECC_PRIME_LEN];
@@ -430,6 +439,7 @@ struct ieee80211_node {
 	struct ieee80211_key	ni_pairwise_key;
 	struct ieee80211_ptk	ni_ptk;
 	struct ieee80211_sae	ni_sae;
+    struct ieee80211_owe ni_owe;
 	u_int8_t		ni_key_count;
 	int			ni_port_valid;
 

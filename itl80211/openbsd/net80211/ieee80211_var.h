@@ -817,10 +817,26 @@ ieee80211_sae_auth_current(const struct ieee80211com *ic,
 	    IEEE80211_ADDR_EQ(ni->ni_sae.sae_ownaddr, ic->ic_myaddr));
 }
 
+static inline int
+ieee80211_rsn_uses_mld(const struct ieee80211com *ic,
+    const struct ieee80211_node *ni)
+{
+#ifdef AIRPORT_WCL
+    if (ni->ni_rsnakms == IEEE80211_AKM_OWE)
+        return ic->ic_wcl_peer_is_mlo && ic->ic_wcl_local_mlo_addrs_valid &&
+            ni->ni_mld_valid;
+#endif
+    return ni->ni_sae.sae_auth.mld;
+}
+
 static inline const uint8_t *
 ieee80211_rsn_own_addr(const struct ieee80211com *ic,
     const struct ieee80211_node *ni)
 {
+#ifdef AIRPORT_WCL
+    if (ni->ni_rsnakms == IEEE80211_AKM_OWE && ieee80211_rsn_uses_mld(ic, ni))
+        return ic->ic_wcl_local_mlo_addrs[0];
+#endif
 	return ni->ni_sae.sae_auth.mld ? ni->ni_sae.sae_auth.ownaddr : ic->ic_myaddr;
 }
 
@@ -828,7 +844,10 @@ static inline const uint8_t *
 ieee80211_rsn_peer_addr(const struct ieee80211com *ic,
     const struct ieee80211_node *ni)
 {
-	(void)ic;
+#ifdef AIRPORT_WCL
+    if (ni->ni_rsnakms == IEEE80211_AKM_OWE && ieee80211_rsn_uses_mld(ic, ni))
+        return ni->ni_mld_addr;
+#endif
 	return ni->ni_sae.sae_auth.mld ? ni->ni_sae.sae_auth.peeraddr : ni->ni_macaddr;
 }
 

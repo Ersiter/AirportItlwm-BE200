@@ -114,7 +114,7 @@ struct ieee80211_ba_buf{void*m;};
 struct ieee80211_rx_ba{int ba_state{},ba_timeout_val{},ba_token{},ba_to{},ba_gap_to{},ba_gapwait{};uint16_t ba_winsize{},ba_params{},ba_winstart{},ba_winend{},ba_head{};ieee80211_ba_buf*ba_buf{};ieee80211_node*ba_ni{};};
 '''
 header=(n/'ieee80211_crypto.h').read_text(encoding='utf-8')
-code+=enum(header,'ieee80211_cipher')
+code+=enum(header,'ieee80211_cipher')+enum(header,'ieee80211_akm')
 code+=struct(header,'ieee80211_key')
 wire = (n/'ieee80211.h').read_text(encoding='utf-8')
 kde_start = wire.rindex('enum {', 0, wire.index('IEEE80211_KDE_GTK'))
@@ -123,7 +123,8 @@ code += '#define __packed\n#define EAPOL_KEY_NONCE_LEN 32\n#define EAPOL_KEY_IV_
 code += struct(wire, 'ieee80211_eapol_key') + struct(wire, 'ieee80211_ptk') + '#pragma pack(pop)\n'
 code+=r'''
 struct ieee80211_node {
-  uint8_t ni_macaddr[6]{};
+  uint8_t ni_macaddr[6]{}, ni_mld_addr[6]{}; int ni_mld_valid{};
+  unsigned ni_rsnakms{IEEE80211_AKM_SAE};
   unsigned ni_flags{};
   unsigned ni_rsnprotos{IEEE80211_PROTO_RSN};int ni_rsn_supp_state{};uint64_t ni_replaycnt{};
   int ni_port_valid{1},ni_rsncaps{};ieee80211_rx_ba ni_rx_ba[16];
@@ -137,6 +138,8 @@ code+=struct((n/'ieee80211_var.h').read_text(encoding='utf-8'),'ieee80211_mld_li
 code+=r'''
 struct _ifnet {int if_flags{};};
 struct ieee80211com {
+  uint8_t ic_myaddr[6]{}, ic_wcl_local_mlo_addrs[4][6]{};
+  bool ic_wcl_peer_is_mlo{}, ic_wcl_local_mlo_addrs_valid{};
   uint8_t ic_nonce[32]{};_ifnet ic_if; unsigned ic_caps{IEEE80211_C_TX_AMPDU};int ic_opmode{IEEE80211_M_STA};
   int ic_state{IEEE80211_S_RUN},ic_xflags{},ic_tid_noack{},ic_htcaps{};
   int(*ic_ampdu_rx_start)(ieee80211com*,ieee80211_node*,int){};
@@ -148,8 +151,12 @@ struct ieee80211com {
   void(*ic_delete_key)(ieee80211com*,ieee80211_node*,ieee80211_key*);
 };
 static ieee80211_node*ieee80211_mld_primary_node(ieee80211com*ic,ieee80211_node*ni){return ni==ic->ic_bss||std::any_of(ic->ic_mld_links,ic->ic_mld_links+ic->ic_mld_link_count,[&](auto&l){return l.ni==ni&&l.assoc_accepted;})?ic->ic_bss:ni;}
-static const uint8_t*ieee80211_rsn_peer_addr(ieee80211com*,ieee80211_node*ni){return ni->ni_sae.sae_auth.peeraddr;}
-static const uint8_t*ieee80211_rsn_own_addr(ieee80211com*,ieee80211_node*ni){return ni->ni_sae.sae_auth.ownaddr;}
+'''
+var=(n/'ieee80211_var.h').read_text(encoding='utf-8')
+code+=func(var,'ieee80211_rsn_uses_mld','static inline int')
+code+=func(var,'ieee80211_rsn_own_addr','static inline const uint8_t *')
+code+=func(var,'ieee80211_rsn_peer_addr','static inline const uint8_t *')
+code+=r'''
 static void ieee80211_delete_key(ieee80211com*,ieee80211_node*,ieee80211_key*k){k->k_priv=nullptr;}
 static int ieee80211_is_bip_cipher(ieee80211_cipher c){return c==IEEE80211_CIPHER_BIP||c==IEEE80211_CIPHER_BIP_GMAC_128||c==IEEE80211_CIPHER_BIP_GMAC_256;}
 #pragma pack(push,1)
@@ -292,7 +299,7 @@ static void write_be(uint8_t*p,uint64_t v,int n){while(n){p[--n]=uint8_t(v);v>>=
 static mbuf_t ieee80211_get_eapol_key(int,int,size_t n){return new mbuf{std::vector<uint8_t>(sizeof(ieee80211_eapol_key)+n)};}
 static void mbuf_pkthdr_setlen(mbuf_t m,size_t n){m->data.resize(n);}
 static void mbuf_setlen(mbuf_t m,size_t n){m->data.resize(n);}
-static int ieee80211_node_allow_wpa3(ieee80211com*,ieee80211_node*){return 1;}
+static int ieee80211_node_allow_wpa3(ieee80211com*,ieee80211_node*n){return n->ni_rsnakms==IEEE80211_AKM_SAE;}
 static uint8_t*ieee80211_add_rsn(uint8_t*p,ieee80211com*,ieee80211_node*n){memcpy(p,n->ni_rsnie,n->ni_rsnie[1]+2);return p+n->ni_rsnie[1]+2;}
 static uint8_t*ieee80211_add_rsnxe(uint8_t*p,ieee80211com*,ieee80211_node*n){memcpy(p,n->ni_rsnxe,n->ni_rsnxe_len);return p+n->ni_rsnxe_len;}
 static uint8_t*ieee80211_add_wpa(uint8_t*p,ieee80211com*,ieee80211_node*){return p;}
@@ -385,7 +392,27 @@ static void eapol_output_tests(){
  ni->ni_sae.sae_auth.mld=0;assert(ieee80211_send_4way_msg2(&ic,ni,replay,&ptk)==0&&sent_eapol.size()==sizeof(ieee80211_eapol_key)+7);assert(ieee80211_send_4way_msg4(&ic,ni)==0&&sent_eapol.size()==sizeof(ieee80211_eapol_key));
  std::puts("PASS EAPOL TX: M2 MAC and requested Link KDE bytes, M4 MAC KDE, single-link frame lengths");
 }
-int main(){security_tests();rx_tests();aggregation_tests();eapol_output_tests();std::puts("All production-function tests passed");}
+static void owe_mlo_tests(){
+ fixture f;auto&ic=f.sc.sc_ic;auto*ni=&f.nodes[0];
+ ni->ni_rsnakms=IEEE80211_AKM_OWE;ni->ni_sae.sae_auth.mld=0;
+ ic.ic_wcl_peer_is_mlo=true;ic.ic_wcl_local_mlo_addrs_valid=true;ni->ni_mld_valid=1;
+ memcpy(ni->ni_mld_addr,ni->ni_sae.sae_auth.peeraddr,6);
+ ic.ic_wcl_local_mlo_addrs[0][0]=2;ic.ic_wcl_local_mlo_addrs[0][5]=71;
+ assert(ieee80211_rsn_uses_mld(&ic,ni));
+ assert(memcmp(ieee80211_rsn_peer_addr(&ic,ni),ni->ni_mld_addr,6)==0);
+ assert(memcmp(ieee80211_rsn_own_addr(&ic,ni),ic.ic_wcl_local_mlo_addrs[0],6)==0);
+ auto v=f.initial();assert(f.valid(v));f.install(v);assert(commands.size()==6);
+ uint8_t replay[8]{};ieee80211_ptk ptk{};
+ assert(ieee80211_send_4way_msg2(&ic,ni,replay,&ptk)==0);
+ auto*p=sent_eapol.data()+sizeof(ieee80211_eapol_key);
+ assert(sent_eapol.size()==sizeof(ieee80211_eapol_key)+29);
+ assert(memcmp(p,f.rsn.data(),4)==0&&p[4]==221&&p[9]==3&&memcmp(p+10,ic.ic_wcl_local_mlo_addrs[0],6)==0);
+ assert(ieee80211_send_4way_msg4(&ic,ni)==0&&sent_eapol.size()==sizeof(ieee80211_eapol_key)+12);
+ ic.ic_wcl_peer_is_mlo=false;assert(!ieee80211_rsn_uses_mld(&ic,ni));
+ assert(ieee80211_rsn_own_addr(&ic,ni)==ic.ic_myaddr&&ieee80211_rsn_peer_addr(&ic,ni)==ni->ni_macaddr);
+ std::puts("PASS OWE MLO: MLD PTK identities, per-link group keys, M2/M4 KDEs without SAE RSNXE");
+}
+int main(){security_tests();rx_tests();aggregation_tests();eapol_output_tests();owe_mlo_tests();std::puts("All production-function tests passed");}
 '''
 target=out/'native-test.cpp'
 target.write_text(code,encoding='utf-8')
