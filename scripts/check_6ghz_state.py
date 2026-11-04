@@ -70,6 +70,7 @@ prelude = r"""
 #define XYLog(...) ((void)0)
 #define DPRINTFN(...) ((void)0)
 #define nitems(a) (sizeof(a)/sizeof(a[0]))
+#define BIT(n) (1U << (n))
 
 #define le16toh(v) (v)
 #define le32toh(v) (v)
@@ -94,7 +95,11 @@ functions += '\n'+function(rx,'ieee80211_update_eht_params')
 functions += '\n'+function(proto,'ieee80211_he_supported')
 functions += '\n'+function(proto,'ieee80211_he_negotiate')
 functions += '\n'+function(mld,'iwx_mld_modify_link_fill')
+functions += '\n'+block(driver,'static uint16_t rs_fw_he_ieee80211_mcs_to_rs_mcs(')
+functions += '\n'+function(driver,'iwx_rs_fw_he_set_enabled_rates')
+functions += '\n'+function(driver,'iwx_rs_fw_get_config_flags')
 types += '\n'+block(registers,'struct iwx_ac_qos {',True)
+types += '\n'+block(registers,'struct iwx_tlc_config_cmd_v4 {',True)
 types += '\n'+block(mld_header,'struct iwx_mld_he_backoff_conf {',True)
 types += '\n'+block(mld_header,'struct iwx_mld_link_config_cmd {',True)
 program = r"""
@@ -102,13 +107,13 @@ struct ieee80211com;
 struct ieee80211_channel {unsigned ic_flags=0;uint16_t ic_freq=0,ic_center_freq1=0,ic_center_freq2=0;uint8_t ic_reg_flags=0;};
 struct ieee80211_node {
     ieee80211com*ni_ic=nullptr;ieee80211_channel*ni_chan=nullptr;
-    uint32_t ni_flags=0,ni_he_oper_params=0,ni_rsnciphers=0,ni_he_txrate_kbps=0;
+    uint32_t ni_flags=0,ni_he_oper_params=0,ni_rsnciphers=0,ni_he_txrate_kbps=0,ni_htcaps=0,ni_vhtcaps=0;
     uint16_t ni_he_oper_nss_set=0xffff,ni_he_6ghz_capa=0;
     ieee80211_he_cap_elem ni_he_cap_elem{};
     ieee80211_he_mcs_nss_supp ni_he_mcs_nss_supp{};
     uint8_t ni_ppe_thres[32]{},ni_he_optional[16]{},ni_he_mu_edca[13]{};
     bool ni_he_requested=false,ni_eht_requested=false;
-    unsigned ni_he_tx_nss=0,ni_chw=IEEE80211_CHAN_WIDTH_20;
+    unsigned ni_he_tx_nss=0,ni_chw=IEEE80211_CHAN_WIDTH_20,ni_rx_nss=1;
     uint8_t ni_eht_oper_len=0,ni_eht_oper_width=0,ni_eht_ccfs0=0,ni_eht_ccfs1=0;
     uint16_t ni_eht_puncture=0,ni_eht_center_freq1=0;
     ieee80211_eht_cap_elem_fixed ni_eht_cap_elem{};
@@ -133,9 +138,11 @@ static int ieee80211_ieee2mhz(int ch,int){return 5950+5*ch;}
 struct iwx_phy_ctxt {unsigned id=0;};
 struct iwx_node {ieee80211_node in_ni;unsigned in_id=0;iwx_phy_ctxt*in_phyctxt=nullptr;};
 struct iwx_softc {ieee80211com sc_ic;};
+static unsigned iwx_num_of_ant(unsigned antennas){return __builtin_popcount(antennas);}
+static unsigned iwx_fw_valid_tx_ant(iwx_softc*){return 3;}
 static int iwx_mld_link_slot(ieee80211com*,ieee80211_node*){return 0;}
 static void iwx_ack_rates(iwx_softc*,iwx_node*,int*c,int*o){*c=0;*o=0x15;}
-class ItlIwx {public:void iwx_mld_modify_link_fill(iwx_softc*,iwx_node*,iwx_mld_link_config_cmd*,int,int);};
+class ItlIwx {public:void iwx_mld_modify_link_fill(iwx_softc*,iwx_node*,iwx_mld_link_config_cmd*,int,int);uint16_t iwx_rs_fw_get_config_flags(iwx_softc*,ieee80211_node*);};
 FUNCTIONS
 static void setup(iwx_softc&s,iwx_node&n,ieee80211_channel&c,iwx_phy_ctxt&phy){
     auto&ic=s.sc_ic;auto&ni=n.in_ni;ic.ic_bss=&ni;ni.ni_ic=&ic;ni.ni_chan=&c;n.in_phyctxt=&phy;
@@ -182,13 +189,44 @@ int main(){
         assert(cmd.modify_mask==unsigned(changes));
     }
     static_assert(sizeof(iwx_mld_link_config_cmd)==208,"LINK v1 wire size");
-    puts("PASS HE/EHT state: independent flags, parsed 6 GHz capabilities, 20/40/80/160 MHz, regulatory narrowing, MBSSID reference in every LINK update");
+    ic.ic_state=IEEE80211_S_RUN;ni.ni_eht_requested=true;ni.ni_flags|=IEEE80211_NODE_EHTCAP;
+    uint8_t ehtop[]={IEEE80211_ELEMID_EXTENSION,9,IEEE80211_ELEMID_EXT_EHT_OPERATION,
+        IEEE80211_EHT_OPER_INFO_PRESENT,0x22,0x22,0x22,0x22,IEEE80211_EHT_OPER_CHAN_WIDTH_320MHZ,31,63};
+    ieee80211_update_eht_params(&ic,&ni,nullptr,ehtop);
+    assert((ni.ni_flags&IEEE80211_NODE_EHTOP)&&ni.ni_eht_oper_len==8);
+    ni.ni_eht_center_freq1=6265;ni.ni_eht_puncture=2;
+    for(unsigned state:{IEEE80211_S_ASSOC,IEEE80211_S_RUN}){
+        ic.ic_state=state;ieee80211_update_eht_params(&ic,&ni,nullptr,nullptr);
+        assert(ni.ni_eht_oper_width==IEEE80211_EHT_OPER_CHAN_WIDTH_320MHZ);
+        assert(ni.ni_eht_ccfs0==31&&ni.ni_eht_ccfs1==63&&ni.ni_eht_puncture==2&&ni.ni_eht_center_freq1==6265);
+    }
+    uint8_t shortop[]={IEEE80211_ELEMID_EXTENSION,1,IEEE80211_ELEMID_EXT_EHT_OPERATION};
+    ieee80211_update_eht_params(&ic,&ni,nullptr,shortop);assert(ni.ni_eht_oper_len==8&&ni.ni_eht_puncture==2);
+    ieee80211_update_eht_params(&ic,&ni,nullptr,ehtop);assert(ni.ni_eht_puncture==0);
+    ic.ic_state=IEEE80211_S_SCAN;ieee80211_update_eht_params(&ic,&ni,nullptr,nullptr);
+    assert(!(ni.ni_flags&IEEE80211_NODE_EHTOP)&&ni.ni_eht_oper_len==0);
+
+    ni.ni_chw=IEEE80211_CHAN_WIDTH_160;ni.ni_rx_nss=2;
+    ni.ni_he_cap_elem.phy_cap_info[1]|=IEEE80211_HE_PHY_CAP1_LDPC_CODING_IN_PAYLOAD;
+    ieee80211_node secondary=ni;secondary.ni_chw=IEEE80211_CHAN_WIDTH_80;secondary.ni_rx_nss=1;
+    secondary.ni_he_mcs_nss_supp.rx_mcs_80=0xfffc;
+    iwx_tlc_config_cmd_v4 primary_rates{},secondary_rates{};
+    iwx_rs_fw_he_set_enabled_rates(&s,&ni,&primary_rates);
+    iwx_rs_fw_he_set_enabled_rates(&s,&secondary,&secondary_rates);
+    ic.ic_state=IEEE80211_S_RUN;ni.ni_flags|=IEEE80211_NODE_HE;secondary.ni_flags|=IEEE80211_NODE_HE;
+    secondary.ni_he_cap_elem.phy_cap_info[1]&=~IEEE80211_HE_PHY_CAP1_LDPC_CODING_IN_PAYLOAD;
+    assert(ItlIwx().iwx_rs_fw_get_config_flags(&s,&ni)&IWX_TLC_MNG_CFG_FLAGS_LDPC_MSK);
+    assert(!(ItlIwx().iwx_rs_fw_get_config_flags(&s,&secondary)&IWX_TLC_MNG_CFG_FLAGS_LDPC_MSK));
+    assert(primary_rates.ht_rates[0][0]==0xfff&&primary_rates.ht_rates[1][1]==0xfff);
+    assert(secondary_rates.ht_rates[0][0]==0xff&&secondary_rates.ht_rates[1][0]==0&&secondary_rates.ht_rates[0][1]==0);
+
+    puts("PASS HE/EHT state: 6 GHz 20/40/80/160 MHz, regulatory narrowing, MBSSID LINK reference, retained live 320 MHz EHT operation and puncturing");
 }
 """.replace('FUNCTIONS',functions)
 needed=set(re.findall(r'\b[A-Z][A-Z0-9_]+',types+helpers+program))
 enums=[]
-for match in re.finditer(r'(?m)^enum(?:\s+\w+)?\s*\{',headers+'\n'+mld_header):
-    item=block((headers+'\n'+mld_header)[match.start():],match.group(),True)
+for match in re.finditer(r'(?m)^enum(?:\s+\w+)?\s*\{',headers+'\n'+mld_header+'\n'+registers):
+    item=block((headers+'\n'+mld_header+'\n'+registers)[match.start():],match.group(),True)
     if needed.intersection(re.findall(r'\b[A-Z][A-Z0-9_]+',item)):
         enums.append(item)
 enums='\n'.join(enums)
@@ -295,9 +333,48 @@ int main(){
 """.replace('FUNCTIONS',native_functions)
 native_program=prelude+country_enums+'\n'+native
 
+
+# Exercise station filtering at the firmware TX-completion boundary.
+tx_types='\n'.join(block(registers,'struct '+name+' {',True) for name in
+    ['iwx_compressed_ba_tfd','iwx_compressed_ba_ratid','iwx_compressed_ba_notif'])
+tx_function=function(driver,'iwx_rx_tx_ba_notif')
+tx=r"""
+using u8=uint8_t;using __le16=uint16_t;using __le32=uint32_t;
+TYPES
+struct ieee80211com{unsigned ic_state=IEEE80211_S_RUN;};
+struct iwx_tx_ring{unsigned ring_count=256;};
+struct iwx_softc{ieee80211com sc_ic;bool sc_use_mld_api=false;uint32_t sc_mld_active_sta_mask=0;unsigned sc_tx_timer=5;iwx_tx_ring txq[8];};
+struct iwx_rx_data{};
+struct iwx_rx_packet{size_t length=0;alignas(8) uint8_t data[256]{};};
+static size_t iwx_rx_packet_payload_len(iwx_rx_packet*p){return p->length;}
+class ItlIwx{public:
+    std::vector<unsigned> completed;
+    void iwx_rx_tx_ba_notif(iwx_softc*,iwx_rx_packet*,iwx_rx_data*);
+    void iwx_ampdu_txq_advance(iwx_softc*s,iwx_tx_ring*r,int index){completed.push_back(unsigned(r-s->txq)*256+index);}
+    void iwx_clear_oactive(iwx_softc*,iwx_tx_ring*){}
+};
+FUNCTION
+int main(){
+    ItlIwx driver;iwx_softc sc;iwx_rx_packet packet;
+    auto*ba=reinterpret_cast<iwx_compressed_ba_notif*>(packet.data);
+    packet.length=sizeof(*ba)+sizeof(ba->tfd[0]);ba->tfd_cnt=1;ba->tfd[0].q_num=2;ba->tfd[0].tfd_index=7;
+    driver.iwx_rx_tx_ba_notif(&sc,&packet,nullptr);assert(driver.completed==std::vector<unsigned>{519});
+    ba->sta_id=7;driver.iwx_rx_tx_ba_notif(&sc,&packet,nullptr);assert(driver.completed.size()==1);
+    sc.sc_use_mld_api=true;sc.sc_mld_active_sta_mask=(1U<<7)|1;
+    driver.iwx_rx_tx_ba_notif(&sc,&packet,nullptr);assert(driver.completed.size()==2);
+    for(unsigned sta:{8,31,32,255}){ba->sta_id=sta;driver.iwx_rx_tx_ba_notif(&sc,&packet,nullptr);assert(driver.completed.size()==2);}
+    ba->sta_id=7;--packet.length;driver.iwx_rx_tx_ba_notif(&sc,&packet,nullptr);assert(driver.completed.size()==2);
+    ++packet.length;ba->tfd[0].q_num=8;driver.iwx_rx_tx_ba_notif(&sc,&packet,nullptr);assert(driver.completed.size()==2);
+    ba->tfd[0].q_num=2;sc.sc_ic.ic_state=IEEE80211_S_SCAN;driver.iwx_rx_tx_ba_notif(&sc,&packet,nullptr);assert(driver.completed.size()==2);
+    puts("PASS TX completion: primary and active secondary stations reclaim queues; inactive station, malformed payload and queue bounds rejected");
+}
+""".replace('TYPES',tx_types).replace('FUNCTION',tx_function)
+tx_enum=block(registers,'enum iwx_ba_resp_flags {',True)
+tx_program=prelude+macros_for(tx)+'\n'+country_enums+'\n'+tx_enum+'\n'+tx
+
 with tempfile.TemporaryDirectory(prefix='itlwm-6ghz-state-') as folder:
     folder=Path(folder)
-    for name,code in [('he_state',he_program),('mcc_policy',mcc_program),('native_country',native_program)]:
+    for name,code in [('he_state',he_program),('mcc_policy',mcc_program),('native_country',native_program),('tx_completion',tx_program)]:
         path=folder/(name+'.cpp');path.write_text(code,encoding='utf-8')
         binary=folder/name
         subprocess.run(shlex.split(os.environ.get('CXX','c++'))+['-std=c++17','-g',

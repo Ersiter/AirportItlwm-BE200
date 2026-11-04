@@ -975,8 +975,17 @@ ieee80211_he_negotiate(struct ieee80211com *ic, struct ieee80211_node *ni)
     if (!ni->ni_he_requested || !ieee80211_he_supported(ic, ni) ||
         (!IEEE80211_IS_CHAN_6GHZ(ni->ni_chan) &&
          !(ni->ni_flags & IEEE80211_NODE_HT)) ||
-        !(ni->ni_flags & IEEE80211_NODE_QOS))
+        !(ni->ni_flags & IEEE80211_NODE_QOS)) {
+        XYLog("HE rejected: requested=%u flags=%08x modecaps=%08x local=%08x user=%08x reg=%02x op=%08x basic=%04x peer80=%04x/%04x local80=%04x/%04x\n",
+            ni->ni_he_requested, ni->ni_flags, ic->ic_modecaps, ic->ic_flags,
+            ic->ic_userflags, restrictions, ni->ni_he_oper_params,
+            ni->ni_he_oper_nss_set,
+            le16toh(ni->ni_he_mcs_nss_supp.rx_mcs_80),
+            le16toh(ni->ni_he_mcs_nss_supp.tx_mcs_80),
+            le16toh(ic->ic_he_mcs_nss_supp.rx_mcs_80),
+            le16toh(ic->ic_he_mcs_nss_supp.tx_mcs_80));
         return;
+    }
     if (IEEE80211_IS_CHAN_6GHZ(ni->ni_chan)) {
         const uint8_t *optional = ni->ni_he_optional;
         const struct ieee80211_he_6ghz_oper *op;

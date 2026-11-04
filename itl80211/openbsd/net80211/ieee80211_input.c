@@ -2039,14 +2039,15 @@ ieee80211_update_eht_params(struct ieee80211com *ic, struct ieee80211_node *ni,
     bool live_eht = ni == ic->ic_bss && ni->ni_eht_requested &&
         (ic->ic_state == IEEE80211_S_ASSOC || ic->ic_state == IEEE80211_S_RUN);
 
-    if (!live_eht)
+    if (!live_eht) {
         ni->ni_flags &= ~(IEEE80211_NODE_EHTCAP | IEEE80211_NODE_EHTOP);
-    ni->ni_eht_oper_len = 0;
-    ni->ni_eht_puncture = 0;
-    ni->ni_eht_oper_width = IEEE80211_EHT_OPER_CHAN_WIDTH_20MHZ;
-    ni->ni_eht_ccfs0 = 0;
-    ni->ni_eht_ccfs1 = 0;
-    ni->ni_eht_center_freq1 = 0;
+        ni->ni_eht_oper_len = 0;
+        ni->ni_eht_puncture = 0;
+        ni->ni_eht_oper_width = IEEE80211_EHT_OPER_CHAN_WIDTH_20MHZ;
+        ni->ni_eht_ccfs0 = 0;
+        ni->ni_eht_ccfs1 = 0;
+        ni->ni_eht_center_freq1 = 0;
+    }
 
     if (ehtcap != NULL && (ni->ni_flags & IEEE80211_NODE_HECAP) &&
         ehtcap[0] == IEEE80211_ELEMID_EXTENSION && ehtcap[1] >= 1 &&
@@ -2108,6 +2109,11 @@ parse_eht_operation:
             return;
         memcpy(ni->ni_eht_oper, body, need);
         ni->ni_eht_oper_len = need;
+        ni->ni_eht_puncture = 0;
+        ni->ni_eht_oper_width = IEEE80211_EHT_OPER_CHAN_WIDTH_20MHZ;
+        ni->ni_eht_ccfs0 = 0;
+        ni->ni_eht_ccfs1 = 0;
+        ni->ni_eht_center_freq1 = 0;
         if (body[0] & IEEE80211_EHT_OPER_INFO_PRESENT) {
             const struct ieee80211_eht_operation_info *info =
                 (const struct ieee80211_eht_operation_info *)

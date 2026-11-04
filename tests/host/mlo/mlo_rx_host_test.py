@@ -209,7 +209,11 @@ code+=r'''
 #define IEEE80211_RXI_HWDEC_SAME_PN 2
 struct ieee80211_rxinfo{unsigned rxi_flags{};};
 struct CTimeout {};
+#ifdef _WIN32
 struct timeval{long tv_sec,tv_usec;};
+#else
+#include <sys/time.h>
+#endif
 '''
 var_header=(p/'if_iwxvar.h').read_text(encoding='utf-8')
 for name in ['iwx_reorder_buffer','iwx_reorder_buf_entry','iwx_rxba_data']:

@@ -7049,7 +7049,10 @@ iwx_rx_tx_ba_notif(struct iwx_softc *sc, struct iwx_rx_packet *pkt, struct iwx_r
     if (length < sizeof(*ba_res) ||
         le16toh(ba_res->tfd_cnt) > (length - sizeof(*ba_res)) / sizeof(ba_res->tfd[0]))
         return;
-    if (ba_res->sta_id != IWX_STATION_ID)
+    if (ba_res->sta_id >= 32 ||
+        (sc->sc_use_mld_api ?
+            !(sc->sc_mld_active_sta_mask & (1U << ba_res->sta_id)) :
+            ba_res->sta_id != IWX_STATION_ID))
         return;
     sc->sc_tx_timer = 0;
 
@@ -10506,10 +10509,9 @@ static uint8_t iwx_rs_fw_bw_from_sta_bw(uint8_t bw)
 }
 
 uint16_t ItlIwx::
-iwx_rs_fw_get_config_flags(struct iwx_softc *sc)
+iwx_rs_fw_get_config_flags(struct iwx_softc *sc, struct ieee80211_node *ni)
 {
     struct ieee80211com *ic = &sc->sc_ic;
-    struct ieee80211_node *ni = ic->ic_bss;
     uint16_t flags = 0;
     
     if (ic->ic_state < IEEE80211_S_ASSOC) {
@@ -10627,10 +10629,9 @@ static uint8_t iwx_rs_fw_set_active_chains(uint8_t chains)
 
 static void
 iwx_rs_fw_he_set_enabled_rates(struct iwx_softc *sc,
-    struct iwx_tlc_config_cmd_v4 *cmd)
+    struct ieee80211_node *ni, struct iwx_tlc_config_cmd_v4 *cmd)
 {
     struct ieee80211com *ic = &sc->sc_ic;
-    struct ieee80211_node *ni = ic->ic_bss;
     uint16_t maps[2] = {
         ieee80211_he_mcs_intersection(le16toh(ni->ni_he_mcs_nss_supp.rx_mcs_80),
             le16toh(ic->ic_he_mcs_nss_supp.tx_mcs_80)),
@@ -10860,7 +10861,7 @@ iwx_rs_init(struct iwx_softc *sc, struct iwx_node *in, bool update)
         cfg_cmd.mode = IWX_TLC_MNG_MODE_EHT;
     } else if (ni->ni_flags & IEEE80211_NODE_HE) {
         cfg_cmd.mode = IWX_TLC_MNG_MODE_HE;
-        iwx_rs_fw_he_set_enabled_rates(sc, &cfg_cmd);
+        iwx_rs_fw_he_set_enabled_rates(sc, ni, &cfg_cmd);
     } else if (ni->ni_flags & IEEE80211_NODE_VHT) {
         cfg_cmd.mode = IWX_TLC_MNG_MODE_VHT;
         iwx_rs_fw_vht_set_enabled_rates(sc, &cfg_cmd);
@@ -10893,7 +10894,7 @@ iwx_rs_init(struct iwx_softc *sc, struct iwx_node *in, bool update)
     cfg_cmd.sta_id = sta_id;
     cfg_cmd.max_ch_width = update ? iwx_rs_fw_bw_from_sta_bw(ni->ni_chw) : IWX_RATE_MCS_CHAN_WIDTH_20;
     cfg_cmd.chains = iwx_rs_fw_set_active_chains(iwx_fw_valid_tx_ant(sc));
-    cfg_cmd.flags = iwx_rs_fw_get_config_flags(sc);
+    cfg_cmd.flags = iwx_rs_fw_get_config_flags(sc, ni);
     if ((ni->ni_flags & IEEE80211_NODE_HE) == 0) {
         if (ieee80211_node_supports_ht_sgi20(ni))
             cfg_cmd.sgi_ch_width_supp = (1 << IWX_TLC_MNG_CH_WIDTH_20MHZ);
@@ -12701,6 +12702,7 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
     struct iwx_mcc_response_view response{};
     struct iwx_mcc_chub_notif notif = {};
     bool profileChanged = false;
+    bool countryChanged = false;
     bool applyProfile = false;
     bool overrideRequest = false;
     char effectiveMcc[3] = {};
@@ -12858,6 +12860,7 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
         }
     }
 
+    countryChanged = memcmp(sc->sc_fw_mcc, effectiveMcc, 2) != 0;
     notif.mcc = htole16(response.mcc);
     notif.source_id = response.source_id;
     iwx_mcc_update(sc, &notif);
@@ -12865,8 +12868,9 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
      * Hand the initial domain to the framework as well. Upstream does the same
      * with regulatory_set_wiphy_regd_sync() and it is what starts the second
      * round: without it the boot profile is never questioned again, which is
-     * why 6 GHz only showed up after the user toggled Wi-Fi. Only the first
-     * application is included, so the framework's answer cannot feed a loop.
+     * why 6 GHz only showed up after the user toggled Wi-Fi. Country changes
+     * also refresh the native cache when the channel profile stays the same.
+     * Unchanged replies stay quiet.
      */
     /*
      * The framework can only re-read the country code once it considers this
@@ -12876,7 +12880,7 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
      * the boot-time 6 GHz channels stayed out of the WCL table until the user
      * toggled Wi-Fi. Hold the notification until the driver is ready.
      */
-    if ((profileChanged || (!profileWasSynced && applyProfile)) &&
+    if ((countryChanged || profileChanged || (!profileWasSynced && applyProfile)) &&
         sc->sc_ic.ic_event_handler) {
         if (sc->sc_driver_ready)
             (*sc->sc_ic.ic_event_handler)(&sc->sc_ic,
