@@ -118,6 +118,7 @@ for name,ret in [('ieee80211_owe_prepare','int'),('ieee80211_owe_process_respons
 start=crypto.index('typedef union _ANY_CTX {')
 code+=crypto[start:crypto.index('} ANY_CTX;',start)+len('} ANY_CTX;')]+'\n'
 code+=func(crypto,'ieee80211_eapol_key_mic','void')
+code+=func(crypto,'ieee80211_eapol_key_check_mic','int')
 code+=func(crypto,'ieee80211_eapol_key_decrypt','int')
 # Use the actual association encoder block so the x-only key and IE length are checked.
 output=read(n/'ieee80211_output.c')
@@ -153,11 +154,15 @@ for index,scalar in enumerate(scalars):
     context=aa+spa+anonce+snonce
     material=b''.join(hmac.digest(pmk,i.to_bytes(2,'little')+b'Pairwise key expansion'+context+(384).to_bytes(2,'little'),'sha256') for i in [1,2])[:48]
     code+=f'ieee80211_ptk ptk{{}};auto aa=unhex("{aa.hex()}"),spa=unhex("{spa.hex()}"),an=unhex("{anonce.hex()}"),sn=unhex("{snonce.hex()}");ieee80211_derive_ptk(IEEE80211_AKM_OWE,ni.ni_pmk,aa.data(),spa.data(),an.data(),sn.data(),&ptk);eq((const uint8_t*)&ptk,"{material.hex()}");\n'
-    # CMAC over a complete 99-byte EAPOL key header with descriptor version 0.
+    # RFC 8110 group 19: HMAC-SHA-256-128 over the complete EAPOL frame.
     eapol=bytearray(99); eapol[0]=2;eapol[1]=3;eapol[2:4]=(95).to_bytes(2,'big');eapol[4]=2;eapol[5:7]=(0x108).to_bytes(2,'big')
     eapol[17:49]=snonce
-    cmac=CMAC(algorithms.AES(material[:16]));cmac.update(bytes(eapol));mic=cmac.finalize()
-    code+=f'auto packet=unhex("{eapol.hex()}");auto*key=(ieee80211_eapol_key*)packet.data();ieee80211_eapol_key_mic(key,ptk.kck);eq(key->mic,"{mic.hex()}");\n'
+    mic=hmac.digest(material[:16],bytes(eapol),'sha256')[:16]
+    code+=f'auto packet=unhex("{eapol.hex()}");auto*key=(ieee80211_eapol_key*)packet.data();ieee80211_eapol_key_mic(key,ptk.kck,IEEE80211_AKM_OWE);eq(key->mic,"{mic.hex()}");\n'
+    code+='assert(ieee80211_eapol_key_check_mic(key,ptk.kck,IEEE80211_AKM_OWE)==0);packet[17]^=1;assert(ieee80211_eapol_key_check_mic(key,ptk.kck,IEEE80211_AKM_OWE)!=0);\n'
+    # The same descriptor version selects AES-CMAC for SAE.
+    cmac=CMAC(algorithms.AES(material[:16]));cmac.update(bytes(eapol));sae_mic=cmac.finalize()
+    code+=f'packet=unhex("{eapol.hex()}");key=(ieee80211_eapol_key*)packet.data();ieee80211_eapol_key_mic(key,ptk.kck,IEEE80211_AKM_SAE);eq(key->mic,"{sae_mic.hex()}");\n'
     keydata=bytes.fromhex('dd16000fac010100')+bytes(range(16))
     wrapped=aes_key_wrap(material[16:32],keydata)
     encrypted=bytearray(eapol); encrypted[97:99]=len(wrapped).to_bytes(2,'big')
@@ -187,7 +192,7 @@ code+=r'''
  for(size_t len=1;len<rsn.size();len++){j.rsnLength=len;assert(AirportWCL::classifyLegacyAuth(j)==AirportWCL::LegacyAuth::Invalid);}
  j.rsnLength=rsn.size();j.rsn[7]=2;assert(AirportWCL::classifyLegacyAuth(j)==AirportWCL::LegacyAuth::Invalid);
  j.rsnLength=0;assert(AirportWCL::classifyLegacyAuth(j)==AirportWCL::LegacyAuth::Open);
- std::puts("PASS OWE: independent P-256/PMK/PMKID/PTK/CMAC/AES-unwrap vectors, x-only association encoding, scalar rejection, malformed DH and WCL security classification");
+ std::puts("PASS OWE: independent P-256/PMK/PMKID/PTK/OWE HMAC-SHA-256-128/SAE CMAC/AES-unwrap vectors, x-only association encoding, scalar rejection, malformed DH and WCL security classification");
 }
 '''
 (out/'owe-test.cpp').write_text(code,encoding='utf-8')

@@ -519,7 +519,7 @@ ieee80211_recv_4way_msg2(struct ieee80211com *ic,
                          ni->ni_macaddr, ni->ni_nonce, key->nonce, &tptk);
     
     /* check Key MIC field using KCK */
-    if (ieee80211_eapol_key_check_mic(key, tptk.kck) != 0) {
+    if (ieee80211_eapol_key_check_mic(key, tptk.kck, ni->ni_rsnakms) != 0) {
         DPRINTF(("key MIC failed\n"));
         ic->ic_stats.is_rx_eapol_badmic++;
         return;    /* will timeout.. */
@@ -633,7 +633,7 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
     info = BE_READ_2(key->info);
     
     /* check Key MIC field using KCK */
-    if (ieee80211_eapol_key_check_mic(key, tptk.kck) != 0) {
+    if (ieee80211_eapol_key_check_mic(key, tptk.kck, ni->ni_rsnakms) != 0) {
         DPRINTF(("key MIC failed\n"));
         ic->ic_stats.is_rx_eapol_badmic++;
         return;
@@ -1020,7 +1020,7 @@ ieee80211_recv_4way_msg4(struct ieee80211com *ic,
     /* NB: replay counter has already been verified by caller */
     
     /* check Key MIC field using KCK */
-    if (ieee80211_eapol_key_check_mic(key, ni->ni_ptk.kck) != 0) {
+    if (ieee80211_eapol_key_check_mic(key, ni->ni_ptk.kck, ni->ni_rsnakms) != 0) {
         DPRINTF(("key MIC failed\n"));
         ic->ic_stats.is_rx_eapol_badmic++;
         return;    /* will timeout.. */
@@ -1150,7 +1150,7 @@ ieee80211_recv_rsn_group_msg1(struct ieee80211com *ic,
         return;
     }
     /* check Key MIC field using KCK */
-    if (ieee80211_eapol_key_check_mic(key, ni->ni_ptk.kck) != 0) {
+    if (ieee80211_eapol_key_check_mic(key, ni->ni_ptk.kck, ni->ni_rsnakms) != 0) {
         DPRINTF(("key MIC failed\n"));
         ic->ic_stats.is_rx_eapol_badmic++;
         return;
@@ -1372,7 +1372,7 @@ ieee80211_recv_wpa_group_msg1(struct ieee80211com *ic,
         return;
     }
     /* check Key MIC field using KCK */
-    if (ieee80211_eapol_key_check_mic(key, ni->ni_ptk.kck) != 0) {
+    if (ieee80211_eapol_key_check_mic(key, ni->ni_ptk.kck, ni->ni_rsnakms) != 0) {
         DPRINTF(("key MIC failed\n"));
         ic->ic_stats.is_rx_eapol_badmic++;
         return;
@@ -1473,7 +1473,7 @@ ieee80211_recv_group_msg2(struct ieee80211com *ic,
         return;
     }
     /* check Key MIC field using KCK */
-    if (ieee80211_eapol_key_check_mic(key, ni->ni_ptk.kck) != 0) {
+    if (ieee80211_eapol_key_check_mic(key, ni->ni_ptk.kck, ni->ni_rsnakms) != 0) {
         DPRINTF(("key MIC failed\n"));
         ic->ic_stats.is_rx_eapol_badmic++;
         return;
@@ -1531,7 +1531,7 @@ ieee80211_recv_eapol_key_req(struct ieee80211com *ic,
     info = BE_READ_2(key->info);
     
     if (!(info & EAPOL_KEY_KEYMIC) ||
-        ieee80211_eapol_key_check_mic(key, ni->ni_ptk.kck) != 0) {
+        ieee80211_eapol_key_check_mic(key, ni->ni_ptk.kck, ni->ni_rsnakms) != 0) {
         DPRINTF(("key request MIC failed\n"));
         ic->ic_stats.is_rx_eapol_badmic++;
         return;

@@ -676,19 +676,22 @@ out:
 typedef union _ANY_CTX {
 	HMAC_MD5_CTX	md5;
 	HMAC_SHA1_CTX	sha1;
+	HMAC_SHA256_CTX	sha256;
 	AES_CMAC_CTX	cmac;
 } ANY_CTX;
 
 /*
  * Compute the Key MIC field of an EAPOL-Key frame using the specified Key
  * Confirmation Key (KCK).  The hash function can be HMAC-MD5, HMAC-SHA1
- * or AES-128-CMAC depending on the EAPOL-Key Key Descriptor Version.
+ * or AES-128-CMAC depending on the descriptor version and negotiated AKM.
+ * OWE group 19 uses HMAC-SHA-256 truncated to 128 bits (RFC 8110).
  */
 void
-ieee80211_eapol_key_mic(struct ieee80211_eapol_key *key, const u_int8_t *kck)
+ieee80211_eapol_key_mic(struct ieee80211_eapol_key *key, const u_int8_t *kck,
+    u_int32_t akm)
 {
     XYLog("%s\n", __FUNCTION__);
-	u_int8_t digest[SHA1_DIGEST_LENGTH];
+	u_int8_t digest[SHA256_DIGEST_LENGTH];
 	ANY_CTX ctx;	/* XXX off stack? */
 	u_int len;
 
@@ -707,8 +710,16 @@ ieee80211_eapol_key_mic(struct ieee80211_eapol_key *key, const u_int8_t *kck)
         /* truncate HMAC-SHA1 to its 128 MSBs */
         memcpy(key->mic, digest, EAPOL_KEY_MIC_LEN);
         break;
-    case EAPOL_KEY_DESC_V3:
     case EAPOL_KEY_DESC_USE_AKM:
+        if (akm == IEEE80211_AKM_OWE) {
+            HMAC_SHA256_Init(&ctx.sha256, kck, 16);
+            HMAC_SHA256_Update(&ctx.sha256, (u_int8_t *)key, len);
+            HMAC_SHA256_Final(digest, &ctx.sha256);
+            memcpy(key->mic, digest, EAPOL_KEY_MIC_LEN);
+            break;
+        }
+        /* FALLTHROUGH */
+    case EAPOL_KEY_DESC_V3:
         AES_CMAC_Init(&ctx.cmac);
         AES_CMAC_SetKey(&ctx.cmac, kck);
         AES_CMAC_Update(&ctx.cmac, (u_int8_t *)key, len);
@@ -723,13 +734,13 @@ ieee80211_eapol_key_mic(struct ieee80211_eapol_key *key, const u_int8_t *kck)
  */
 int
 ieee80211_eapol_key_check_mic(struct ieee80211_eapol_key *key,
-    const u_int8_t *kck)
+    const u_int8_t *kck, u_int32_t akm)
 {
 	u_int8_t mic[EAPOL_KEY_MIC_LEN];
 
     memcpy(mic, key->mic, EAPOL_KEY_MIC_LEN);
     memset(key->mic, 0, EAPOL_KEY_MIC_LEN);
-    ieee80211_eapol_key_mic(key, kck);
+    ieee80211_eapol_key_mic(key, kck, akm);
 
     return timingsafe_bcmp(key->mic, mic, EAPOL_KEY_MIC_LEN) != 0;
 }

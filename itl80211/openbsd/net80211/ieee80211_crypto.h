@@ -179,9 +179,9 @@ void	ieee80211_delete_key(struct ieee80211com *, struct ieee80211_node *,
 	    struct ieee80211_key *);
 
 void	ieee80211_eapol_key_mic(struct ieee80211_eapol_key *,
-	    const u_int8_t *);
+	    const u_int8_t *, u_int32_t);
 int	ieee80211_eapol_key_check_mic(struct ieee80211_eapol_key *,
-	    const u_int8_t *);
+	    const u_int8_t *, u_int32_t);
 #ifndef IEEE80211_STA_ONLY
 void	ieee80211_eapol_key_encrypt(struct ieee80211com *,
 	    struct ieee80211_eapol_key *, const u_int8_t *);

@@ -137,7 +137,7 @@ ieee80211_send_eapol_key(struct ieee80211com *ic, mbuf_t m,
     }
 #endif
     if (info & EAPOL_KEY_KEYMIC)
-        ieee80211_eapol_key_mic(key, ptk->kck);
+        ieee80211_eapol_key_mic(key, ptk->kck, ni->ni_rsnakms);
     
 #ifndef IEEE80211_STA_ONLY
     /* start a 100ms timeout if an answer is expected from supplicant */
