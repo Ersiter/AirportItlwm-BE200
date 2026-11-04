@@ -342,21 +342,21 @@ struct ScanTiming {
 };
 
 // Off-channel timing for scans while associated, after Linux iwlwifi's scan
-// types: a 120 TU visit fits a whole passive dwell (110 TU), followed by 120 TU
+// types: the visit fits the requested dwell plus a 10 TU margin, followed by 120 TU
 // back on the home channel. Passive dwells are split into short fragments
 // (44 TU out, 95 TU home) only when the caller asks for a short away time,
 // i.e. low latency. Splitting by default made each passive channel cost
 // ~0.8 s and full scans ~20 s. A 30 TU home time on quiet links (Linux's
 // lighter setting) coincided with firmware resets on AX210, so it is not used.
 inline ScanTiming scanTiming(uint32_t awayMilliseconds, bool associated,
-                             bool supportsFragmentation)
+                             bool supportsFragmentation, uint32_t dwellTU = 110)
 {
     if (!associated)
         return {0, false, 0};
     uint64_t requested = uint64_t(awayMilliseconds) * 1000 / 1024;
     if (awayMilliseconds && requested < 100 && supportsFragmentation)
         return {requested < 44 ? 44 : uint32_t(requested), true, 95};
-    return {120, false, 120};
+    return {dwellTU + 10 > 120 ? dwellTU + 10 : 120, false, 120};
 }
 
 inline uint16_t read16(const uint8_t *p) {

@@ -21,6 +21,7 @@
 
 static constexpr uint8_t IWL_SCAN_DWELL_ACTIVE = 10;
 static constexpr uint8_t IWL_SCAN_DWELL_PASSIVE = 110;
+static constexpr uint8_t IWX_SCAN_DWELL_6GHZ = 250;
 /*
  * A passive 6 GHz channel dwells for IWL_SCAN_DWELL_PASSIVE, so a command
  * carrying every PSC channel runs for several seconds and IO80211 gives up
@@ -354,6 +355,27 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
     if (!cp->count) {
         ::free(req);
         return 0;
+    }
+    if (sixGHzCount) {
+        gen_flags &= ~IWX_UMAC_SCAN_GEN_FLAGS_V2_ADAPTIVE_DWELL;
+#ifdef AIRPORT_WCL
+        const auto dwellTiming = AirportWCL::scanTiming(
+            ic->ic_wcl_scan_away_time_ms, bgscan,
+            isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_FRAGMENTED_SCAN),
+            IWX_SCAN_DWELL_6GHZ);
+#endif
+        for (unsigned lmac = IWX_SCAN_LB_LMAC_IDX; lmac <= IWX_SCAN_HB_LMAC_IDX; ++lmac) {
+            general_params->active_dwell[lmac] = IWX_SCAN_DWELL_6GHZ;
+            general_params->passive_dwell[lmac] = IWX_SCAN_DWELL_6GHZ;
+#ifdef AIRPORT_WCL
+            general_params->max_out_of_time[lmac] = htole32(dwellTiming.maxOutTU);
+            general_params->suspend_time[lmac] = htole32(dwellTiming.suspendTU);
+            if (dwellTiming.fragmented)
+                general_params->num_of_fragments[lmac] =
+                    howmany(IWX_SCAN_DWELL_6GHZ, dwellTiming.maxOutTU);
+#endif
+        }
+        general_params->flags = htole16(gen_flags);
     }
     if (scanActive && hasLegacyChannel) {
         req->scan_params.probe_params.direct_scan[0].id = IEEE80211_ELEMID_SSID;
