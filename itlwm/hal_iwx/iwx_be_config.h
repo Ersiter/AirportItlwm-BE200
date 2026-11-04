@@ -74,7 +74,7 @@ inline unsigned apiAt(const Selection &selection, unsigned index)
     const unsigned adapted[] = {92, 86};
     unsigned limit = selection.max_api;
     if (!limit)
-        limit = strcmp(selection.prefix, "iwlwifi-gl-c0-fm-c0") == 0 ? 86 : 92;
+        limit = 92;
     for (unsigned api : adapted) {
         if (api > limit || (api == 86 && selection.family != GL))
             continue;

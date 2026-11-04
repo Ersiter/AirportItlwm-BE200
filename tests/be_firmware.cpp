@@ -117,9 +117,9 @@ int main(int argc,char**argv){
 
     ItlIwx driver;
     {
-        auto s=state();prepareGL(s);assert(IwxBE::apiAt(s.sc_be,0)==86&&IwxBE::apiAt(s.sc_be,1)==0);
-        addPair(s.sc_be,0);assert(driver.iwx_read_firmware(&s)==0&&s.sc_fw_api==86);
-        assert(property.values["AirportItlwm-PNVMName"]=="iwlwifi-gl-c0-fm-c0.pnvm");
+        auto s=state();prepareGL(s);assert(IwxBE::apiAt(s.sc_be,0)==92&&IwxBE::apiAt(s.sc_be,1)==86);
+        addPair(s.sc_be,0);assert(driver.iwx_read_firmware(&s)==0&&s.sc_fw_api==92);
+        assert(property.values["AirportItlwm-PNVMName"]=="iwlwifi-gl-c0-fm-c0-92.pnvm");
     }
     for(int failure:{0,1,2,3,4}){
         auto s=state();s.sc_be.max_api=92;prepareGL(s);addPair(s.sc_be,0);addPair(s.sc_be,1);
