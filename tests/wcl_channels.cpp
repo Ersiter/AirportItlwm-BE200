@@ -20,14 +20,14 @@ static void addChannel(uint8_t *buffer, uint32_t index, uint32_t channel,
 
 int main()
 {
-    auto foreground = AirportWCL::scanTiming(0, false, true, 250);
+    auto foreground = AirportWCL::scanTiming(0, false, true);
     assert(foreground.maxOutTU == 0 && !foreground.fragmented && foreground.suspendTU == 0);
-    auto background = AirportWCL::scanTiming(0, true, true, 250);
-    assert(background.maxOutTU >= 250 && !background.fragmented && background.suspendTU == 120);
-    auto lowLatency = AirportWCL::scanTiming(40, true, true, 250);
+    auto background = AirportWCL::scanTiming(0, true, true);
+    assert(background.maxOutTU == 120 && !background.fragmented && background.suspendTU == 120);
+    auto lowLatency = AirportWCL::scanTiming(40, true, true);
     assert(lowLatency.maxOutTU == 44 && lowLatency.fragmented && lowLatency.suspendTU == 95);
-    auto noFragments = AirportWCL::scanTiming(40, true, false, 250);
-    assert(noFragments.maxOutTU >= 250 && !noFragments.fragmented);
+    auto noFragments = AirportWCL::scanTiming(40, true, false);
+    assert(noFragments.maxOutTU == 120 && !noFragments.fragmented);
     assert(AirportWCL::scanTiming(0, true, true).maxOutTU == 120);
     const uint8_t crcInput[] = "123456789";
     assert(AirportWCL::shortSsid(crcInput, sizeof(crcInput) - 1) == 0xcbf43926U);

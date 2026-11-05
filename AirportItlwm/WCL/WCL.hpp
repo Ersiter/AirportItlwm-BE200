@@ -349,14 +349,14 @@ struct ScanTiming {
 // ~0.8 s and full scans ~20 s. A 30 TU home time on quiet links (Linux's
 // lighter setting) coincided with firmware resets on AX210, so it is not used.
 inline ScanTiming scanTiming(uint32_t awayMilliseconds, bool associated,
-                             bool supportsFragmentation, uint32_t dwellTU = 110)
+                             bool supportsFragmentation)
 {
     if (!associated)
         return {0, false, 0};
     uint64_t requested = uint64_t(awayMilliseconds) * 1000 / 1024;
     if (awayMilliseconds && requested < 100 && supportsFragmentation)
         return {requested < 44 ? 44 : uint32_t(requested), true, 95};
-    return {dwellTU + 10 > 120 ? dwellTU + 10 : 120, false, 120};
+    return {120, false, 120};
 }
 
 inline uint16_t read16(const uint8_t *p) {
