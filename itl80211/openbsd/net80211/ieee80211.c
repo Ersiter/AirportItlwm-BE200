@@ -153,7 +153,7 @@ ieee80211_begin_cache_bgscan(struct _ifnet *ifp)
     ic->ic_last_cache_scan_ts = tv.tv_sec;
     
     if (ic->ic_bgscan_start != NULL && ic->ic_bgscan_start(ic) == 0) {
-        ic->ic_flags |= IEEE80211_F_BGSCAN;
+        ic->ic_flags |= IEEE80211_F_BGSCAN | IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
         DPRINTF(("%s: begin cache background scan\n", ifp->if_xname));
     }
 }

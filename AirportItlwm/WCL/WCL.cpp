@@ -700,7 +700,7 @@ void AirportItlwmSkywalkInterface::finishWCLScan(IOReturn status)
     if (status == kIOReturnSuccess)
         for (unsigned i = 0; i < wclScanResultCount; ++i)
             instance->postMessage(this, AirportWCL::ScanResult,
-                wclScanResults[i].data, wclScanResults[i].size, true);
+                wclScanCopies[i].data, wclScanCopies[i].size, true);
     instance->pciNub->setProperty("AirportItlwm-WCLScanResultReposts",
         status == kIOReturnSuccess ? wclScanResultCount : 0, 32);
     clearWCLScanResults();
@@ -725,12 +725,12 @@ void AirportItlwmSkywalkInterface::keepWCLScanResult(
         return;
     unsigned i = 0;
     for (; i < wclScanResultCount; ++i)
-        if (wclScanResults[i].channelSpec == metadata->channelSpec &&
-            memcmp(wclScanResults[i].bssid, metadata->bssid, 6) == 0)
+        if (wclScanCopies[i].channelSpec == metadata->channelSpec &&
+            memcmp(wclScanCopies[i].bssid, metadata->bssid, 6) == 0)
             break;
     if (i == kWCLScanResultCopies)
         return;
-    auto &slot = wclScanResults[i];
+    auto &slot = wclScanCopies[i];
     if (slot.size != size) {
         void *copy = IOMalloc(size);
         if (!copy)
@@ -750,8 +750,8 @@ void AirportItlwmSkywalkInterface::keepWCLScanResult(
 void AirportItlwmSkywalkInterface::clearWCLScanResults()
 {
     for (unsigned i = 0; i < wclScanResultCount; ++i)
-        IOFree(wclScanResults[i].data, wclScanResults[i].size);
-    bzero(wclScanResults, sizeof(wclScanResults));
+        IOFree(wclScanCopies[i].data, wclScanCopies[i].size);
+    bzero(wclScanCopies, sizeof(wclScanCopies));
     wclScanResultCount = 0;
 }
 

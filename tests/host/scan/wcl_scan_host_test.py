@@ -131,7 +131,7 @@ struct iwx_softc{ieee80211com sc_ic;unsigned sc_flags=0;int sc_generation=0;bool
 static AirportItlwmSkywalkInterface*active=nullptr;
 class ItlIwx{public:
  unsigned aborts=0,sends=0;bool fail_abort=false;
- int iwx_scan_abort(iwx_softc*s){++aborts;assert(s->sc_ic.ic_wcl_scan_restart);active->scanDone();assert(!active->scanCompleted);if(fail_abort)return 16;s->sc_flags=0;return 0;}
+ int iwx_scan_abort(iwx_softc*s){++aborts;assert(s->sc_ic.ic_wcl_scan_restart);active->scanDone();assert(!active->scanCompleted);if(fail_abort)return 16;s->sc_flags=0;s->sc_ic.ic_flags&=~(IEEE80211_F_BGSCAN|IEEE80211_F_DISABLE_BG_AUTO_CONNECT);return 0;}
  int iwx_umac_scan(iwx_softc*,int);
 };
 int ItlIwx::iwx_umac_scan(iwx_softc*sc,int){
@@ -144,6 +144,7 @@ static int submit_scan(ieee80211com*ic){
  transport.sc_flags=old_channels?IWX_FLAG_BGSCAN:0;
  int error=driver.iwx_umac_scan(&transport,1);
  ic->ic_wcl_scan_restart=transport.sc_ic.ic_wcl_scan_restart;
+ ic->ic_flags=transport.sc_ic.ic_flags;
  if(!error){ic->ic_flags&=~IEEE80211_F_BGSCAN;old_channels=0;}
  return error;
 }
@@ -258,6 +259,7 @@ static void lifecycle_tests(){
  assert(s.startWCLScan(a)==0);old_channels=1;unsigned before=driver.aborts;
  clock_ms=12000;assert(s.startWCLScan(b)==0);assert(driver.aborts==before+1&&!s.scanCompleted);
  assert(!s.hal.ic.ic_wcl_scan_restart&&isset(s.hal.ic.ic_wcl_scan_channels6GHz,53)&&!isset(s.hal.ic.ic_wcl_scan_channels,5));
+ assert((s.hal.ic.ic_flags&(IEEE80211_F_BGSCAN|IEEE80211_F_DISABLE_BG_AUTO_CONNECT))==(IEEE80211_F_BGSCAN|IEEE80211_F_DISABLE_BG_AUTO_CONNECT));
  assert(s.timer.timeout==20000);s.finishWCLScan(kIOReturnAborted);
  s.hal.ic.ic_if.if_flags=IFF_UP;assert(s.startWCLScan(a)==0&&s.scanPending&&s.scanDeferred);
  assert(s.timer.timeout==20000);s.completeWCLScan();assert(!s.scanPending&&!s.scanDeferred);

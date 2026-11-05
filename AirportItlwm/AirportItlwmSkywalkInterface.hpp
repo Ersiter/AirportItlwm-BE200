@@ -478,7 +478,7 @@ private:
         void *data;
     };
     static constexpr unsigned kWCLScanResultCopies = 96;
-    WCLScanResultCopy wclScanResults[kWCLScanResultCopies] = {};
+    WCLScanResultCopy wclScanCopies[kWCLScanResultCopies] = {};
     unsigned wclScanResultCount = 0;
     bool wclBssValid;
     bool wclLinkIndicated;
