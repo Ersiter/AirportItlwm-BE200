@@ -17,6 +17,7 @@ driver = (iwx/'ItlIwx.cpp').read_text(encoding='utf-8')
 node = (net/'ieee80211_node.c').read_text(encoding='utf-8')
 proto = (net/'ieee80211_proto.c').read_text(encoding='utf-8')
 rx = (net/'ieee80211_input.c').read_text(encoding='utf-8')
+output = (net/'ieee80211_output.c').read_text(encoding='utf-8')
 mld = (iwx/'ItlIwxMld.cpp').read_text(encoding='utf-8')
 
 def block(text, opening, declaration=False):
@@ -102,6 +103,23 @@ types += '\n'+block(registers,'struct iwx_ac_qos {',True)
 types += '\n'+block(registers,'struct iwx_tlc_config_cmd_v4 {',True)
 types += '\n'+block(mld_header,'struct iwx_mld_he_backoff_conf {',True)
 types += '\n'+block(mld_header,'struct iwx_mld_link_config_cmd {',True)
+# Extract the production state transitions in their connection order.
+start=rx.index('        int preserve_rsnxe;')+len('        int preserve_rsnxe;')
+scan_qos=rx[start:rx.index('#ifdef AIRPORT_WCL',start)]
+beacon_qos=block(rx,'    if (ni->ni_flags & IEEE80211_NODE_QOS)')
+assoc_qos=block(rx,'    if (edcaie != NULL || wmmie != NULL ||')
+auth_qos=[]
+for source,name in [(driver,'iwx_auth'),(mld,'iwx_mld_auth')]:
+    auth=function(source,name)
+    start=auth.index('    in->in_ni.ni_chw = IEEE80211_CHAN_WIDTH_20_NOHT;')
+    auth_qos.append(auth[start:auth.index(';',auth.index('ni_flags &=',start))+1])
+request=function(output,'ieee80211_get_assoc_req')
+start=request.index('int addwme')
+wme_request=request[start:request.index(';',start)+1]
+legacy_qos=re.search(r'    if \(ni->ni_chw != IEEE80211_CHAN_WIDTH_20_NOHT\)\n        cmd->qos_flags[^;]+;',driver).group()
+ofdm_edca=block(output,'[IEEE80211_MODE_11A] =')
+ofdm_edca='\n'.join('defaults['+ac+'] = '+values+';' for ac,values in
+    re.findall(r'\[(EDCA_AC_\w+)\] = (\{[^}]+\})',ofdm_edca))
 program = r"""
 struct ieee80211com;
 struct ieee80211_channel {unsigned ic_flags=0;uint16_t ic_freq=0,ic_center_freq1=0,ic_center_freq2=0;uint8_t ic_reg_flags=0;};
@@ -130,6 +148,7 @@ struct ieee80211com {
     ieee80211_he_cap_elem ic_he_cap_elem{};
     ieee80211_he_mcs_nss_supp ic_he_mcs_nss_supp{};
     ieee80211_edca_ac_params ic_edca_ac[4];
+    int ic_edca_updtcount=0;void(*ic_updateedca)(ieee80211com*)=nullptr;
     unsigned ic_mld_link_count=0;struct {uint8_t local_addr[6]{};}ic_mld_links[2];
     uint8_t ic_myaddr[6]{2,1,2,3,4,5};
 };
@@ -143,6 +162,18 @@ static unsigned iwx_fw_valid_tx_ant(iwx_softc*){return 3;}
 static int iwx_mld_link_slot(ieee80211com*,ieee80211_node*){return 0;}
 static void iwx_ack_rates(iwx_softc*,iwx_node*,int*c,int*o){*c=0;*o=0x15;}
 class ItlIwx {public:void iwx_mld_modify_link_fill(iwx_softc*,iwx_node*,iwx_mld_link_config_cmd*,int,int);uint16_t iwx_rs_fw_get_config_flags(iwx_softc*,ieee80211_node*);};
+static ieee80211_edca_ac_params ieee80211_edca_table[IEEE80211_MODE_MAX][4];
+static int ieee80211_parse_edca_params(ieee80211com*,const uint8_t*ie){return ie[0];}
+static int ieee80211_parse_wmm_params(ieee80211com*,const uint8_t*ie){return ie[0];}
+static void scan_qos(ieee80211com*ic,ieee80211_node*ni,const uint8_t*edcaie,const uint8_t*wmmie){SCAN_QOS}
+static void auth_qos(iwx_node*in){AUTH_QOS}
+static void mld_auth_qos(iwx_node*in){MLD_AUTH_QOS}
+static bool request_wme(ieee80211com*ic,ieee80211_node*ni){WME_REQUEST return addwme;}
+static void beacon_qos(ieee80211com*ic,ieee80211_node*ni,uint8_t*edcaie,uint8_t*wmmie){BEACON_QOS}
+static void assoc_qos(ieee80211com*ic,ieee80211_node*ni,const uint8_t*edcaie,const uint8_t*wmmie){ASSOC_QOS}
+static uint32_t legacy_qos(ieee80211_node*ni){struct{uint32_t qos_flags=0;}data;auto*cmd=&data;LEGACY_QOS
+    return data.qos_flags;
+}
 FUNCTIONS
 static void setup(iwx_softc&s,iwx_node&n,ieee80211_channel&c,iwx_phy_ctxt&phy){
     auto&ic=s.sc_ic;auto&ni=n.in_ni;ic.ic_bss=&ni;ni.ni_ic=&ic;ni.ni_chan=&c;n.in_phyctxt=&phy;
@@ -163,6 +194,40 @@ static void setup(iwx_softc&s,iwx_node&n,ieee80211_channel&c,iwx_phy_ctxt&phy){
 int main(){
     iwx_softc s;iwx_node n;ieee80211_channel c;iwx_phy_ctxt phy;setup(s,n,c,phy);
     auto&ni=n.in_ni;auto&ic=s.sc_ic;
+    uint8_t valid_wmm[]={0},invalid_wmm[]={EINVAL};
+    ieee80211_edca_ac_params defaults[4];
+    OFDM_EDCA
+    memcpy(ieee80211_edca_table[IEEE80211_MODE_11A],defaults,sizeof(defaults));
+    ic.ic_flags|=IEEE80211_F_HTON|IEEE80211_F_QOS;
+    auto initial=ni;
+    for(bool mld_api:{false,true}) {
+        ic.ic_state=IEEE80211_S_SCAN;
+        ni=initial;ni.ni_flags&=~IEEE80211_NODE_QOS;
+        scan_qos(&ic,&ni,nullptr,valid_wmm);
+        assert(ni.ni_flags&IEEE80211_NODE_QOS);
+        if(mld_api)mld_auth_qos(&n);else auth_qos(&n);
+        assert(request_wme(&ic,&ni));
+        memset(ic.ic_edca_ac,0,sizeof(ic.ic_edca_ac));
+        assoc_qos(&ic,&ni,nullptr,nullptr);
+        assert(ni.ni_flags&IEEE80211_NODE_QOS);
+        assert(ic.ic_edca_ac[EDCA_AC_BE].ac_aifsn==3);
+        assert(ic.ic_edca_ac[EDCA_AC_VI].ac_txoplimit==94);
+        assoc_qos(&ic,&ni,nullptr,invalid_wmm);
+        assert(ni.ni_flags&IEEE80211_NODE_QOS);
+        ic.ic_state=IEEE80211_S_RUN;
+        beacon_qos(&ic,&ni,nullptr,nullptr);
+        beacon_qos(&ic,&ni,nullptr,invalid_wmm);
+        scan_qos(&ic,&ni,nullptr,nullptr);
+        assert(ni.ni_flags&IEEE80211_NODE_QOS);
+    }
+    ic.ic_state=IEEE80211_S_SCAN;
+    ni=initial;ni.ni_flags&=~IEEE80211_NODE_QOS;
+    scan_qos(&ic,&ni,nullptr,nullptr);assert(!request_wme(&ic,&ni));
+    assoc_qos(&ic,&ni,nullptr,nullptr);assert(!(ni.ni_flags&IEEE80211_NODE_QOS));
+    assoc_qos(&ic,&ni,nullptr,valid_wmm);assert(ni.ni_flags&IEEE80211_NODE_QOS);
+    c.ic_flags=IEEE80211_CHAN_5GHZ;
+    assoc_qos(&ic,&ni,nullptr,invalid_wmm);assert(!(ni.ni_flags&IEEE80211_NODE_QOS));
+    c.ic_flags=IEEE80211_CHAN_6GHZ;ni=initial;
     uint8_t he6[]={IEEE80211_ELEMID_EXTENSION,3,IEEE80211_ELEMID_EXT_HE_6GHZ_CAPA,0,0};
     assert(ieee80211_setup_he_6ghz_capa(&ni,he6,sizeof(he6)));
     ieee80211_update_eht_params(&ic,&ni,nullptr,nullptr);
@@ -187,7 +252,13 @@ int main(){
         iwx_mld_link_config_cmd cmd{};ItlIwx().iwx_mld_modify_link_fill(&s,&n,&cmd,changes,1);
         assert(memcmp(cmd.ref_bssid_addr,parent,6)==0&&cmd.bssid_index==1);
         assert(cmd.modify_mask==unsigned(changes));
+        assert(cmd.qos_flags&IWX_MAC_QOS_FLG_TGN);
+        assert(legacy_qos(&ni)&IWX_MAC_QOS_FLG_TGN);
     }
+    ni.ni_flags&=~IEEE80211_NODE_HT;ni.ni_chw=IEEE80211_CHAN_WIDTH_20_NOHT;
+    iwx_mld_link_config_cmd legacy_cmd{};
+    ItlIwx().iwx_mld_modify_link_fill(&s,&n,&legacy_cmd,0,1);
+    assert(!(legacy_cmd.qos_flags&IWX_MAC_QOS_FLG_TGN)&&!legacy_qos(&ni));
     static_assert(sizeof(iwx_mld_link_config_cmd)==208,"LINK v1 wire size");
     ic.ic_state=IEEE80211_S_RUN;ni.ni_eht_requested=true;ni.ni_flags|=IEEE80211_NODE_EHTCAP;
     uint8_t ehtop[]={IEEE80211_ELEMID_EXTENSION,9,IEEE80211_ELEMID_EXT_EHT_OPERATION,
@@ -220,9 +291,10 @@ int main(){
     assert(primary_rates.ht_rates[0][0]==0xfff&&primary_rates.ht_rates[1][1]==0xfff);
     assert(secondary_rates.ht_rates[0][0]==0xff&&secondary_rates.ht_rates[1][0]==0&&secondary_rates.ht_rates[0][1]==0);
 
+    puts("PASS QoS state: scan WMM, legacy/MLD authentication, association request, default OFDM EDCA and firmware TGN flags");
     puts("PASS HE/EHT state: 6 GHz 20/40/80/160 MHz, regulatory narrowing, MBSSID LINK reference, retained live 320 MHz EHT operation and puncturing");
 }
-""".replace('FUNCTIONS',functions)
+""".replace('FUNCTIONS',functions).replace('SCAN_QOS',scan_qos).replace('MLD_AUTH_QOS',auth_qos[1]).replace('AUTH_QOS',auth_qos[0]).replace('WME_REQUEST',wme_request).replace('BEACON_QOS',beacon_qos).replace('ASSOC_QOS',assoc_qos).replace('LEGACY_QOS',legacy_qos).replace('OFDM_EDCA',ofdm_edca)
 needed=set(re.findall(r'\b[A-Z][A-Z0-9_]+',types+helpers+program))
 enums=[]
 for match in re.finditer(r'(?m)^enum(?:\s+\w+)?\s*\{',headers+'\n'+mld_header+'\n'+registers):

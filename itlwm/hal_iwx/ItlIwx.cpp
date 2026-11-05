@@ -10066,8 +10066,9 @@ iwx_mac_ctxt_cmd_common(struct iwx_softc *sc, struct iwx_node *in,
                 break;
         }
         
-        cmd->qos_flags |= htole32(IWX_MAC_QOS_FLG_TGN);
     }
+    if (ni->ni_chw != IEEE80211_CHAN_WIDTH_20_NOHT)
+        cmd->qos_flags |= htole32(IWX_MAC_QOS_FLG_TGN);
     if (ic->ic_flags & IEEE80211_F_USEPROT)
         cmd->protection_flags |= htole32(IWX_MAC_PROT_FLG_TGG_PROTECT);
     
@@ -11217,7 +11218,6 @@ iwx_auth(struct iwx_softc *sc)
     
     in->in_ni.ni_chw = IEEE80211_CHAN_WIDTH_20_NOHT;
     in->in_ni.ni_flags &= ~(IEEE80211_NODE_HT |
-                            IEEE80211_NODE_QOS |
                             IEEE80211_NODE_HT_SGI20 |
                             IEEE80211_NODE_HT_SGI40 |
                             IEEE80211_NODE_VHT |

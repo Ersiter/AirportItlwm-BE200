@@ -2664,7 +2664,7 @@ ieee80211_recv_probe_resp_bss(struct ieee80211com *ic, mbuf_t m,
             (wmmie != NULL &&
              ieee80211_parse_wmm_params(ic, wmmie) == 0))
             ni->ni_flags |= IEEE80211_NODE_QOS;
-        else
+        else if (!IEEE80211_IS_CHAN_6GHZ(ni->ni_chan))
             ni->ni_flags &= ~IEEE80211_NODE_QOS;
     }
     
@@ -2673,6 +2673,12 @@ ieee80211_recv_probe_resp_bss(struct ieee80211com *ic, mbuf_t m,
         (ic->ic_flags & IEEE80211_F_BGSCAN)) {
         struct ieee80211_rsnparams rsn, wpa;
         int preserve_rsnxe;
+
+        if (edcaie != NULL || wmmie != NULL)
+            ni->ni_flags |= IEEE80211_NODE_QOS;
+        else if (!IEEE80211_IS_CHAN_6GHZ(ni->ni_chan) ||
+            ni != ic->ic_bss || ic->ic_state == IEEE80211_S_SCAN)
+            ni->ni_flags &= ~IEEE80211_NODE_QOS;
         
 #ifdef AIRPORT_WCL
         uint32_t tlv_len = (mtod(m, u_int8_t *) + mbuf_len(m)) - (u_int8_t *)&wh[1] - 8 - 2 - 2;
@@ -3630,7 +3636,9 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
     ni->ni_associd = associd;
     ieee80211_setup_he_6ghz_capa(ni, he6ghzcap,
         he6ghzcap != NULL ? 2 + he6ghzcap[1] : 0);
-    if (edcaie != NULL || wmmie != NULL) {
+    if (edcaie != NULL || wmmie != NULL ||
+        (IEEE80211_IS_CHAN_6GHZ(ni->ni_chan) &&
+         (ni->ni_flags & IEEE80211_NODE_QOS))) {
         /* force update of EDCA parameters */
         ic->ic_edca_updtcount = -1;
         
@@ -3639,7 +3647,15 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
             (wmmie != NULL &&
              ieee80211_parse_wmm_params(ic, wmmie) == 0))
             ni->ni_flags |= IEEE80211_NODE_QOS;
-        else    /* for Reassociation */
+        else if (IEEE80211_IS_CHAN_6GHZ(ni->ni_chan) &&
+            (ni->ni_flags & IEEE80211_NODE_QOS)) {
+            /* mac80211 keeps requested QoS with default OFDM EDCA. */
+            memcpy(ic->ic_edca_ac, ieee80211_edca_table[IEEE80211_MODE_11A],
+                sizeof(ic->ic_edca_ac));
+            if ((ic->ic_flags & IEEE80211_F_QOS) &&
+                ic->ic_updateedca != NULL)
+                (*ic->ic_updateedca)(ic);
+        } else    /* for Reassociation */
             ni->ni_flags &= ~IEEE80211_NODE_QOS;
     }
     if (htcaps)
