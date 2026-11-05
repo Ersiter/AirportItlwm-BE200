@@ -730,7 +730,7 @@ iwx_mld_modify_link_fill(struct iwx_softc *sc, struct iwx_node *in,
 
     cmd->modify_mask = htole32(changes);
     cmd->flags = htole32(flags);
-    cmd->flags_mask = 0;
+    cmd->flags_mask = htole32(flags);
     cmd->spec_link_id = ni->ni_mld_valid ? ni->ni_mld_link_id : 0;
     cmd->listen_lmac = 0;
     cmd->action = htole32(IWX_FW_CTXT_ACTION_MODIFY);

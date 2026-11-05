@@ -117,6 +117,11 @@ request=function(output,'ieee80211_get_assoc_req')
 start=request.index('int addwme')
 wme_request=request[start:request.index(';',start)+1]
 legacy_qos=re.search(r'    if \(ni->ni_chw != IEEE80211_CHAN_WIDTH_20_NOHT\)\n        cmd->qos_flags[^;]+;',driver).group()
+context_task=function(driver,'iwx_mac_ctxt_task')
+context_start=context_task.find('    if (sc->sc_use_mld_api)')
+if context_start < 0:
+    context_start=context_task.index('    err = that->iwx_config_he_sta')
+context_update=context_task[context_start:context_task.index('    if (!isset')]
 ofdm_edca=block(output,'[IEEE80211_MODE_11A] =')
 ofdm_edca='\n'.join('defaults['+ac+'] = '+values+';' for ac,values in
     re.findall(r'\[(EDCA_AC_\w+)\] = (\{[^}]+\})',ofdm_edca))
@@ -156,12 +161,38 @@ static int ieee80211_chan2number(ieee80211com*,ieee80211_channel*c){return(c->ic
 static int ieee80211_ieee2mhz(int ch,int){return 5950+5*ch;}
 struct iwx_phy_ctxt {unsigned id=0;};
 struct iwx_node {ieee80211_node in_ni;unsigned in_id=0;iwx_phy_ctxt*in_phyctxt=nullptr;};
-struct iwx_softc {ieee80211com sc_ic;};
+struct context_device {void setProperty(const char*,const void*,size_t){}};
+struct iwx_softc {ieee80211com sc_ic;bool sc_use_mld_api=false;unsigned sc_mld_active_links=1;context_device pci;context_device*sc_pcitag=&pci;};
 static unsigned iwx_num_of_ant(unsigned antennas){return __builtin_popcount(antennas);}
 static unsigned iwx_fw_valid_tx_ant(iwx_softc*){return 3;}
 static int iwx_mld_link_slot(ieee80211com*,ieee80211_node*){return 0;}
 static void iwx_ack_rates(iwx_softc*,iwx_node*,int*c,int*o){*c=0;*o=0x15;}
-class ItlIwx {public:void iwx_mld_modify_link_fill(iwx_softc*,iwx_node*,iwx_mld_link_config_cmd*,int,int);uint16_t iwx_rs_fw_get_config_flags(iwx_softc*,ieee80211_node*);};
+#define XYLog(...) ((void)0)
+#define DEVNAME(sc) "test"
+static void splx(int){}
+class ItlIwx {public:
+    std::vector<int> context_calls;
+    iwx_mld_link_config_cmd last_link{};
+    int link_error=0,he_error=0,mac_error=0;
+    void iwx_mld_modify_link_fill(iwx_softc*,iwx_node*,iwx_mld_link_config_cmd*,int,int);
+    uint16_t iwx_rs_fw_get_config_flags(iwx_softc*,ieee80211_node*);
+    int iwx_config_he_sta(iwx_softc*sc,ieee80211_node*) {
+        context_calls.push_back(1);return sc->sc_use_mld_api?EOPNOTSUPP:he_error;
+    }
+    int iwx_send_cmd_pdu(iwx_softc*,unsigned id,unsigned flags,size_t len,const void*data) {
+        assert(id==IWX_WIDE_ID(IWX_MAC_CONF_GROUP,IWX_MLD_LINK_CONFIG_CMD)&&flags==0);
+        assert(len==sizeof(last_link));memcpy(&last_link,data,len);
+        context_calls.push_back(2);return link_error;
+    }
+    int iwx_mac_ctxt_cmd(iwx_softc*,iwx_node*,unsigned action,int assoc) {
+        assert(action==IWX_FW_CTXT_ACTION_MODIFY&&assoc==1);
+        context_calls.push_back(3);return mac_error;
+    }
+    void update_context(iwx_softc*sc,iwx_node*in) {
+        ItlIwx*that=this;int err,s=0;
+CONTEXT_UPDATE
+    }
+};
 static ieee80211_edca_ac_params ieee80211_edca_table[IEEE80211_MODE_MAX][4];
 static int ieee80211_parse_edca_params(ieee80211com*,const uint8_t*ie){return ie[0];}
 static int ieee80211_parse_wmm_params(ieee80211com*,const uint8_t*ie){return ie[0];}
@@ -241,6 +272,36 @@ int main(){
         const unsigned widths[]={IEEE80211_CHAN_WIDTH_20,IEEE80211_CHAN_WIDTH_40,IEEE80211_CHAN_WIDTH_80,IEEE80211_CHAN_WIDTH_160};
         assert(ni.ni_chw==widths[width]);
     }
+    ItlIwx update;
+    s.sc_use_mld_api=true;
+    ni.ni_dtimperiod=2;
+    ni.ni_flags|=IEEE80211_NODE_HE_MU_EDCA;
+    update.update_context(&s,&n);
+    assert((update.context_calls==std::vector<int>{2,3}));
+    unsigned required=IWX_MLD_LINK_CONTEXT_MODIFY_QOS_PARAMS|
+        IWX_MLD_LINK_CONTEXT_MODIFY_RATES_INFO|
+        IWX_MLD_LINK_CONTEXT_MODIFY_PROTECT_FLAGS|
+        IWX_MLD_LINK_CONTEXT_MODIFY_BEACON_TIMING|
+        IWX_MLD_LINK_CONTEXT_MODIFY_HE_PARAMS;
+    assert((update.last_link.modify_mask&required)==required);
+    assert(!(update.last_link.modify_mask&IWX_MLD_LINK_CONTEXT_MODIFY_ACTIVE));
+    assert(update.last_link.dtim_interval==200&&update.last_link.active==1);
+    assert(update.last_link.flags&IWX_MLD_LINK_FLG_MU_EDCA_CW);
+    assert(update.last_link.flags_mask==update.last_link.flags);
+    ni.ni_flags|=IEEE80211_NODE_EHTOP;ni.ni_eht_puncture=4;
+    update.context_calls.clear();update.update_context(&s,&n);
+    assert(update.last_link.modify_mask&IWX_MLD_LINK_CONTEXT_MODIFY_EHT_PARAMS);
+    assert(update.last_link.puncture_mask==4);
+    ni.ni_flags&=~IEEE80211_NODE_EHTOP;
+    update.link_error=EIO;update.context_calls.clear();update.update_context(&s,&n);
+    assert((update.context_calls==std::vector<int>{2}));
+    update.link_error=0;s.sc_use_mld_api=false;
+    update.context_calls.clear();update.update_context(&s,&n);
+    assert((update.context_calls==std::vector<int>{1,3}));
+    update.he_error=EIO;update.context_calls.clear();update.update_context(&s,&n);
+    assert((update.context_calls==std::vector<int>{1}));
+    update.he_error=0;
+    puts("PASS context updates: MLD LINK then MAC, QoS/HE/DTIM/EHT payload, legacy HE then MAC and error propagation");
     c.ic_reg_flags=IEEE80211_CHAN_NO_160MHZ;ieee80211_he_negotiate(&ic,&ni);
     assert(ni.ni_chw==IEEE80211_CHAN_WIDTH_80&&c.ic_center_freq1==6225);
     ni.ni_flags&=~IEEE80211_NODE_HE6CAP;ni.ni_flags|=IEEE80211_NODE_EHTOP;
@@ -294,7 +355,7 @@ int main(){
     puts("PASS QoS state: scan WMM, legacy/MLD authentication, association request, default OFDM EDCA and firmware TGN flags");
     puts("PASS HE/EHT state: 6 GHz 20/40/80/160 MHz, regulatory narrowing, MBSSID LINK reference, retained live 320 MHz EHT operation and puncturing");
 }
-""".replace('FUNCTIONS',functions).replace('SCAN_QOS',scan_qos).replace('MLD_AUTH_QOS',auth_qos[1]).replace('AUTH_QOS',auth_qos[0]).replace('WME_REQUEST',wme_request).replace('BEACON_QOS',beacon_qos).replace('ASSOC_QOS',assoc_qos).replace('LEGACY_QOS',legacy_qos).replace('OFDM_EDCA',ofdm_edca)
+""".replace('FUNCTIONS',functions).replace('CONTEXT_UPDATE',context_update).replace('SCAN_QOS',scan_qos).replace('MLD_AUTH_QOS',auth_qos[1]).replace('AUTH_QOS',auth_qos[0]).replace('WME_REQUEST',wme_request).replace('BEACON_QOS',beacon_qos).replace('ASSOC_QOS',assoc_qos).replace('LEGACY_QOS',legacy_qos).replace('OFDM_EDCA',ofdm_edca)
 needed=set(re.findall(r'\b[A-Z][A-Z0-9_]+',types+helpers+program))
 enums=[]
 for match in re.finditer(r'(?m)^enum(?:\s+\w+)?\s*\{',headers+'\n'+mld_header+'\n'+registers):

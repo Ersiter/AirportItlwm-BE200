@@ -5241,9 +5241,29 @@ iwx_mac_ctxt_task(void *arg)
         return;
     }
     
-    err = that->iwx_config_he_sta(sc, &in->in_ni);
+    if (sc->sc_use_mld_api) {
+        struct iwx_mld_link_config_cmd cmd;
+        int changes = IWX_MLD_LINK_CONTEXT_MODIFY_RATES_INFO |
+            IWX_MLD_LINK_CONTEXT_MODIFY_PROTECT_FLAGS |
+            IWX_MLD_LINK_CONTEXT_MODIFY_QOS_PARAMS |
+            IWX_MLD_LINK_CONTEXT_MODIFY_BEACON_TIMING;
+        if (in->in_ni.ni_flags & IEEE80211_NODE_HE)
+            changes |= IWX_MLD_LINK_CONTEXT_MODIFY_HE_PARAMS;
+        if (in->in_ni.ni_flags & IEEE80211_NODE_EHTOP)
+            changes |= IWX_MLD_LINK_CONTEXT_MODIFY_EHT_PARAMS;
+        memset(&cmd, 0, sizeof(cmd));
+        that->iwx_mld_modify_link_fill(sc, in, &cmd, changes,
+            !!(sc->sc_mld_active_links & 1));
+        sc->sc_pcitag->setProperty("AirportItlwm-MLDLinkModifyRequest",
+            &cmd, sizeof(cmd));
+        err = that->iwx_send_cmd_pdu(sc,
+            IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD),
+            0, sizeof(cmd), &cmd);
+    } else
+        err = that->iwx_config_he_sta(sc, &in->in_ni);
     if (err) {
-        XYLog("HE context update failed: %d\n", err);
+        XYLog("%s context update failed: %d\n",
+            sc->sc_use_mld_api ? "MLD link" : "HE", err);
         splx(s);
         return;
     }
