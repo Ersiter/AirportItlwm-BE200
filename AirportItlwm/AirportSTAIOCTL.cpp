@@ -332,6 +332,8 @@ static int ieeeChanFlag2apple(int flags, int bw)
         ret |= APPLE80211_C_FLAG_2GHZ;
     if (flags & IEEE80211_CHAN_5GHZ)
         ret |= APPLE80211_C_FLAG_5GHZ;
+    if (flags & IEEE80211_CHAN_6GHZ)
+        ret |= APPLE80211_C_FLAG_6GHZ;
     if (!(flags & IEEE80211_CHAN_PASSIVE))
         ret |= APPLE80211_C_FLAG_ACTIVE;
     if (flags & IEEE80211_CHAN_DFS)
@@ -352,6 +354,9 @@ static int ieeeChanFlag2apple(int flags, int bw)
             ret |= APPLE80211_C_FLAG_10MHZ;
     } else {
         switch (bw) {
+            case IEEE80211_CHAN_WIDTH_320:
+                ret |= APPLE80211_C_FLAG_320MHZ;
+                break;
             case IEEE80211_CHAN_WIDTH_80P80:
             case IEEE80211_CHAN_WIDTH_160:
                 ret |= APPLE80211_C_FLAG_160MHZ;
@@ -481,7 +486,9 @@ getRATE(OSObject *object, struct apple80211_rate_data *rd)
         rd->version = APPLE80211_VERSION;
         rd->num_radios = 1;
         sgi = ieee80211_node_supports_sgi(ic->ic_bss);
-        if (ic->ic_curmode == IEEE80211_MODE_11AC) {
+        if (ic->ic_bss->ni_flags & IEEE80211_NODE_HE) {
+            rd->rate[0] = ic->ic_bss->ni_he_txrate_kbps / 1000;
+        } else if (ic->ic_curmode == IEEE80211_MODE_11AC) {
             if (sgi)
                 index += 1;
             nss = fHalService->getDriverInfo()->getTxNSS();
@@ -766,6 +773,9 @@ getMCS_VHT(OSObject *object, struct apple80211_mcs_vht_data *data)
     data->index = ic->ic_bss->ni_txmcs;
     data->nss = fHalService->getDriverInfo()->getTxNSS();
     switch (ic->ic_bss->ni_chw) {
+        case IEEE80211_CHAN_WIDTH_320:
+            data->bw = 320;
+            break;
         case IEEE80211_CHAN_WIDTH_40:
             data->bw = 40;
             break;

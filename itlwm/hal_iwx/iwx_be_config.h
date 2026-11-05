@@ -41,6 +41,16 @@ inline uint32_t mappedRF(unsigned crf, unsigned cnvi, unsigned otp)
         (((cnvi & (1U << 19)) || (otp & (1U << 5))) ? (1U << 29) : 0);
 }
 
+inline bool reducedCapability(uint32_t rfid, uint32_t sku)
+{
+    return CSR_HW_RFID_TYPE(rfid) == IWL_CFG_RF_TYPE_FM && (sku & (1U << 25));
+}
+
+inline bool supports320(uint32_t rfid, uint32_t sku, bool integrated, unsigned linkSpeed)
+{
+    return !reducedCapability(rfid, sku) && (integrated || linkSpeed >= 3);
+}
+
 struct Selection {
     Family family;
     unsigned max_api;

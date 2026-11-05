@@ -74,6 +74,9 @@ static int ieeeChanFlag2apple(int flags, int bw)
             ret |= APPLE80211_C_FLAG_10MHZ;
     } else {
         switch (bw) {
+            case IEEE80211_CHAN_WIDTH_320:
+                ret |= APPLE80211_C_FLAG_320MHZ;
+                break;
             case IEEE80211_CHAN_WIDTH_80P80:
             case IEEE80211_CHAN_WIDTH_160:
                 ret |= APPLE80211_C_FLAG_160MHZ;
@@ -530,7 +533,7 @@ IOReturn AirportItlwmSkywalkInterface::
 getMCS_VHT(struct apple80211_mcs_vht_data *data)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_bss == NULL || ic->ic_curmode != IEEE80211_MODE_11AC) {
+    if (ic->ic_bss == NULL || ic->ic_curmode < IEEE80211_MODE_11AC) {
         return kIOReturnError;
     }
     memset(data, 0, sizeof(struct apple80211_mcs_vht_data));
@@ -539,6 +542,9 @@ getMCS_VHT(struct apple80211_mcs_vht_data *data)
     data->index = ic->ic_bss->ni_txmcs;
     data->nss = fHalService->getDriverInfo()->getTxNSS();
     switch (ic->ic_bss->ni_chw) {
+        case IEEE80211_CHAN_WIDTH_320:
+            data->bw = 320;
+            break;
         case IEEE80211_CHAN_WIDTH_40:
             data->bw = 40;
             break;

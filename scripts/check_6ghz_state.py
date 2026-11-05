@@ -14,6 +14,8 @@ headers = '\n'.join((net/name).read_text(encoding='utf-8') for name in
 registers = (iwx/'if_iwxreg.h').read_text(encoding='utf-8')
 mld_header = (iwx/'if_iwxmld.h').read_text(encoding='utf-8')
 driver = (iwx/'ItlIwx.cpp').read_text(encoding='utf-8')
+headers += '\n'+(iwx/'if_iwxvar.h').read_text(encoding='utf-8')
+be_config=(iwx/'iwx_be_config.h').read_text(encoding='utf-8')
 node = (net/'ieee80211_node.c').read_text(encoding='utf-8')
 proto = (net/'ieee80211_proto.c').read_text(encoding='utf-8')
 rx = (net/'ieee80211_input.c').read_text(encoding='utf-8')
@@ -78,6 +80,7 @@ prelude = r"""
 #define htole16(v) (v)
 #define htole32(v) (v)
 #define hweight8(v) __builtin_popcount(unsigned(v))
+#define MIN(a,b) std::min<unsigned>((a),(b))
 #define DIV_ROUND_UP(v,d) (((v)+(d)-1)/(d))
 #define KASSERT(v,m) assert(v)
 using u_int=unsigned;using u_int8_t=uint8_t;using u_int16_t=uint16_t;
@@ -86,7 +89,8 @@ using u_int=unsigned;using u_int8_t=uint8_t;using u_int16_t=uint16_t;
 types = '\n'.join(block(headers,'struct '+n+' {',True) for n in [
     'ieee80211_he_cap_elem','ieee80211_he_mcs_nss_supp','ieee80211_he_operation',
     'ieee80211_he_6ghz_oper','ieee80211_eht_cap_elem_fixed','ieee80211_eht_operation',
-    'ieee80211_eht_operation_info'])
+    'ieee80211_eht_operation_info','ieee80211_eht_mcs_nss_supp_20mhz_only',
+    'ieee80211_eht_mcs_nss_supp_bw','ieee80211_eht_mcs_nss_supp'])
 helpers = '\n'.join(function(headers,n) for n in ['ieee80211_he_mcs_nss_size',
     'ieee80211_he_ppe_size','ieee80211_he_oper_size','ieee80211_eht_mcs_nss_size',
     'ieee80211_eht_ppe_size','ieee80211_he_mcs_intersection'])
@@ -95,12 +99,17 @@ functions = '\n'.join(function(node,n) for n in ['ieee80211_setup_hecaps',
 functions += '\n'+function(rx,'ieee80211_update_eht_params')
 functions += '\n'+function(proto,'ieee80211_he_supported')
 functions += '\n'+function(proto,'ieee80211_he_negotiate')
+functions += '\n'+block(output,'uint8_t *\nieee80211_add_ehtcaps(')
+functions += '\n'+'\n'.join(function(proto,n) for n in ['ieee80211_eht_puncturing_valid','ieee80211_eht_negotiate'])
+functions += '\n'+'\n'.join(function(driver,n) for n in ['iwx_eht_peer_mcs_nss','iwx_eht_local_mcs_nss','iwx_rs_fw_eht_set_enabled_rates','iwx_he_rate_kbps','iwx_eht_rate_kbps','iwx_get_channel_width','iwx_get_ctrl_pos','iwx_phy_context_width','iwx_phy_context_ctrl_pos'])
 functions += '\n'+function(mld,'iwx_mld_modify_link_fill')
 functions += '\n'+block(driver,'static uint16_t rs_fw_he_ieee80211_mcs_to_rs_mcs(')
 functions += '\n'+function(driver,'iwx_rs_fw_he_set_enabled_rates')
 functions += '\n'+function(driver,'iwx_rs_fw_get_config_flags')
+functions += '\n'+'\n'.join(block(be_config,'inline bool '+n+'(') for n in ['reducedCapability','supports320'])
 types += '\n'+block(registers,'struct iwx_ac_qos {',True)
 types += '\n'+block(registers,'struct iwx_tlc_config_cmd_v4 {',True)
+types += '\n'+block(registers,'struct iwx_tlc_config_cmd_v6 {',True)
 types += '\n'+block(mld_header,'struct iwx_mld_he_backoff_conf {',True)
 types += '\n'+block(mld_header,'struct iwx_mld_link_config_cmd {',True)
 # Extract the production state transitions in their connection order.
@@ -152,6 +161,8 @@ struct ieee80211com {
     unsigned ic_flags=IEEE80211_F_HEON,ic_userflags=0,ic_modecaps=1U<<IEEE80211_MODE_11AX;
     ieee80211_he_cap_elem ic_he_cap_elem{};
     ieee80211_he_mcs_nss_supp ic_he_mcs_nss_supp{};
+    bool ic_eht_cap_valid=true;ieee80211_eht_cap_elem_fixed ic_eht_cap_elem{};
+    ieee80211_eht_mcs_nss_supp ic_eht_mcs_nss_supp{};
     ieee80211_edca_ac_params ic_edca_ac[4];
     int ic_edca_updtcount=0;void(*ic_updateedca)(ieee80211com*)=nullptr;
     unsigned ic_mld_link_count=0;struct {uint8_t local_addr[6]{};}ic_mld_links[2];
@@ -159,7 +170,7 @@ struct ieee80211com {
 };
 static int ieee80211_chan2number(ieee80211com*,ieee80211_channel*c){return(c->ic_freq-5950)/5;}
 static int ieee80211_ieee2mhz(int ch,int){return 5950+5*ch;}
-struct iwx_phy_ctxt {unsigned id=0;};
+struct iwx_phy_ctxt {unsigned id=0,mld_width=0;bool mld_config_valid=false;uint16_t mld_center_freq=0;ieee80211_channel*channel=nullptr;};
 struct iwx_node {ieee80211_node in_ni;unsigned in_id=0;iwx_phy_ctxt*in_phyctxt=nullptr;};
 struct context_device {void setProperty(const char*,const void*,size_t){}};
 struct iwx_softc {ieee80211com sc_ic;bool sc_use_mld_api=false;unsigned sc_mld_active_links=1;context_device pci;context_device*sc_pcitag=&pci;};
@@ -326,6 +337,56 @@ int main(){
         IEEE80211_EHT_OPER_INFO_PRESENT,0x22,0x22,0x22,0x22,IEEE80211_EHT_OPER_CHAN_WIDTH_320MHZ,31,63};
     ieee80211_update_eht_params(&ic,&ni,nullptr,ehtop);
     assert((ni.ni_flags&IEEE80211_NODE_EHTOP)&&ni.ni_eht_oper_len==8);
+    ni.ni_flags|=IEEE80211_NODE_HE;
+    ni.ni_eht_mcs_nss_len=9;memset(ni.ni_eht_mcs_nss,0x22,9);
+    memset(&ic.ic_eht_mcs_nss_supp,0x22,sizeof(ic.ic_eht_mcs_nss_supp));
+    ic.ic_eht_cap_elem.phy_cap_info[0]|=IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ;
+    ni.ni_eht_cap_elem=ic.ic_eht_cap_elem;
+    ieee80211_eht_negotiate(&ic,&ni);
+    assert((ni.ni_flags&IEEE80211_NODE_EHT)&&ni.ni_chw==IEEE80211_CHAN_WIDTH_320&&ni.ni_eht_center_freq1==6265);
+    ni.ni_rx_nss=2;iwx_tlc_config_cmd_v6 eht_rates{};eht_rates.max_ch_width=IWX_TLC_MNG_CH_WIDTH_320MHZ;
+    assert(iwx_rs_fw_eht_set_enabled_rates(&ic,&ni,&eht_rates));
+    for(unsigned bw=0;bw<3;bw++)for(unsigned ss=0;ss<2;ss++)assert(eht_rates.ht_rates[ss][bw]==0x3fff);
+    ni.ni_rx_nss=1;memset(&eht_rates,0,sizeof(eht_rates));eht_rates.max_ch_width=IWX_TLC_MNG_CH_WIDTH_320MHZ;
+    assert(iwx_rs_fw_eht_set_enabled_rates(&ic,&ni,&eht_rates));
+    for(unsigned bw=0;bw<3;bw++)assert(eht_rates.ht_rates[1][bw]==0);
+    phy.channel=&c;phy.mld_config_valid=true;phy.mld_width=IEEE80211_CHAN_WIDTH_320;phy.mld_center_freq=6265;
+    const unsigned positions[]={11,10,9,8,3,2,1,0,4,5,6,7,12,13,14,15};
+    for(unsigned pos=0;pos<16;pos++){
+        c.ic_freq=6115+20*pos;
+        assert(iwx_get_channel_width(&ic,&c)==IWX_PHY_VHT_CHANNEL_MODE320);
+        assert(iwx_get_ctrl_pos(&ic,&c)==positions[pos]);
+        assert(iwx_phy_context_width(&ic,&phy)==IWX_PHY_VHT_CHANNEL_MODE320);
+        assert(iwx_phy_context_ctrl_pos(&ic,&phy)==positions[pos]);
+    }
+    c.ic_freq=6215;c.ic_reg_flags=IEEE80211_CHAN_NO_320MHZ;
+    ieee80211_eht_negotiate(&ic,&ni);assert(ni.ni_chw==IEEE80211_CHAN_WIDTH_160&&ni.ni_eht_center_freq1==6185);
+    c.ic_reg_flags=0;
+    ieee80211_eht_negotiate(&ic,&ni);assert(ni.ni_chw==IEEE80211_CHAN_WIDTH_320);
+    uint8_t caps[64]{};
+    auto endcaps=ieee80211_add_ehtcaps(caps,&ic,&ni);
+    assert(endcaps-caps==23&&caps[1]==21&&(caps[5]&IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ));
+    c.ic_flags=IEEE80211_CHAN_5GHZ;
+    endcaps=ieee80211_add_ehtcaps(caps,&ic,&ni);
+    assert(endcaps-caps==20&&!(caps[5]&IEEE80211_EHT_PHY_CAP0_320MHZ_IN_6GHZ));
+    c.ic_flags=IEEE80211_CHAN_6GHZ;
+    uint32_t txrate=IWX_RATE_MCS_EHT_MSK|IWX_RATE_MCS_HE_TYPE_MU|13|
+        (1U<<IWX_RATE_MCS_NSS_POS)|(4U<<IWX_RATE_MCS_CHAN_WIDTH_POS);
+    assert(iwx_eht_rate_kbps(txrate,0)==5764666);
+    assert(iwx_eht_rate_kbps(txrate|(1U<<IWX_RATE_MCS_HE_GI_LTF_POS),0)==5444400);
+    assert(iwx_eht_rate_kbps(txrate|(2U<<IWX_RATE_MCS_HE_GI_LTF_POS),0)==5764666);
+    assert(iwx_eht_rate_kbps(txrate|(3U<<IWX_RATE_MCS_HE_GI_LTF_POS),0)==4899999);
+    assert(iwx_eht_rate_kbps(txrate,3)==0);
+    assert(iwx_eht_rate_kbps((txrate&~IWX_RATE_MCS_HE_TYPE_MSK)|IWX_RATE_MCS_HE_TYPE_TRIG,0)==0);
+    assert(iwx_he_rate_kbps(IWX_RATE_MCS_HE_MSK|11|(1U<<IWX_RATE_MCS_NSS_POS)|
+        (3U<<IWX_RATE_MCS_CHAN_WIDTH_POS))==2401960);
+    uint32_t fm=IWL_CFG_RF_TYPE_FM<<12;
+    assert(supports320(fm,0,false,3));
+    assert(!supports320(fm,0,false,2));
+    assert(supports320(fm,0,true,0));
+    assert(!supports320(fm,1U<<25,true,3));
+    assert(!reducedCapability(IWL_CFG_RF_TYPE_GF<<12,1U<<25));
+    puts("PASS EHT 320: 16 primary positions, negotiated regulatory narrowing, per-NSS TLC MCS0-13 and firmware GI bitrate mapping");
     ni.ni_eht_center_freq1=6265;ni.ni_eht_puncture=2;
     for(unsigned state:{IEEE80211_S_ASSOC,IEEE80211_S_RUN}){
         ic.ic_state=state;ieee80211_update_eht_params(&ic,&ni,nullptr,nullptr);
@@ -364,6 +425,27 @@ for match in re.finditer(r'(?m)^enum(?:\s+\w+)?\s*\{',headers+'\n'+mld_header+'\
         enums.append(item)
 enums='\n'.join(enums)
 he_program=prelude+macros_for(types+helpers+program+enums)+'\n'+enums+'\n'+types+'\n'+helpers+'\n'+program
+
+channel_converters=[]
+for index,path in enumerate(['AirportItlwm/AirportItlwmSkywalkInterface.cpp','AirportItlwm/AirportSTAIOCTL.cpp']):
+    text=(root/path).read_text(encoding='utf-8')
+    channel_converters.append(block(text,'static int ieeeChanFlag2apple(int flags, int bw)').replace('ieeeChanFlag2apple','native_channel_'+str(index)))
+apple=(root/'include/Airport/apple80211_var.h').read_text(encoding='utf-8')
+channel_types=block(apple,'enum apple80211_channel_flag',True)
+channel_test=r"""
+int main(){
+    for(auto convert:{native_channel_0,native_channel_1}){
+        int flags=convert(IEEE80211_CHAN_6GHZ,IEEE80211_CHAN_WIDTH_320);
+        assert((flags&(APPLE80211_C_FLAG_6GHZ|APPLE80211_C_FLAG_320MHZ))==0x6000);
+        assert(!(flags&(APPLE80211_C_FLAG_20MHZ|APPLE80211_C_FLAG_160MHZ)));
+        assert(convert(IEEE80211_CHAN_6GHZ,IEEE80211_CHAN_WIDTH_160)&APPLE80211_C_FLAG_160MHZ);
+    }
+    puts("PASS native channel: Tahoe/Sequoia 6 GHz 320 MHz flags match operating class 137");
+}
+"""
+channel_code='\n'.join(channel_converters)+channel_test
+channel_widths=next(item for item in enums.split('};') if 'IEEE80211_CHAN_WIDTH_20_NOHT' in item)+'};'
+channel_program=prelude+macros_for(channel_code+channel_widths)+'\n'+channel_types+'\n'+channel_widths+'\n'+channel_code
 
 mcc_functions='\n'.join(function(driver,n) for n in ['iwx_valid_mcc','iwx_resolved_mcc','iwx_mcc_update','iwx_process_mcc_request'])
 country = r"""
@@ -507,7 +589,7 @@ tx_program=prelude+macros_for(tx)+'\n'+country_enums+'\n'+tx_enum+'\n'+tx
 
 with tempfile.TemporaryDirectory(prefix='itlwm-6ghz-state-') as folder:
     folder=Path(folder)
-    for name,code in [('he_state',he_program),('mcc_policy',mcc_program),('native_country',native_program),('tx_completion',tx_program)]:
+    for name,code in [('he_state',he_program),('native_channel',channel_program),('mcc_policy',mcc_program),('native_country',native_program),('tx_completion',tx_program)]:
         path=folder/(name+'.cpp');path.write_text(code,encoding='utf-8')
         binary=folder/name
         subprocess.run(shlex.split(os.environ.get('CXX','c++'))+['-std=c++17','-g',

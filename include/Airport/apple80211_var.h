@@ -261,6 +261,7 @@ enum apple80211_channel_flag
     APPLE80211_C_FLAG_80MHZ        = 0x400,  // name made up - set if channelWidth == 80 && 5ghz && AC
     APPLE80211_C_FLAG_160MHZ       = 0x800,  // zxystd: Apple Broadcom not use it, but we can use!
     APPLE80211_C_FLAG_6GHZ         = 0x2000,
+    APPLE80211_C_FLAG_320MHZ       = 0x4000, // IO80211 25G229 operating class 137.
 };
 
 enum apple80211_rate_flag

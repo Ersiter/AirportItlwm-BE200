@@ -5005,6 +5005,7 @@ iwx_setup_he_rates(struct iwx_softc *sc)
     ic->ic_flags |= IEEE80211_F_HEON;
     if (sc->sc_use_mld_api &&
         sc->sc_device_family == IWX_DEVICE_FAMILY_BZ &&
+        CSR_HW_RFID_TYPE(sc->sc_hw_rf_id) >= IWL_CFG_RF_TYPE_FM &&
         (iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP,
             IWX_MLD_STA_CONFIG_CMD) == 2 ||
          iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP,
@@ -5020,7 +5021,12 @@ iwx_setup_he_rates(struct iwx_softc *sc)
         ic->ic_eht_cap_elem.phy_cap_info[0] =
             IEEE80211_EHT_PHY_CAP0_242_TONE_RU_GT20MHZ |
             IEEE80211_EHT_PHY_CAP0_NDP_4_EHT_LFT_32_GI;
+        unsigned linkSpeed = (pci_conf_read(sc->sc_pct, sc->sc_pcitag,
+            sc->sc_cap_off + PCI_PCIE_LCSR) >> 16) & 0x0f;
+        bool reduced = IwxBE::reducedCapability(sc->sc_hw_rf_id, sc->sku_id[0]);
         if (sc->sc_uhb_supported &&
+            IwxBE::supports320(sc->sc_hw_rf_id, sc->sku_id[0],
+                sc->sc_integrated, linkSpeed) &&
             isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_BAND_IN_RX_DATA) &&
             isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_SCAN_EXT_CHAN_VER))
             ic->ic_eht_cap_elem.phy_cap_info[0] |=
@@ -5031,6 +5037,12 @@ iwx_setup_he_rates(struct iwx_softc *sc)
             MIN(rx, 15U));
         memset(&ic->ic_eht_mcs_nss_supp, eht_mcs_nss,
             sizeof(ic->ic_eht_mcs_nss_supp));
+        if (reduced) {
+            memset(&ic->ic_eht_mcs_nss_supp.bw._320, 0,
+                sizeof(ic->ic_eht_mcs_nss_supp.bw._320));
+            ic->ic_eht_mcs_nss_supp.bw._80.rx_tx_mcs13_max_nss = 0;
+            ic->ic_eht_mcs_nss_supp.bw._160.rx_tx_mcs13_max_nss = 0;
+        }
         ic->ic_eht_cap_valid = 1;
         uint8_t mac_cfg_version = iwx_lookup_cmd_ver(sc,
             IWX_MAC_CONF_GROUP, IWX_MLD_MAC_CONFIG_CMD);
@@ -10723,7 +10735,7 @@ iwx_rs_fw_eht_set_enabled_rates(const struct ieee80211com *ic,
             uint8_t local = iwx_eht_local_mcs_nss(ic, bw, mcs_group);
             unsigned int rx_nss = peer & 0x0f;
             unsigned int tx_nss = (local >> 4) & 0x0f;
-            unsigned int max_nss = MIN(rx_nss, tx_nss);
+            unsigned int max_nss = MIN(MIN(rx_nss, tx_nss), ni->ni_rx_nss);
             uint32_t mask = bw == IWX_TLC_MCS_PER_BW_80 ?
                 eht_mcs_mask_80[group] : eht_mcs_mask_wide[group];
 
@@ -11117,6 +11129,35 @@ iwx_he_rate_kbps(uint32_t rate)
     return nsd * nss * bits[mcs] * num[mcs] * 10000 / divisor;
 }
 
+/* Linux cfg80211_calculate_bitrate_eht(), full-bandwidth portion, in kbit/s.
+ * TLC has no RU allocation; punctured and trigger-based rates remain unknown. */
+static uint32_t
+iwx_eht_rate_kbps(uint32_t rate, uint16_t puncture)
+{
+    if ((rate & IWX_RATE_MCS_MOD_TYPE_MSK) != IWX_RATE_MCS_EHT_MSK ||
+        (rate & IWX_RATE_MCS_HE_TYPE_MSK) != IWX_RATE_MCS_HE_TYPE_MU ||
+        (rate & IWX_RATE_MCS_HE_106T_MSK) || puncture)
+        return 0;
+    unsigned bw = (rate & IWX_RATE_MCS_CHAN_WIDTH_MSK) >> IWX_RATE_MCS_CHAN_WIDTH_POS;
+    unsigned mcs = rate & IWX_RATE_MCS_CODE_MSK;
+    unsigned gi = (rate & IWX_RATE_MCS_HE_GI_LTF_MSK) >> IWX_RATE_MCS_HE_GI_LTF_POS;
+    unsigned nss = ((rate & IWX_RATE_MCS_NSS_MSK) >> IWX_RATE_MCS_NSS_POS) + 1;
+    if (bw > 4 || gi > 3 || (mcs == 14 && bw < 2))
+        return 0;
+    /* fw/api/rs.h: EHT MU GI/LTF 0/2 = 0.8us, 1 = 1.6us, 3 = 3.2us. */
+    unsigned guard = gi == 1 ? 1 : gi == 3 ? 2 : 0;
+    static const uint32_t divisors[] = {102399, 51201, 34134, 25599,
+        17067, 12801, 11377, 10239, 8532, 7680, 6828, 6144,
+        5690, 5120, 409600, 204800};
+    static const uint32_t rates_996[] = {480388888, 453700000, 408333333};
+    static const uint32_t rates_484[] = {229411111, 216666666, 195000000};
+    static const uint32_t rates_242[] = {114711111, 108333333, 97500000};
+    uint32_t base = bw == 0 ? rates_242[guard] : bw == 1 ?
+        rates_484[guard] : rates_996[guard] * (1U << (bw - 2));
+    uint64_t result = uint64_t(base) * 6144 / divisors[mcs];
+    return uint32_t(result * nss / 8 / 100);
+}
+
 void ItlIwx::
 iwx_rs_update(struct iwx_softc *sc, struct iwx_tlc_update_notif *notif)
 {
@@ -11148,8 +11189,11 @@ iwx_rs_update(struct iwx_softc *sc, struct iwx_tlc_update_notif *notif)
     }
     XYLog("%s new rate: %s\n", __FUNCTION__, pretty_rate);
     format = rate_n_flags & IWX_RATE_MCS_MOD_TYPE_MSK;
-    ni->ni_he_txrate_kbps = iwx_he_rate_kbps(rate_n_flags);
-    ni->ni_he_tx_nss = format == IWX_RATE_MCS_HE_MSK ?
+    ni->ni_he_txrate_kbps = format == IWX_RATE_MCS_EHT_MSK ?
+        iwx_eht_rate_kbps(rate_n_flags, ni->ni_eht_puncture) :
+        iwx_he_rate_kbps(rate_n_flags);
+    ni->ni_he_tx_nss = (format == IWX_RATE_MCS_HE_MSK ||
+        format == IWX_RATE_MCS_EHT_MSK) ?
         ((rate_n_flags & IWX_RATE_MCS_NSS_MSK) >> IWX_RATE_MCS_NSS_POS) + 1 : 0;
     if (format == IWX_RATE_MCS_VHT_MSK ||
         format == IWX_RATE_MCS_HE_MSK ||
