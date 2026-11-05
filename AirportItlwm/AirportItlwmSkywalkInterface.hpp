@@ -467,10 +467,19 @@ private:
     uint8_t joinBSSID[6];
     bool scanPending;
     bool scanCompleted;
-    bool scanSawBatch = false;
-    uint64_t scanRequestedAt = 0;
     bool scanDeferred = false;
-    AirportWCL::ScanRequest deferredScan;
+    AirportWCL::ScanRequest deferredScan = {};
+    void keepWCLScanResult(const AirportWCL::BeaconMetadata *, size_t);
+    void clearWCLScanResults();
+    struct WCLScanResultCopy {
+        uint16_t channelSpec;
+        uint8_t bssid[6];
+        size_t size;
+        void *data;
+    };
+    static constexpr unsigned kWCLScanResultCopies = 96;
+    WCLScanResultCopy wclScanResults[kWCLScanResultCopies] = {};
+    unsigned wclScanResultCount = 0;
     bool wclBssValid;
     bool wclLinkIndicated;
     uint8_t wclBssInfo[sizeof(AirportWCL::BeaconMetadata) + 0x800];

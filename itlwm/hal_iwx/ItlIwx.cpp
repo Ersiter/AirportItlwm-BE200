@@ -9272,6 +9272,16 @@ iwx_get_scan_req_umac_data(struct iwx_softc *sc, struct iwx_scan_req_umac *req)
 int ItlIwx::
 iwx_umac_scan(struct iwx_softc *sc, int bgscan)
 {
+#ifdef AIRPORT_WCL
+    if (sc->sc_ic.ic_wcl_scan_restart) {
+        if (sc->sc_flags & (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)) {
+            int err = iwx_scan_abort(sc);
+            if (err)
+                return err;
+        }
+        sc->sc_ic.ic_wcl_scan_restart = false;
+    }
+#endif
     if (iwx_lookup_cmd_ver(sc, IWX_LONG_GROUP, IWX_SCAN_REQ_UMAC) == 17) {
         bool start = !sc->sc_scan_active;
         if (start) {
@@ -10348,36 +10358,9 @@ int ItlIwx::
 iwx_scan_abort(struct iwx_softc *sc)
 {
     XYLog("%s\n", __FUNCTION__);
-    int err;
-    bool scan_v17 = sc->sc_scan_active;
-    bool batch_pending = sc->sc_scan_batch_pending;
-
-    if (scan_v17) {
-        sc->sc_flags |= IWX_FLAG_SCAN_ABORTING;
-        iwx_del_task(sc, sc->sc_nswq, &sc->sc_scan_task);
-        iwx_scan_state_reset(sc);
-    }
-
-    if (!sc->sc_use_mld_api) {
-        if (scan_v17 && !batch_pending) {
-            iwx_endscan(sc, IWX_SCAN_OFFLOAD_COMPLETED, false);
-            sc->sc_flags &= ~IWX_FLAG_SCAN_ABORTING;
-            return 0;
-        }
-        err = iwx_umac_scan_abort(sc);
-        if (err == 0) {
-            sc->sc_flags &= ~(IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN);
-            sc->sc_flags &= ~IWX_FLAG_SCAN_ABORTING;
-        }
-        return err;
-    }
-
-    if (scan_v17 && !batch_pending) {
-        iwx_endscan(sc, IWX_SCAN_OFFLOAD_COMPLETED, false);
-        sc->sc_flags &= ~IWX_FLAG_SCAN_ABORTING;
-        return 0;
-    }
-
+    const int generation = sc->sc_generation;
+    const bool scan_v17 = sc->sc_scan_active;
+    const bool batch_pending = sc->sc_scan_batch_pending;
     struct iwx_umac_scan_abort cmd = { 0 };
     struct iwx_host_cmd hcmd = {
         .id = IWX_WIDE_ID(IWX_LONG_GROUP, IWX_SCAN_ABORT_UMAC),
@@ -10386,21 +10369,31 @@ iwx_scan_abort(struct iwx_softc *sc)
         .flags = 0,
     };
     uint32_t status = IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND;
-    int generation = sc->sc_generation;
     AbsoluteTime deadline;
+    int err;
 
     sc->sc_flags |= IWX_FLAG_SCAN_ABORTING;
-    err = iwx_send_cmd_status(sc, &hcmd, &status);
-    if (err)
-        goto out;
-    if (status > IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND) {
-        err = EIO;
-        goto out;
+    if (scan_v17) {
+        iwx_del_task(sc, sc->sc_nswq, &sc->sc_scan_task);
+        iwx_scan_state_reset(sc);
+        if (!batch_pending) {
+            iwx_endscan(sc, IWX_SCAN_OFFLOAD_COMPLETED, false);
+            sc->sc_flags &= ~IWX_FLAG_SCAN_ABORTING;
+            return 0;
+        }
     }
 
-    /* NOT_FOUND means the completion was received but may still be pending here.
-     * This driver serializes UID 0, so consume it before allowing reuse.
-     */
+    if (sc->sc_use_mld_api) {
+        err = iwx_send_cmd_status(sc, &hcmd, &status);
+        if (!err && status > IWX_UMAC_SCAN_ABORT_STATUS_NOT_FOUND)
+            err = EIO;
+    } else {
+        err = iwx_umac_scan_abort(sc);
+    }
+    if (err)
+        goto out;
+
+    // UID 0 is reusable only after terminal completion, including NOT_FOUND.
     clock_interval_to_deadline(1, kSecondScale,
         reinterpret_cast<uint64_t *>(&deadline));
     while ((sc->sc_flags & (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)) &&
@@ -10417,9 +10410,9 @@ iwx_scan_abort(struct iwx_softc *sc)
     if (generation != sc->sc_generation ||
         (sc->sc_flags & IWX_FLAG_SHUTDOWN))
         err = ENXIO;
-
 out:
-    sc->sc_flags &= ~IWX_FLAG_SCAN_ABORTING;
+    if (generation == sc->sc_generation)
+        sc->sc_flags &= ~IWX_FLAG_SCAN_ABORTING;
     return err;
 }
 
@@ -11882,7 +11875,8 @@ iwx_newstate_task(void *psc)
 #ifdef AIRPORT_WCL
                 if ((ic->ic_wcl_join_requested && !ic->ic_wcl_scan_requested &&
                      !sc->sc_scan_wcl_join) ||
-                    (ic->ic_wcl_scan_requested && !sc->sc_scan_wcl_owned)) {
+                    (ic->ic_wcl_scan_requested &&
+                     (!sc->sc_scan_wcl_owned || ic->ic_wcl_scan_restart))) {
                     err = that->iwx_scan_abort(sc);
                     if (err)
                         goto out;
@@ -12323,16 +12317,6 @@ iwx_endscan(struct iwx_softc *sc, uint8_t status, bool allowContinuation)
             sc->sc_scan_task_generation = sc->sc_scan_generation;
             sc->sc_scan_task_device_generation = sc->sc_generation;
             iwx_add_task(sc, sc->sc_nswq, &sc->sc_scan_task);
-#ifdef AIRPORT_WCL
-            /*
-             * Each batch is a separate firmware command, so the host's
-             * deadline restarts here. Sharing one budget across every band
-             * let a slow band time out the whole request and discard the
-             * results the earlier bands had already delivered.
-             */
-            if (ic->ic_event_handler)
-                (*ic->ic_event_handler)(ic, IEEE80211_EVT_SCAN_BATCH, NULL);
-#endif
             return;
         }
     }
@@ -13650,7 +13634,7 @@ iwx_stop(struct _ifnet *ifp)
     // A stopped firmware scan cannot deliver its completion event.
     ic->ic_flags &= ~(IEEE80211_F_BGSCAN | IEEE80211_F_ASCAN);
     ic->ic_wcl_scan_requested = false;
-    ic->ic_wcl_scan_active = false;
+    ic->ic_wcl_scan_active = ic->ic_wcl_scan_restart = false;
     ic->ic_wcl_scan_ssid_length = 0;
     if (ic->ic_event_handler)
         ic->ic_event_handler(ic, IEEE80211_EVT_DRIVER_STOPPED, NULL);
@@ -14532,7 +14516,8 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
             case IWX_SCAN_ITERATION_COMPLETE_UMAC: {
                 struct iwx_umac_scan_iter_complete_notif *notif;
                 SYNC_RESP_STRUCT(notif, pkt, struct iwx_umac_scan_iter_complete_notif *);
-                if (!sc->sc_use_mld_api && !sc->sc_scan_active)
+                if (!sc->sc_use_mld_api && !sc->sc_scan_active &&
+                    !(sc->sc_flags & IWX_FLAG_SCAN_ABORTING))
                     iwx_endscan(sc, IWX_SCAN_OFFLOAD_COMPLETED, true);
                 break;
             }
@@ -16847,6 +16832,9 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     ic->ic_wcl_update_mld_active_link = iwx_wcl_update_mld_active_link;
 #endif
     ic->ic_bgscan_start = iwx_bgscan;
+#ifdef AIRPORT_WCL
+    ic->ic_wcl_scan_restart_supported = true;
+#endif
     ic->ic_set_key = iwx_set_key;
     ic->ic_delete_key = iwx_delete_key;
     

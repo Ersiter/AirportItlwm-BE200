@@ -484,6 +484,8 @@ struct ieee80211com {
     uint8_t ic_wcl_active_mld_link;
     bool ic_mld_emlsr_peer_supported;
     bool ic_wcl_scan_requested;
+    bool ic_wcl_scan_restart;
+    bool ic_wcl_scan_restart_supported;
     bool ic_wcl_scan_active;
     uint8_t ic_wcl_scan_ssid_length;
     uint8_t ic_wcl_scan_ssid[32];
@@ -776,7 +778,6 @@ struct ieee80211_ess {
 #define IEEE80211_EVT_DRIVER_READY 6
 #define IEEE80211_EVT_DRIVER_STOPPED 7
 #define IEEE80211_EVT_DRIVER_RESET_BEGIN 8
-#define IEEE80211_EVT_SCAN_BATCH 9
 struct ieee80211_beacon_event {
     const struct ieee80211_node *node;
     const uint8_t *ies;

@@ -41,12 +41,8 @@ static void clearWCLSAE(ieee80211com *ic)
 
 enum { WCL_USER_EAPOL_DEFER, WCL_USER_EAPOL_SET_LINK, WCL_USER_EAPOL_TAKE, WCL_USER_EAPOL_PURGE, WCL_USER_EAPOL_INPUT_RESULT };
 
-/*
- * Deadline for one scan batch. A request that spans several bands arms this
- * again as each batch completes, so the budget covers how long a single
- * firmware command may take rather than the whole multi-band request.
- */
-static constexpr uint32_t WCL_SCAN_BATCH_TIMEOUT_MS = 20000;
+// IO80211 waits for the complete request, including every band and batch.
+static constexpr uint32_t WCL_SCAN_TIMEOUT_MS = 20000;
 
 struct WCLUserEapolInputResult {
     uint32_t count;
@@ -418,13 +414,14 @@ void AirportItlwmSkywalkInterface::stopWCL()
     if (scanSource)
         scanSource->cancelTimeout();
     scanPending = joinPending = false;
-    joinDeferred = false;
+    joinDeferred = scanDeferred = false;
+    clearWCLScanResults();
     explicit_bzero(&deferredJoin, sizeof(deferredJoin));
     explicit_bzero(&wclDerivedCredential, sizeof(wclDerivedCredential));
     if (fHalService) {
         ieee80211com *ic = fHalService->get80211Controller();
         ic->ic_wcl_join_requested = false;
-        ic->ic_wcl_scan_requested = false;
+        ic->ic_wcl_scan_requested = ic->ic_wcl_scan_restart = false;
         explicit_bzero(ic->ic_psk, sizeof(ic->ic_psk));
         clearWCLSAE(ic);
     }
@@ -593,8 +590,13 @@ IOReturn AirportItlwmSkywalkInterface::startWCLScan(const AirportWCL::ScanReques
          * Wi-Fi. Hold it and issue it when the driver reports ready.
          */
         if (ic->ic_if.if_flags & IFF_UP) {
+            if (scanPending)
+                finishWCLScan(kIOReturnAborted);
             deferredScan = scan;
-            scanDeferred = true;
+            scanDeferred = scanPending = true;
+            scanCompleted = false;
+            clearWCLScanResults();
+            scanSource->setTimeoutMS(WCL_SCAN_TIMEOUT_MS);
             instance->pciNub->setProperty("AirportItlwm-WCLScanExit", "deferred");
             return kIOReturnSuccess;
         }
@@ -648,15 +650,11 @@ IOReturn AirportItlwmSkywalkInterface::startWCLScan(const AirportWCL::ScanReques
     }
     scanPending = true;
     scanCompleted = false;
-    /*
-     * A completion that belongs to the scan this request replaced can arrive
-     * after it starts. Only a completion that follows at least one batch we
-     * programmed can be ours; before that, the request has not reached the
-     * firmware yet.
-     */
-    scanSawBatch = false;
-    scanRequestedAt = 0;
-    absolutetime_to_nanoseconds(mach_absolute_time(), &scanRequestedAt);
+    deferredScan = scan;
+    clearWCLScanResults();
+    // The HAL consumes the old completion before programming this request.
+    ic->ic_wcl_scan_restart = ic->ic_wcl_scan_restart_supported &&
+        (ic->ic_state == IEEE80211_S_SCAN || (ic->ic_flags & IEEE80211_F_BGSCAN));
     ic->ic_wcl_scan_requested = true;
     ic->ic_wcl_scan_active = scan.type != 2;
     ic->ic_wcl_scan_ssid_length = scan.type == 2 ? 0 : scan.ssidLength;
@@ -665,7 +663,7 @@ IOReturn AirportItlwmSkywalkInterface::startWCLScan(const AirportWCL::ScanReques
     memcpy(ic->ic_wcl_scan_channels, mappedChannels, sizeof(mappedChannels));
     memcpy(ic->ic_wcl_scan_channels6GHz, mappedChannels6GHz, sizeof(mappedChannels6GHz));
     ic->ic_wcl_scan_rnr_count = 0;
-    scanSource->setTimeoutMS(WCL_SCAN_BATCH_TIMEOUT_MS);
+    scanSource->setTimeoutMS(WCL_SCAN_TIMEOUT_MS);
     if (ic->ic_state == IEEE80211_S_RUN) {
         ieee80211_begin_cache_bgscan(&ic->ic_if);
         if (!(ic->ic_flags & IEEE80211_F_BGSCAN)) {
@@ -693,10 +691,19 @@ void AirportItlwmSkywalkInterface::finishWCLScan(IOReturn status)
 {
     if (!scanPending)
         return;
-    scanPending = false;
+    scanPending = scanDeferred = false;
     scanCompleted = false;
     scanSource->cancelTimeout();
-    fHalService->get80211Controller()->ic_wcl_scan_requested = false;
+    auto ic = fHalService->get80211Controller();
+    ic->ic_wcl_scan_requested = ic->ic_wcl_scan_restart = false;
+    // WCL applies result-age limits when it consumes ScanDone.
+    if (status == kIOReturnSuccess)
+        for (unsigned i = 0; i < wclScanResultCount; ++i)
+            instance->postMessage(this, AirportWCL::ScanResult,
+                wclScanResults[i].data, wclScanResults[i].size, true);
+    instance->pciNub->setProperty("AirportItlwm-WCLScanResultReposts",
+        status == kIOReturnSuccess ? wclScanResultCount : 0, 32);
+    clearWCLScanResults();
     instance->pciNub->setProperty("AirportItlwm-WCLScanDoneCount", ++wclScanDoneCount, 32);
     instance->pciNub->setProperty("AirportItlwm-WCLScanDoneStatus", uint32_t(status), 32);
     char statusKey[64];
@@ -709,6 +716,43 @@ void AirportItlwmSkywalkInterface::finishWCLScan(IOReturn status)
     uint32_t legacyScanDone = 0;
     this->postMessage(APPLE80211_M_SCAN_DONE, &legacyScanDone,
                       sizeof(legacyScanDone), false);
+}
+
+void AirportItlwmSkywalkInterface::keepWCLScanResult(
+    const AirportWCL::BeaconMetadata *metadata, size_t size)
+{
+    if (size > sizeof(wclBssInfo))
+        return;
+    unsigned i = 0;
+    for (; i < wclScanResultCount; ++i)
+        if (wclScanResults[i].channelSpec == metadata->channelSpec &&
+            memcmp(wclScanResults[i].bssid, metadata->bssid, 6) == 0)
+            break;
+    if (i == kWCLScanResultCopies)
+        return;
+    auto &slot = wclScanResults[i];
+    if (slot.size != size) {
+        void *copy = IOMalloc(size);
+        if (!copy)
+            return;
+        if (slot.data)
+            IOFree(slot.data, slot.size);
+        slot.data = copy;
+        slot.size = size;
+    }
+    memcpy(slot.data, metadata, size);
+    slot.channelSpec = metadata->channelSpec;
+    memcpy(slot.bssid, metadata->bssid, 6);
+    if (i == wclScanResultCount)
+        ++wclScanResultCount;
+}
+
+void AirportItlwmSkywalkInterface::clearWCLScanResults()
+{
+    for (unsigned i = 0; i < wclScanResultCount; ++i)
+        IOFree(wclScanResults[i].data, wclScanResults[i].size);
+    bzero(wclScanResults, sizeof(wclScanResults));
+    wclScanResultCount = 0;
 }
 
 void AirportItlwmSkywalkInterface::completeWCLScan()
@@ -903,6 +947,10 @@ void AirportItlwmSkywalkInterface::postWCLScanResult(const ieee80211_node *node,
             memcpy(wclBssInfo, metadata, messageSize);
         }
     }
+    if (scanPending && !scanDeferred &&
+        AirportWCL::scanChannelSelected(sixGHz ? deferredScan.channels6GHz :
+            deferredScan.channels, deferredScan.channelCount != 0, channel))
+        keepWCLScanResult(metadata, messageSize);
     IOReturn scanResultStatus = instance->postMessage(this, AirportWCL::ScanResult,
                                                        metadata, messageSize, true);
     instance->pciNub->setProperty("AirportItlwm-WCLScanResultPostStatus",
@@ -1575,7 +1623,7 @@ void AirportItlwmSkywalkInterface::handleWCLEvent(int code, void *data)
                  * up. Issued before a deferred join so the join has a fresh
                  * result list to pick from.
                  */
-                scanDeferred = false;
+                scanDeferred = scanPending = false;
                 startWCLScan(deferredScan);
             }
             if (ready)
@@ -1653,25 +1701,9 @@ void AirportItlwmSkywalkInterface::handleWCLEvent(int code, void *data)
             }
             break;
         }
-        case IEEE80211_EVT_SCAN_BATCH:
-            if (scanPending) {
-                scanSawBatch = true;
-                scanSource->setTimeoutMS(WCL_SCAN_BATCH_TIMEOUT_MS);
-            }
-            break;
         case IEEE80211_EVT_SCAN_DONE:
             if (scanPending) {
-                /*
-                 * Before our own first batch has gone out, a completion can
-                 * only be the one from the scan this request replaced. A batch
-                 * takes about a second, so anything inside this window is not
-                 * ours; after it, the request has had its chance and the
-                 * completion is taken as it comes.
-                 */
-                uint64_t now = 0;
-                absolutetime_to_nanoseconds(mach_absolute_time(), &now);
-                if (!scanSawBatch && scanRequestedAt &&
-                    now - scanRequestedAt < 200ULL * 1000 * 1000)
+                if (scanDeferred || ic->ic_wcl_scan_restart)
                     break;
                 scanCompleted = true;
                 scanSource->setTimeoutMS(0);

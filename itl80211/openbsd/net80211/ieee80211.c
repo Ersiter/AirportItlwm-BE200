@@ -133,8 +133,11 @@ ieee80211_begin_cache_bgscan(struct _ifnet *ifp)
     struct ieee80211com *ic = (struct ieee80211com *)ifp;
     struct timeval tv;
     
-    if ((ic->ic_flags & IEEE80211_F_BGSCAN) ||
-        ic->ic_state != IEEE80211_S_RUN || ic->ic_mgt_timer != 0)
+    if (((ic->ic_flags & IEEE80211_F_BGSCAN)
+#ifdef AIRPORT_WCL
+         && !(ic->ic_wcl_scan_requested && ic->ic_wcl_scan_restart)
+#endif
+        ) || ic->ic_state != IEEE80211_S_RUN || ic->ic_mgt_timer != 0)
         return;
     
     if ((ic->ic_flags & IEEE80211_F_RSNON) && !ic->ic_bss->ni_port_valid)
