@@ -191,9 +191,10 @@ code+=func((n/'ieee80211_pae_output.c').read_text(encoding='utf-8'),'ieee80211_a
 code+=r'''
 #define IWX_DEVICE_FAMILY_AX210 1
 #define IWX_DEVICE_FAMILY_BZ 2
-#define IWX_RX_MQ_RING_COUNT 16
+#define IWX_RX_MQ_RING_COUNT 64
 #define IWX_FLAG_STA_ACTIVE 1
 #define IWX_FLAG_HW_ERR 2
+#define IWX_FLAG_SHUTDOWN 4
 #define IWX_DATA_PATH_GROUP 5
 #define IWX_MLD_SEC_KEY_CMD 24
 #define IWX_WIDE_ID(a,b) ((a)*256+(b))
@@ -362,14 +363,23 @@ static void security_tests(){
  std::puts("PASS MLO: MAC/Link KDE, two-link keys, subset rekey, RX selection, PN preservation, install failure, malformed input");
 }
 static void rx_tests(){
- iwx_softc sc;uint16_t hw=4;iwx_rx_completion_desc_bz desc[16]{};sc.rxq.stat=&hw;sc.rxq.used_desc_dma.vaddr=desc;
- for(int i=0;i<16;i++){desc[i].rbid=i;sc.rxq.data[i].id=i;}
+ iwx_softc sc;uint16_t hw=4;iwx_rx_completion_desc_bz desc[IWX_RX_MQ_RING_COUNT]{};sc.rxq.stat=&hw;sc.rxq.used_desc_dma.vaddr=desc;
+ for(int i=0;i<IWX_RX_MQ_RING_COUNT;i++){desc[i].rbid=i;sc.rxq.data[i].id=i;}
  events.clear();doorbells=0;during_packet={};during_input=[&]{assert(doorbells==1);sc.sc_generation++;sc.rxq.cur=0;};driver.iwx_notif_intr(&sc);assert(events.back()==2000&&doorbells==1&&sc.rxq.cur==0);
  events.clear();doorbells=0;during_input={};during_packet=[&](iwx_softc*s,int){s->sc_generation++;s->rxq.cur=0;};driver.iwx_notif_intr(&sc);assert(doorbells==0&&sc.rxq.cur==0);
  // A nested service owns the new cursor; the older batch cannot publish it again.
  events.clear();doorbells=0;during_packet=[&](iwx_softc*s,int id){if(id==0){during_packet={};hw=5;driver.iwx_notif_intr(s);}};driver.iwx_notif_intr(&sc);assert(doorbells==1&&sc.rxq.cur==5);for(int i=0;i<5;i++)assert(std::count(events.begin(),events.end(),i)==1);
- sc.rxq.cur=0;desc[0].rbid=16;events.clear();doorbells=0;driver.iwx_notif_intr(&sc);assert(recovery==1&&doorbells==0);
- std::puts("PASS RX: credits before callback, reset generation, nested service cursor, invalid completion");
+ sc.rxq.cur=0;desc[0].rbid=IWX_RX_MQ_RING_COUNT;events.clear();doorbells=0;driver.iwx_notif_intr(&sc);assert(recovery==1&&doorbells==0);
+ sc.sc_flags=IWX_FLAG_STA_ACTIVE;desc[0].rbid=0;sc.rxq.cur=0;hw=63;during_packet={};events.clear();doorbells=0;
+ unsigned callbacks=0;during_input=[&]{++callbacks;assert(doorbells==int(callbacks));};
+ driver.iwx_notif_intr(&sc);assert(callbacks==2&&doorbells==2&&sc.rxq.cur==63);
+ for(int i=0;i<63;i++)assert(std::count(events.begin(),events.end(),i)==1);
+ sc.rxq.cur=0;hw=63;events.clear();doorbells=0;callbacks=0;
+ during_input=[&]{++callbacks;sc.sc_generation++;sc.rxq.cur=0;};
+ driver.iwx_notif_intr(&sc);assert(callbacks==1&&doorbells==1&&sc.rxq.cur==0&&std::count(events.begin(),events.end(),32)==0);
+ during_input={};sc.sc_flags=IWX_FLAG_HW_ERR;events.clear();doorbells=0;
+ driver.iwx_notif_intr(&sc);assert(events.empty()&&doorbells==0);
+ std::puts("PASS RX: credits before bounded 32-completion handoffs, reset generation, nested cursor, invalid completion and fault stop");
 }
 static void aggregation_tests(){
  fixture f;f.nodes[0].ni_flags=IEEE80211_NODE_HE;assert(ieee80211_can_use_ampdu(&f.sc.sc_ic,&f.nodes[0]));f.sc.sc_ic.ic_flags=0;assert(!ieee80211_can_use_ampdu(&f.sc.sc_ic,&f.nodes[0]));f.sc.sc_ic.ic_flags=IEEE80211_F_RSNON;f.nodes[0].ni_flags=0;assert(!ieee80211_can_use_ampdu(&f.sc.sc_ic,&f.nodes[0]));

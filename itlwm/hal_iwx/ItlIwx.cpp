@@ -8062,6 +8062,10 @@ iwx_tx_update_byte_tbl(struct iwx_softc *sc, struct iwx_tx_ring *txq, int idx, u
 int ItlIwx::
 iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
 {
+    if (sc->sc_flags & (IWX_FLAG_SHUTDOWN | IWX_FLAG_HW_ERR | IWX_FLAG_RFKILL)) {
+        mbuf_freem(m);
+        return ENXIO;
+    }
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_node *in = (struct iwx_node *)ni;
     struct iwx_tx_ring *ring;
@@ -13404,7 +13408,8 @@ _iwx_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3
     int ac = EDCA_AC_BE; /* XXX */
     
     if (!(ifp->if_flags & IFF_RUNNING) || ifq_is_oactive(&ifp->if_snd) ||
-        (sc->sc_flags & (IWX_FLAG_SHUTDOWN | IWX_FLAG_TXFLUSH)) ||
+        (sc->sc_flags & (IWX_FLAG_SHUTDOWN | IWX_FLAG_TXFLUSH |
+                         IWX_FLAG_HW_ERR | IWX_FLAG_RFKILL)) ||
         (ic->ic_state == IEEE80211_S_RUN && sc->ns_nstate != IEEE80211_S_RUN)) {
 #ifdef AIRPORT_WCL
         if (ifp->if_snd.queue && ifq_len(&ifp->if_snd)) {
@@ -13443,8 +13448,9 @@ _iwx_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3
             break;
         }
 
-        /* Don't queue additional frames while flushing Tx queues. */
-        if (sc->sc_flags & IWX_FLAG_TXFLUSH)
+        /* Leave software packets queued until firmware can accept them. */
+        if (sc->sc_flags & (IWX_FLAG_TXFLUSH | IWX_FLAG_SHUTDOWN |
+                            IWX_FLAG_HW_ERR | IWX_FLAG_RFKILL))
             break;
         
         /* need to send management frames even if we're not RUNning */
@@ -14812,17 +14818,29 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
 void ItlIwx::
 iwx_notif_intr(struct iwx_softc *sc)
 {
+    if (sc->sc_flags & (IWX_FLAG_SHUTDOWN | IWX_FLAG_HW_ERR))
+        return;
     struct mbuf_list ml = MBUF_LIST_INITIALIZER();
     const int generation = sc->sc_generation;
     const uint64_t cookie = ++sc->sc_rx_service_cookie;
+    unsigned processed = 0;
     uint16_t hw;
-    
+
     if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210)
         hw = le16toh(*(uint16_t *)(sc->rxq.stat)) & 0xfff;
     else
         hw = le16toh(((struct iwx_rb_status *)sc->rxq.stat)->closed_rb_num) & 0xfff;
     hw &= (IWX_RX_MQ_RING_COUNT - 1);
     DPRINTFN(3, ("%s hw=%d\n", __FUNCTION__, hw));
+    const auto publishCredits = [&]() {
+        unsigned last = sc->rxq.cur ? sc->rxq.cur - 1 : IWX_RX_MQ_RING_COUNT - 1;
+        __sync_synchronize();
+        if (sc->sc_device_family >= IWX_DEVICE_FAMILY_BZ)
+            IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR,
+                (last & ~7U) | IWX_HBUS_TARG_WRPTR_RX_Q(0));
+        else
+            IWX_WRITE(sc, IWX_RFH_Q0_FRBDCB_WIDX_TRG, last & ~7U);
+    };
     while (sc->rxq.cur != hw) {
         int rbid = sc->rxq.cur;
         if (sc->sc_device_family >= IWX_DEVICE_FAMILY_BZ) {
@@ -14839,10 +14857,10 @@ iwx_notif_intr(struct iwx_softc *sc)
             }
         }
         struct iwx_rx_data *data = &sc->rxq.data[rbid];
-        /* Claim this completion before a callback can re-enter RX service. */
         sc->rxq.cur = (sc->rxq.cur + 1) % IWX_RX_MQ_RING_COUNT;
         iwx_rx_pkt(sc, data, &ml);
-        if (generation != sc->sc_generation) {
+        if (generation != sc->sc_generation ||
+            (sc->sc_flags & (IWX_FLAG_SHUTDOWN | IWX_FLAG_HW_ERR))) {
             ml_purge(&ml);
             return;
         }
@@ -14850,20 +14868,20 @@ iwx_notif_intr(struct iwx_softc *sc)
             if_input(&sc->sc_ic.ic_if, &ml);
             return;
         }
+        // Return BZ credits before bounded upper-stack handoffs under load.
+        if (sc->sc_device_family >= IWX_DEVICE_FAMILY_BZ && ++processed == 32) {
+            publishCredits();
+            if_input(&sc->sc_ic.ic_if, &ml);
+            if (generation != sc->sc_generation || cookie != sc->sc_rx_service_cookie ||
+                (sc->sc_flags & (IWX_FLAG_SHUTDOWN | IWX_FLAG_HW_ERR)))
+                return;
+            processed = 0;
+        }
     }
-    
-    /*
-     * Tell the firmware what we have processed.
-     * Seems like the hardware gets upset unless we align the write by 8??
-     */
-    hw = (hw == 0) ? IWX_RX_MQ_RING_COUNT - 1 : hw - 1;
-    __sync_synchronize();
-    if (sc->sc_device_family >= IWX_DEVICE_FAMILY_BZ)
-        IWX_WRITE(sc, IWX_HBUS_TARG_WRPTR, (hw & ~7) | IWX_HBUS_TARG_WRPTR_RX_Q(0));
-    else
-        IWX_WRITE(sc, IWX_RFH_Q0_FRBDCB_WIDX_TRG, hw & ~7);
-    /* Upper-stack callbacks may stop/reset the controller or re-enter RX. */
-    if_input(&sc->sc_ic.ic_if, &ml);
+    if (sc->sc_device_family < IWX_DEVICE_FAMILY_BZ || processed) {
+        publishCredits();
+        if_input(&sc->sc_ic.ic_if, &ml);
+    }
 }
 
 int ItlIwx::
