@@ -75,7 +75,8 @@ struct ieee80211_channel{unsigned ic_freq=0,number=0;bool six=false;};
 struct ieee80211_node{int ni_rssi=60;unsigned ni_intval=100;bool ni_port_valid=true;};
 struct ieee80211com{
  _ifnet ic_if;unsigned ic_state=IEEE80211_S_RUN,ic_flags=0;int ic_mgt_timer=0;
- ieee80211_channel ic_channels[256]{};uint8_t ic_chan_active[32]{};
+ ieee80211_channel ic_channels[256]{};
+uint8_t ic_chan_active[32]{};
  bool ic_wcl_scan_requested=false,ic_wcl_scan_restart=false,ic_wcl_scan_active=false,ic_wcl_scan_restart_supported=true;
  bool ic_wcl_scan_restricted=false;uint8_t ic_wcl_scan_ssid_length=0,ic_wcl_scan_ssid[32]{};
  uint8_t ic_wcl_scan_channels[32]{},ic_wcl_scan_channels6GHz[32]{},ic_wcl_scan_rnr_count=0;
@@ -83,6 +84,7 @@ struct ieee80211com{
  int(*ic_bgscan_start)(ieee80211com*)=nullptr;
  int(*ic_newstate)(ieee80211com*,int,int)=nullptr;
 };
+static void ieee80211_seed_scan_rnr(ieee80211com*ic){ic->ic_wcl_scan_rnr_count=0;}
 static unsigned ieee80211_chan2number(ieee80211com*,const ieee80211_channel*c){return c->number;}
 struct fake_timeval{long tv_sec,tv_usec;};
 #define timeval fake_timeval

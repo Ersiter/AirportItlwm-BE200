@@ -2129,6 +2129,119 @@ parse_eht_operation:
     }
 }
 
+#ifdef AIRPORT_WCL
+static void
+ieee80211_collect_scan_rnr(struct ieee80211com *ic, const uint8_t *ies,
+    size_t length)
+{
+    const uint8_t *ssid = NULL;
+    const uint8_t *end = ies + length;
+    for (const uint8_t *ie = ies; end - ie >= 2 && ie[1] <= end - ie - 2;
+        ie += 2 + ie[1]) {
+        if (ie[0] == IEEE80211_ELEMID_SSID && ie[1] <= IEEE80211_NWID_LEN) {
+            ssid = ie;
+            break;
+        }
+    }
+    if (ssid == NULL)
+        return;
+    for (const uint8_t *rnr = ies; end - rnr >= 2 && rnr[1] <= end - rnr - 2;
+        rnr += 2 + rnr[1]) {
+        if (rnr[0] != IEEE80211_ELEMID_RNR)
+            continue;
+        bool sourceSsidValid = false;
+        for (unsigned byte = 0; byte < ssid[1]; ++byte)
+            sourceSsidValid |= ssid[byte + 2] != 0;
+        uint32_t sourceShortSsid = ~0U;
+        if (sourceSsidValid) {
+            for (unsigned byte = 0; byte < ssid[1]; ++byte) {
+                sourceShortSsid ^= ssid[byte + 2];
+                for (unsigned bit = 0; bit < 8; ++bit)
+                    sourceShortSsid = (sourceShortSsid >> 1) ^
+                        (0xedb88320U & (0U - (sourceShortSsid & 1U)));
+            }
+            sourceShortSsid = ~sourceShortSsid;
+        }
+        const uint8_t *rnrPos = rnr + 2;
+        const uint8_t *rnrEnd = rnrPos + rnr[1];
+        while (rnrEnd - rnrPos >= 4) {
+            const uint8_t header = rnrPos[0];
+            const uint8_t infoLength = rnrPos[1];
+            const uint8_t opClass = rnrPos[2];
+            const uint8_t channel = rnrPos[3];
+            const uint8_t entryCount = ((header & 0xf0) >> 4) + 1;
+            rnrPos += 4;
+            if (infoLength == 0 || entryCount >
+                size_t(rnrEnd - rnrPos) / infoLength)
+                break;
+            if ((header & 0x03) == 0 && opClass >= 131 && opClass <= 136 &&
+                (infoLength == 8 || infoLength == 9 || infoLength >= 12)) {
+                for (uint8_t entry = 0; entry < entryCount; ++entry) {
+                    const uint8_t *tbtt = rnrPos + size_t(entry) * infoLength;
+                    const uint8_t bssParams = infoLength >= 12 ? tbtt[11] : tbtt[7];
+                    if ((bssParams & 0x40) == 0)
+                        continue;
+                    uint32_t shortSsid = 0;
+                    bool shortSsidValid = false;
+                    if (infoLength >= 12) {
+                        shortSsid = LE_READ_4(tbtt + 7);
+                        shortSsidValid = true;
+                    }
+                    if ((bssParams & 0x02) && sourceSsidValid) {
+                        shortSsid = sourceShortSsid;
+                        shortSsidValid = true;
+                    }
+                    bool validBssid = false;
+                    for (unsigned byte = 1; byte < 7; ++byte)
+                        validBssid |= tbtt[byte] != 0;
+                    if (!shortSsidValid || !validBssid ||
+                        IEEE80211_IS_MULTICAST(tbtt + 1))
+                        continue;
+                    const unsigned channelIndex = ieee80211_ieee2chanidx(
+                        ic, channel, IEEE80211_CHAN_6GHZ);
+                    if (channelIndex == 0 ||
+                        !ic->ic_channels[channelIndex].ic_freq ||
+                        !isset(ic->ic_chan_active, channelIndex) ||
+                        !IEEE80211_IS_CHAN_6GHZ(&ic->ic_channels[channelIndex]))
+                        continue;
+                    uint8_t slot = 0;
+                    for (; slot < ic->ic_wcl_scan_rnr_count; ++slot) {
+                        if (ic->ic_wcl_scan_rnr_channel[slot] == channel &&
+                            IEEE80211_ADDR_EQ(ic->ic_wcl_scan_rnr_bssid[slot], tbtt + 1))
+                            break;
+                    }
+                    if (slot == ic->ic_wcl_scan_rnr_count) {
+                        if (slot >= 8)
+                            continue;
+                        ++ic->ic_wcl_scan_rnr_count;
+                    }
+                    ic->ic_wcl_scan_rnr_channel[slot] = channel;
+                    memcpy(ic->ic_wcl_scan_rnr_bssid[slot], tbtt + 1,
+                        IEEE80211_ADDR_LEN);
+                    ic->ic_wcl_scan_rnr_short_ssid[slot] = shortSsid;
+                }
+            }
+            rnrPos += size_t(entryCount) * infoLength;
+        }
+    }
+}
+
+void
+ieee80211_seed_scan_rnr(struct ieee80211com *ic)
+{
+    struct ieee80211_node *ni;
+    const uint64_t now = airport_up_time();
+    ic->ic_wcl_scan_rnr_count = 0;
+    RB_FOREACH(ni, ieee80211_tree, &ic->ic_tree) {
+        if (ni->ni_rsnie_tlv_len == 0 ||
+            IEEE80211_IS_CHAN_6GHZ(ni->ni_chan) ||
+            now - ni->ni_age_ts > 30000)
+            continue;
+        ieee80211_collect_scan_rnr(ic, ni->ni_rsnie_tlv, ni->ni_rsnie_tlv_len);
+    }
+}
+#endif
+
 /*-
  * Beacon/Probe response frame format:
  * [8]   Timestamp
@@ -2396,88 +2509,7 @@ ieee80211_recv_probe_resp_bss(struct ieee80211com *ic, mbuf_t m,
         ic->ic_stats.is_rx_badchan++;
         return;
     }
-#ifdef AIRPORT_WCL
-    if (ic->ic_wcl_scan_requested && rnr != NULL &&
-        !IEEE80211_IS_CHAN_6GHZ(&ic->ic_channels[chanidx]) &&
-        (rxi->rxi_chan == 0 || chan == rxi->rxi_chan) &&
-        ((ic->ic_state == IEEE80211_S_SCAN &&
-          (ic->ic_caps & IEEE80211_C_SCANALL)) || chan == bchan)) {
-        bool sourceSsidValid = false;
-        for (unsigned byte = 0; byte < ssid[1]; ++byte)
-            sourceSsidValid |= ssid[byte + 2] != 0;
-        uint32_t sourceShortSsid = ~0U;
-        if (sourceSsidValid) {
-            for (unsigned byte = 0; byte < ssid[1]; ++byte) {
-                sourceShortSsid ^= ssid[byte + 2];
-                for (unsigned bit = 0; bit < 8; ++bit)
-                    sourceShortSsid = (sourceShortSsid >> 1) ^
-                        (0xedb88320U & (0U - (sourceShortSsid & 1U)));
-            }
-            sourceShortSsid = ~sourceShortSsid;
-        }
-        const uint8_t *rnrPos = rnr + 2;
-        const uint8_t *rnrEnd = rnrPos + rnr[1];
-        while (rnrEnd - rnrPos >= 4) {
-            const uint8_t header = rnrPos[0];
-            const uint8_t infoLength = rnrPos[1];
-            const uint8_t opClass = rnrPos[2];
-            const uint8_t channel = rnrPos[3];
-            const uint8_t entryCount = ((header & 0xf0) >> 4) + 1;
-            rnrPos += 4;
-            if (infoLength == 0 || entryCount >
-                size_t(rnrEnd - rnrPos) / infoLength)
-                break;
-            if ((header & 0x03) == 0 && opClass >= 131 && opClass <= 136 &&
-                (infoLength == 8 || infoLength == 9 || infoLength >= 12)) {
-                for (uint8_t entry = 0; entry < entryCount; ++entry) {
-                    const uint8_t *tbtt = rnrPos + size_t(entry) * infoLength;
-                    const uint8_t bssParams = infoLength >= 12 ? tbtt[11] : tbtt[7];
-                    if ((bssParams & 0x40) == 0)
-                        continue;
-                    uint32_t shortSsid = 0;
-                    bool shortSsidValid = false;
-                    if (infoLength >= 12) {
-                        shortSsid = LE_READ_4(tbtt + 7);
-                        shortSsidValid = true;
-                    }
-                    if ((bssParams & 0x02) && sourceSsidValid) {
-                        shortSsid = sourceShortSsid;
-                        shortSsidValid = true;
-                    }
-                    bool validBssid = false;
-                    for (unsigned byte = 1; byte < 7; ++byte)
-                        validBssid |= tbtt[byte] != 0;
-                    if (!shortSsidValid || !validBssid ||
-                        IEEE80211_IS_MULTICAST(tbtt + 1))
-                        continue;
-                    const unsigned channelIndex = ieee80211_ieee2chanidx(
-                        ic, channel, IEEE80211_CHAN_6GHZ);
-                    if (channelIndex == 0 ||
-                        !ic->ic_channels[channelIndex].ic_freq ||
-                        !isset(ic->ic_chan_active, channelIndex) ||
-                        !IEEE80211_IS_CHAN_6GHZ(&ic->ic_channels[channelIndex]))
-                        continue;
-                    uint8_t slot = 0;
-                    for (; slot < ic->ic_wcl_scan_rnr_count; ++slot) {
-                        if (ic->ic_wcl_scan_rnr_channel[slot] == channel &&
-                            IEEE80211_ADDR_EQ(ic->ic_wcl_scan_rnr_bssid[slot], tbtt + 1))
-                            break;
-                    }
-                    if (slot == ic->ic_wcl_scan_rnr_count) {
-                        if (slot >= 8)
-                            continue;
-                        ++ic->ic_wcl_scan_rnr_count;
-                    }
-                    ic->ic_wcl_scan_rnr_channel[slot] = channel;
-                    memcpy(ic->ic_wcl_scan_rnr_bssid[slot], tbtt + 1,
-                        IEEE80211_ADDR_LEN);
-                    ic->ic_wcl_scan_rnr_short_ssid[slot] = shortSsid;
-                }
-            }
-            rnrPos += size_t(entryCount) * infoLength;
-        }
-    }
-#endif
+
     if (!chanFromHe6 &&
         ((rxi->rxi_chan != 0 && chan != rxi->rxi_chan) ||
         ((ic->ic_state != IEEE80211_S_SCAN ||
@@ -2686,6 +2718,16 @@ ieee80211_recv_probe_resp_bss(struct ieee80211com *ic, mbuf_t m,
         uint32_t tlv_len = (mtod(m, u_int8_t *) + mbuf_len(m)) - (u_int8_t *)&wh[1] + 1 - 8 - 2 - 2;
 #endif
         ieee80211_save_ie_tlv(((u_int8_t *)&wh[1]) + 8 + 2 + 2, &ni->ni_rsnie_tlv, &ni->ni_rsnie_tlv_len, tlv_len);
+#ifdef AIRPORT_WCL
+    if (ic->ic_wcl_scan_requested && rnr != NULL &&
+        !IEEE80211_IS_CHAN_6GHZ(&ic->ic_channels[chanidx]) &&
+        (rxi->rxi_chan == 0 || chan == rxi->rxi_chan) &&
+        ((ic->ic_state == IEEE80211_S_SCAN &&
+          (ic->ic_caps & IEEE80211_C_SCANALL)) || chan == bchan)) {
+            ieee80211_collect_scan_rnr(ic, ni->ni_rsnie_tlv,
+                ni->ni_rsnie_tlv_len);
+        }
+#endif
         ni->ni_rsnprotos = IEEE80211_PROTO_NONE;
         ni->ni_supported_rsnprotos = IEEE80211_PROTO_NONE;
         ni->ni_rsnakms = 0;

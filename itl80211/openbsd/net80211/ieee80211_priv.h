@@ -169,4 +169,8 @@ int ieee80211_sae_verify_confirm(const uint8_t *, size_t, const uint8_t *,
 	(p)[1] = (v) >>  8; (p)[0] = (v);	\
 } while (0)
 
+#ifdef AIRPORT_WCL
+void ieee80211_seed_scan_rnr(struct ieee80211com *);
+#endif
+
 #endif /* _NET80211_IEEE80211_PRIV_H_ */

@@ -21,13 +21,6 @@
 
 static constexpr uint8_t IWL_SCAN_DWELL_ACTIVE = 10;
 static constexpr uint8_t IWL_SCAN_DWELL_PASSIVE = 110;
-/*
- * A passive 6 GHz channel dwells for IWL_SCAN_DWELL_PASSIVE, so a command
- * carrying every PSC channel runs for several seconds and IO80211 gives up
- * before it completes, dropping the whole band's results. Program a slice
- * per command and let iwx_scan_task() issue the remainder.
- */
-static constexpr uint8_t IWX_SCAN_6GHZ_BATCH_MAX = 15;
 static constexpr uint8_t IWL_SCAN_NUM_OF_FRAGS = 3;
 static constexpr uint8_t IWX_SCAN_ADWELL_DEFAULT_N_APS_SOCIAL = 10;
 static constexpr uint8_t IWX_SCAN_ADWELL_DEFAULT_LB_N_APS = 2;
@@ -249,17 +242,8 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
             rnrShortSsidBitmap |= 1U << hint;
         }
         const bool rnrTarget = rnrBssidBitmap != 0;
-        /*
-         * A 6 GHz channel off the PSC grid is worth a passive dwell only when
-         * something points at it: an RNR hint, an explicit channel request, or
-         * a directed scan for an SSID. Upstream trims scheduled scans to the
-         * PSC grid for the same reason, and a full background sweep of all 59
-         * channels is several seconds of churn around a live association. A
-         * scheduled scan keeps that trim even when the request named channels,
-         * because an unrestricted 6 GHz sweep is now reachable from one.
-         */
-        const bool trimToPsc = bgscan ||
-            (!explicitWclChannels && scanActive && scanSSIDLength != 0);
+        /* Match Linux's no-SSID passive scan and cached-RNR channel policy. */
+        const bool trimToPsc = scanActive && !rnrProbeCount && !directedJoin;
         if (is6GHz && !AirportWCL::is6GHzPsc(channelNumber) && !rnrTarget &&
             trimToPsc)
             continue;
@@ -275,8 +259,7 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
         int channelBand = is6GHz ? 1 : 0;
         if (cp->count && batchBand != channelBand)
             break;
-        if (cp->count >= (is6GHz ? MIN(channelLimit, IWX_SCAN_6GHZ_BATCH_MAX)
-                                 : channelLimit))
+        if (cp->count >= channelLimit)
             break;
         batchBand = channelBand;
         batchBandValue = is6GHz ? 6 : (is5GHz ? 5 : 2);

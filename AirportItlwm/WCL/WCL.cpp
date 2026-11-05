@@ -662,7 +662,7 @@ IOReturn AirportItlwmSkywalkInterface::startWCLScan(const AirportWCL::ScanReques
     ic->ic_wcl_scan_restricted = scan.channelCount != 0;
     memcpy(ic->ic_wcl_scan_channels, mappedChannels, sizeof(mappedChannels));
     memcpy(ic->ic_wcl_scan_channels6GHz, mappedChannels6GHz, sizeof(mappedChannels6GHz));
-    ic->ic_wcl_scan_rnr_count = 0;
+    ieee80211_seed_scan_rnr(ic);
     scanSource->setTimeoutMS(WCL_SCAN_TIMEOUT_MS);
     if (ic->ic_state == IEEE80211_S_RUN) {
         ieee80211_begin_cache_bgscan(&ic->ic_if);
