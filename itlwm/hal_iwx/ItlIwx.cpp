@@ -11185,13 +11185,16 @@ iwx_he_rate_kbps(uint32_t rate)
     unsigned mcs = rate & IWX_RATE_MCS_CODE_MSK;
     unsigned gi = (rate & IWX_RATE_MCS_HE_GI_LTF_MSK) >> IWX_RATE_MCS_HE_GI_LTF_POS;
     unsigned nss = ((rate & IWX_RATE_MCS_NSS_MSK) >> IWX_RATE_MCS_NSS_POS) + 1;
-    if (type > 1 || bw > 3 || mcs > 11 || gi > 4)
+    if (bw > 3 || mcs > 11 || gi > (type == 3 ? 2U : type == 2 ? 3U : 4U))
         return 0;
     static const unsigned tones[] = {234, 468, 980, 1960};
     static const unsigned bits[] = {1, 2, 2, 4, 4, 6, 6, 6, 8, 8, 10, 10};
     static const unsigned num[] = {1, 1, 3, 1, 3, 2, 3, 5, 3, 5, 3, 5};
     static const unsigned den[] = {2, 2, 4, 2, 4, 3, 4, 6, 4, 6, 4, 6};
-    unsigned symbol = 128 + (gi == 2 ? 16 : gi == 3 ? 32 : 8);
+    /* Linux iwl_mvm_rx_he(): trigger GI 0/1=1.6us, 2=3.2us. */
+    unsigned guard = type == 3 ? (gi == 2 ? 32 : 16) :
+        gi == 2 ? 16 : gi == 3 ? 32 : 8;
+    unsigned symbol = 128 + guard;
     unsigned nsd = (rate & IWX_RATE_MCS_HE_106T_MSK) ? 102 : tones[bw];
     unsigned divisor = den[mcs] * symbol;
     if (rate & IWX_RATE_HE_DUAL_CARRIER_MODE_MSK) divisor *= 2;
@@ -11204,7 +11207,7 @@ static uint32_t
 iwx_eht_rate_kbps(uint32_t rate, uint16_t puncture)
 {
     if ((rate & IWX_RATE_MCS_MOD_TYPE_MSK) != IWX_RATE_MCS_EHT_MSK ||
-        (rate & IWX_RATE_MCS_HE_TYPE_MSK) != IWX_RATE_MCS_HE_TYPE_MU ||
+        (rate & IWX_RATE_MCS_HE_TYPE_MSK) == IWX_RATE_MCS_HE_TYPE_TRIG ||
         (rate & IWX_RATE_MCS_HE_106T_MSK) || puncture)
         return 0;
     unsigned bw = (rate & IWX_RATE_MCS_CHAN_WIDTH_MSK) >> IWX_RATE_MCS_CHAN_WIDTH_POS;
@@ -11213,7 +11216,7 @@ iwx_eht_rate_kbps(uint32_t rate, uint16_t puncture)
     unsigned nss = ((rate & IWX_RATE_MCS_NSS_MSK) >> IWX_RATE_MCS_NSS_POS) + 1;
     if (bw > 4 || gi > 3 || (mcs == 14 && bw < 2))
         return 0;
-    /* fw/api/rs.h: EHT MU GI/LTF 0/2 = 0.8us, 1 = 1.6us, 3 = 3.2us. */
+    /* Linux iwl_mvm_rx_eht(): non-trigger GI 0/2=0.8us, 1=1.6us, 3=3.2us. */
     unsigned guard = gi == 1 ? 1 : gi == 3 ? 2 : 0;
     static const uint32_t divisors[] = {102399, 51201, 34134, 25599,
         17067, 12801, 11377, 10239, 8532, 7680, 6828, 6144,

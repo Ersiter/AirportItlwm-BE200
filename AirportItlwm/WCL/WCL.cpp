@@ -26,6 +26,31 @@ static AirportWCL::ChannelBand wclChannelBand(const ieee80211_channel *channel)
             AirportWCL::ChannelBand::GHz2);
 }
 
+static uint16_t wclCurrentChannelSpec(ieee80211com *ic)
+{
+    const auto ni = ic->ic_bss;
+    if (ic->ic_state != IEEE80211_S_RUN || !ni || !ni->ni_chan ||
+        ni->ni_chan == IEEE80211_CHAN_ANYC)
+        return 0;
+    unsigned width;
+    switch (ni->ni_chw) {
+        case IEEE80211_CHAN_WIDTH_20_NOHT:
+        case IEEE80211_CHAN_WIDTH_20: width = 20; break;
+        case IEEE80211_CHAN_WIDTH_40: width = 40; break;
+        case IEEE80211_CHAN_WIDTH_80: width = 80; break;
+        case IEEE80211_CHAN_WIDTH_160: width = 160; break;
+        default: return 0; /* Native 16-bit descriptor supports contiguous widths through 160. */
+    }
+    unsigned primary = ieee80211_chan2number(ic, ni->ni_chan);
+    int centerFrequency = ni->ni_eht_center_freq1 ? ni->ni_eht_center_freq1 :
+        ni->ni_chan->ic_center_freq1;
+    int offset = centerFrequency - ni->ni_chan->ic_freq;
+    if (width > 20 && (!centerFrequency || offset % 5))
+        return 0;
+    unsigned center = width == 20 ? primary : int(primary) + offset / 5;
+    return AirportWCL::channelSpec(primary, center, width, wclChannelBand(ni->ni_chan));
+}
+
 static void clearWCLSAE(ieee80211com *ic)
 {
 	++ic->ic_sae_generation;
@@ -521,10 +546,16 @@ IOReturn AirportItlwmSkywalkInterface::wclCommand(OSObject *, void *a0, void *a1
                 return kIOReturnNotReady;
             memcpy(a2, self->wclBeaconInfo, sizeof(self->wclBeaconInfo));
             return kIOReturnSuccess;
-        case 5:
+        case 5: {
             if (!a2 || !self->wclBssValid)
                 return kIOReturnNotReady;
             memcpy(a2, self->wclBssInfo, sizeof(self->wclBssInfo));
+            auto ic = self->fHalService->get80211Controller();
+            if (uint16_t spec = wclCurrentChannelSpec(ic)) {
+                auto bss = static_cast<AirportWCL::BeaconMetadata *>(a2);
+                bss->channelSpec = spec;
+                bss->channel = ieee80211_chan2number(ic, ic->ic_bss->ni_chan);
+            }
             /* WCL derives active PHY from this descriptor's EHT IEs. */
             if (self->fHalService->get80211Controller()->ic_bss &&
                 !(self->fHalService->get80211Controller()->ic_bss->ni_flags &
@@ -547,6 +578,7 @@ IOReturn AirportItlwmSkywalkInterface::wclCommand(OSObject *, void *a0, void *a1
                 bss->ieLength = uint32_t(written);
             }
             return kIOReturnSuccess;
+        }
         case 4:
             self->finishWCLScan(kIOReturnAborted);
             return kIOReturnSuccess;
@@ -962,6 +994,11 @@ void AirportItlwmSkywalkInterface::postWCLScanResult(const ieee80211_node *node,
     memcpy(metadata + 1, ies, length);
     size_t messageSize = sizeof(*metadata) + metadata->ieLength;
     if (assocNotified && IEEE80211_ADDR_EQ(bssid, joinBSSID)) {
+        auto ic = fHalService->get80211Controller();
+        if (uint16_t currentSpec = wclCurrentChannelSpec(ic)) {
+            metadata->channelSpec = currentSpec;
+            metadata->channel = ieee80211_chan2number(ic, ic->ic_bss->ni_chan);
+        }
         wclBssValid = messageSize <= sizeof(wclBssInfo);
         if (wclBssValid) {
             bzero(wclBssInfo, sizeof(wclBssInfo));

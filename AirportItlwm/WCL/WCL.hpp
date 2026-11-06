@@ -28,6 +28,21 @@ inline uint16_t channelSpec20(unsigned channel, ChannelBand band) {
     return validChannel(channel, band) ? uint16_t(channel | 0x1000 | uint16_t(band)) : 0;
 }
 
+// D11AC chanspec: center channel, primary 20 MHz sideband, bandwidth, band.
+inline uint16_t channelSpec(unsigned primary, unsigned center, unsigned width,
+                            ChannelBand band) {
+    if (width == 20)
+        return channelSpec20(primary, band);
+    if (!validChannel(primary, band) || center == 0 || center > 255 ||
+        (width != 40 && width != 80 && width != 160))
+        return 0;
+    int sideband = int(primary) - int(center) + int(width / 10) - 2;
+    if (sideband < 0 || sideband % 4 || unsigned(sideband / 4) >= width / 20)
+        return 0;
+    uint16_t bw = width == 40 ? 0x1800 : width == 80 ? 0x2000 : 0x2800;
+    return uint16_t(center | (unsigned(sideband / 4) << 8) | bw | uint16_t(band));
+}
+
 inline bool decodeChannelSpec20(uint16_t spec, unsigned &channel, ChannelBand &band) {
     uint16_t bandBits = spec & 0xc000;
     band = bandBits == 0xc000 ? ChannelBand::GHz5 :

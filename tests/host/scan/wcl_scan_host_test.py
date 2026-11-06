@@ -68,11 +68,14 @@ constexpr unsigned WCL_SCAN_TIMEOUT_MS=20000;
 #define isset(a,i) ((a)[(i)/8]&(1U<<((i)%8)))
 #define setbit(a,i) ((a)[(i)/8]|=uint8_t(1U<<((i)%8)))
 #define IEEE80211_IS_CHAN_6GHZ(c) ((c)->six)
+#define IEEE80211_IS_CHAN_5GHZ(c) (!(c)->six && (c)->number>14)
+#define IEEE80211_CHAN_ANYC reinterpret_cast<ieee80211_channel*>(-1)
+enum {IEEE80211_CHAN_WIDTH_20_NOHT, IEEE80211_CHAN_WIDTH_20, IEEE80211_CHAN_WIDTH_40, IEEE80211_CHAN_WIDTH_80, IEEE80211_CHAN_WIDTH_160};
 #define IEEE80211_ADDR_EQ(a,b) (memcmp(a,b,6)==0)
 #define bzero(a,n) memset(a,0,n)
 struct _ifnet{unsigned if_flags=IFF_RUNNING|IFF_UP;};
-struct ieee80211_channel{unsigned ic_freq=0,number=0;bool six=false;};
-struct ieee80211_node{int ni_rssi=60;unsigned ni_intval=100;bool ni_port_valid=true;};
+struct ieee80211_channel{unsigned ic_freq=0,number=0;bool six=false;unsigned ic_center_freq1=0;};
+struct ieee80211_node{int ni_rssi=60;unsigned ni_intval=100;bool ni_port_valid=true;ieee80211_channel*ni_chan=nullptr;unsigned ni_chw=IEEE80211_CHAN_WIDTH_20,ni_eht_center_freq1=0;};
 struct ieee80211com{
  _ifnet ic_if;unsigned ic_state=IEEE80211_S_RUN,ic_flags=0;int ic_mgt_timer=0;
  ieee80211_channel ic_channels[256]{};
@@ -162,6 +165,8 @@ start = iwx.index('\n', iwx.index('{', start)) + 1
 end = iwx.index('    if (iwx_lookup_cmd_ver', start)
 code = code.replace('SCAN_ENTRY', iwx[start:end])
 code += function(net, 'void\nieee80211_begin_cache_bgscan(')
+code += function(wcl, 'static AirportWCL::ChannelBand wclChannelBand(')
+code += function(wcl, 'static uint16_t wclCurrentChannelSpec(')
 for name in ['startWCLScan', 'finishWCLScan', 'keepWCLScanResult', 'clearWCLScanResults', 'completeWCLScan', 'postWCLScanResult']:
     return_type = 'IOReturn' if name == 'startWCLScan' else 'void'
     code += function(wcl, return_type+' AirportItlwmSkywalkInterface::'+name+'(')
