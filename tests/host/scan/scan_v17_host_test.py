@@ -142,13 +142,18 @@ int main(){
     assert(cached.sc_ic.ic_wcl_scan_rnr_short_ssid[0]==0x12345678);
     ItlIwx known;
     while(cached.sc_scan_next_channel<=IEEE80211_CHAN_MAX)assert(known.iwx_umac_scan_v17(&cached,1)==0);
-    assert(known.requests.size()==2&&known.requests.back().scan_params.channel_params.count==59);
-    auto&target=known.requests.back().scan_params.channel_params.channel_config[12];
-    assert(target.channel_num==49&&(target.flags&0x10001)==0x10001);
+    assert(known.requests.size()==2&&known.requests.back().scan_params.channel_params.count==16);
+    unsigned targets=0;
+    for(unsigned i=0;i<known.requests.back().scan_params.channel_params.count;i++) {
+        auto&target=known.requests.back().scan_params.channel_params.channel_config[i];
+        assert(AirportWCL::is6GHzPsc(target.channel_num)||target.channel_num==49);
+        if(target.channel_num==49){assert((target.flags&0x10001)==0x10001);targets++;}
+    }
+    assert(targets==1);
     clock_ms=90001;ieee80211_seed_scan_rnr(&cached.sc_ic);assert(cached.sc_ic.ic_wcl_scan_rnr_count==0);
     clock_ms=60000;recent.ni_rsnie_tlv_len=ies.size()-1;
     ieee80211_seed_scan_rnr(&cached.sc_ic);assert(cached.sc_ic.ic_wcl_scan_rnr_count==0);
-    puts("PASS RNR cache: recent lower-band BSS hints seed a 6 GHz-only phase; stale and truncated cache entries are excluded");
+    puts("PASS RNR cache: recent lower-band hints add only their non-PSC channels to active discovery; stale and truncated entries excluded");
     puts("PASS scan v17: passive full 6 GHz coverage, hardware channel capacity, two band phases, unchanged dwell/home timing and active PSC discovery");
 }
 """.replace('TYPES','\n'.join(parts)).replace('CONSTANTS',constants).replace('RNR_FUNCTIONS',rnr_functions).replace('FUNCTION',function)

@@ -243,7 +243,7 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
         }
         const bool rnrTarget = rnrBssidBitmap != 0;
         /* Match Linux's no-SSID passive scan and cached-RNR channel policy. */
-        const bool trimToPsc = scanActive && !rnrProbeCount && !directedJoin;
+        const bool trimToPsc = scanActive && !directedJoin;
         if (is6GHz && !AirportWCL::is6GHzPsc(channelNumber) && !rnrTarget &&
             trimToPsc)
             continue;
