@@ -53,7 +53,7 @@ int main(){
  AirportItlwmSkywalkInterface timeout;timeout.finishWCLJoin(1,1004,2);timeout.resumeWCLJoin();assert(timeout.joins==0&&!timeout.joinDeferred);
 }
 """.replace('STOPPED',stopped).replace('FUNCTIONS',function('resumeWCLJoin')+'\n'+function('finishWCLJoin'))
-with tempfile.TemporaryDirectory(prefix='itlwm-boot-join-', ignore_cleanup_errors=os.name == 'nt') as folder:
+with tempfile.TemporaryDirectory(prefix='itlwm-boot-join-', **({'ignore_cleanup_errors': True} if os.name == 'nt' else {})) as folder:
  out=Path(folder);(out/'test.cpp').write_text(code,encoding='utf-8')
  if os.name=='nt':
   vswhere=Path(os.environ['ProgramFiles(x86)'])/'Microsoft Visual Studio/Installer/vswhere.exe'

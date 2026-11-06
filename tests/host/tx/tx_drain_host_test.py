@@ -55,7 +55,7 @@ int main(){
  sc.sc_mld_sta_mask=0;sc.txq[2].tail=4;sc.txq[2].queued=3;assert(drain(&sc,&gate)==EWOULDBLOCK);
 }
 """.replace('MACRO',macro).replace('GUARD',guard).replace('@@WAIT@@',wait)
-with tempfile.TemporaryDirectory(prefix='itlwm-tx-drain-', ignore_cleanup_errors=os.name == 'nt') as folder:
+with tempfile.TemporaryDirectory(prefix='itlwm-tx-drain-', **({'ignore_cleanup_errors': True} if os.name == 'nt' else {})) as folder:
  out=Path(folder);(out/'test.cpp').write_text(code,encoding='utf-8')
  if os.name=='nt':
   vswhere=Path(os.environ['ProgramFiles(x86)'])/'Microsoft Visual Studio/Installer/vswhere.exe'
