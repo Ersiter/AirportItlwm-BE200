@@ -1447,6 +1447,9 @@ ieee80211_add_he_6ghz_capa(uint8_t *frm, const struct ieee80211com *ic)
 
     capa |= exponent << 3;
     capa |= (ic->ic_vhtcaps & IEEE80211_VHTCAP_MAX_MPDU_MASK) << 6;
+    /* Match the SMPS mode advertised in HT; zero means static SMPS. */
+    capa |= ((ic->ic_htcaps & IEEE80211_HTCAP_SMPS_MASK) >>
+        IEEE80211_HTCAP_SMPS_SHIFT) << IEEE80211_HE_6GHZ_CAP_SM_PS_SHIFT;
     if (ic->ic_vhtcaps & IEEE80211_VHTCAP_TX_ANTENNA_PATTERN)
         capa |= IEEE80211_HE_6GHZ_CAP_TX_ANTPAT_CONS;
     if (ic->ic_vhtcaps & IEEE80211_VHTCAP_RX_ANTENNA_PATTERN)
