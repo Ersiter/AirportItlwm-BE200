@@ -1571,7 +1571,9 @@ void AirportItlwmSkywalkInterface::handleWCLEvent(int code, void *data)
             if (!ready) {
                 purgeWCLUserEapol();
                 finishWCLScan(ic->ic_wcl_mac_reconfig ? kIOReturnAborted : kIOReturnOffline);
-                finishWCLJoin(1, 0, kIOReturnOffline);
+                // Accepted deferred joins wait for READY during firmware startup.
+                if (!joinDeferred || !(ic->ic_if.if_flags & IFF_UP))
+                    finishWCLJoin(1, 0, kIOReturnOffline);
                 portAuthorized = false;
                 updateWCLLinkQuality(true);
                 ic->ic_wcl_join_requested = false;
