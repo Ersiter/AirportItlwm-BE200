@@ -7071,7 +7071,6 @@ iwx_clear_oactive(struct iwx_softc *sc, struct iwx_tx_ring *ring)
 void ItlIwx::
 iwx_rx_tx_ba_notif(struct iwx_softc *sc, struct iwx_rx_packet *pkt, struct iwx_rx_data *data)
 {
-    struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_compressed_ba_notif *ba_res = (struct iwx_compressed_ba_notif *)pkt->data;
     uint16_t qid;
     int i;
@@ -7083,7 +7082,7 @@ iwx_rx_tx_ba_notif(struct iwx_softc *sc, struct iwx_rx_packet *pkt, struct iwx_r
         return;
     if (ba_res->sta_id >= 32 ||
         (sc->sc_use_mld_api ?
-            !(sc->sc_mld_active_sta_mask & (1U << ba_res->sta_id)) :
+            !(sc->sc_mld_sta_mask & (1U << ba_res->sta_id)) :
             ba_res->sta_id != IWX_STATION_ID))
         return;
     sc->sc_tx_timer = 0;
@@ -7097,9 +7096,6 @@ iwx_rx_tx_ba_notif(struct iwx_softc *sc, struct iwx_rx_packet *pkt, struct iwx_r
               ba_res->query_frame_cnt,
               ba_res->retry_cnt));
     }
-
-    if (ic->ic_state != IEEE80211_S_RUN)
-        return;
 
     if (!le16toh(ba_res->tfd_cnt))
         return;

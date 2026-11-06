@@ -1318,20 +1318,14 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
             AbsoluteTime deadline;
             clock_interval_to_deadline(IWX_FLUSH_WAIT_MS, kMillisecondScale,
                 reinterpret_cast<uint64_t *>(&deadline));
-            /*
-             * Compare the ring's read and write pointers, as
-             * iwl_trans_pcie_wait_txq_empty() compares read_ptr and write_ptr.
-             * The read pointer only moves in iwx_ampdu_txq_advance(), driven by
-             * block-ack notifications and by read_after_flush from the
-             * TXPATH_FLUSH response, so it carries the firmware's own view of
-             * what has been retired rather than a driver-side count.
-             */
-            while (ring->tail != ring->cur) {
+            /* Logical write pointers map to the descriptor window, as in reclaim. */
+            while (ring->tail != IWX_AGG_SSN_TO_TXQ_IDX(ring->cur, ring->ring_count)) {
                 int result = getMainCommandGate()->commandSleep(
                     &ring->queued, deadline, THREAD_UNINT);
                 if (generation != sc->sc_generation)
                     return ENXIO;
-                if (result != THREAD_AWAKENED && ring->tail != ring->cur)
+                if (result != THREAD_AWAKENED &&
+                    ring->tail != IWX_AGG_SSN_TO_TXQ_IDX(ring->cur, ring->ring_count))
                     return result == THREAD_TIMED_OUT ? EWOULDBLOCK : EINTR;
             }
             return 0;

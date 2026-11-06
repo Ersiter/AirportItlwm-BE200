@@ -568,7 +568,7 @@ using u8=uint8_t;using __le16=uint16_t;using __le32=uint32_t;
 TYPES
 struct ieee80211com{unsigned ic_state=IEEE80211_S_RUN;};
 struct iwx_tx_ring{unsigned ring_count=256;};
-struct iwx_softc{ieee80211com sc_ic;bool sc_use_mld_api=false;uint32_t sc_mld_active_sta_mask=0;unsigned sc_tx_timer=5;iwx_tx_ring txq[8];};
+struct iwx_softc{ieee80211com sc_ic;bool sc_use_mld_api=false;uint32_t sc_mld_sta_mask=0;unsigned sc_tx_timer=5;iwx_tx_ring txq[8];};
 struct iwx_rx_data{};
 struct iwx_rx_packet{size_t length=0;alignas(8) uint8_t data[256]{};};
 static size_t iwx_rx_packet_payload_len(iwx_rx_packet*p){return p->length;}
@@ -585,13 +585,13 @@ int main(){
     packet.length=sizeof(*ba)+sizeof(ba->tfd[0]);ba->tfd_cnt=1;ba->tfd[0].q_num=2;ba->tfd[0].tfd_index=7;
     driver.iwx_rx_tx_ba_notif(&sc,&packet,nullptr);assert(driver.completed==std::vector<unsigned>{519});
     ba->sta_id=7;driver.iwx_rx_tx_ba_notif(&sc,&packet,nullptr);assert(driver.completed.size()==1);
-    sc.sc_use_mld_api=true;sc.sc_mld_active_sta_mask=(1U<<7)|1;
+    sc.sc_use_mld_api=true;sc.sc_mld_sta_mask=(1U<<7)|1;
     driver.iwx_rx_tx_ba_notif(&sc,&packet,nullptr);assert(driver.completed.size()==2);
     for(unsigned sta:{8,31,32,255}){ba->sta_id=sta;driver.iwx_rx_tx_ba_notif(&sc,&packet,nullptr);assert(driver.completed.size()==2);}
     ba->sta_id=7;--packet.length;driver.iwx_rx_tx_ba_notif(&sc,&packet,nullptr);assert(driver.completed.size()==2);
     ++packet.length;ba->tfd[0].q_num=8;driver.iwx_rx_tx_ba_notif(&sc,&packet,nullptr);assert(driver.completed.size()==2);
-    ba->tfd[0].q_num=2;sc.sc_ic.ic_state=IEEE80211_S_SCAN;driver.iwx_rx_tx_ba_notif(&sc,&packet,nullptr);assert(driver.completed.size()==2);
-    puts("PASS TX completion: primary and active secondary stations reclaim queues; inactive station, malformed payload and queue bounds rejected");
+    ba->tfd[0].q_num=2;sc.sc_ic.ic_state=IEEE80211_S_SCAN;driver.iwx_rx_tx_ba_notif(&sc,&packet,nullptr);assert(driver.completed.size()==3);
+    puts("PASS TX completion: configured stations reclaim in RUN and SCAN; unknown station, malformed payload and queue bounds rejected");
 }
 """.replace('TYPES',tx_types).replace('FUNCTION',tx_function)
 tx_enum=block(registers,'enum iwx_ba_resp_flags {',True)
