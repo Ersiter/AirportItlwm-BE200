@@ -1637,7 +1637,21 @@ iwx_mld_run(struct iwx_softc *sc)
     }
     in->in_ni.ni_txrate = 0;
     in->in_ni.ni_txmcs = 0;
-    return iwx_rs_init(sc, in, true);
+    err = iwx_rs_init(sc, in, true);
+    if (err)
+        return err;
+    /* Prepare data TIDs before RUN; TX must not wait for BA to get a queue. */
+    const int tid_count = (in->in_ni.ni_flags & IEEE80211_NODE_QOS) ?
+        IWX_MAX_TID_COUNT : 1;
+    for (int tid = 0; tid < tid_count; tid++) {
+        int qid = iwx_tvqm_alloc_txq(sc, tid, 0);
+        if (qid < 0) {
+            iwx_mld_record_state_failure(sc, "run", "data-tx-queue", -qid,
+                IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_MLD_SCD_QUEUE_CONFIG_CMD), tid);
+            return -qid;
+        }
+    }
+    return 0;
 }
 
 int ItlIwx::

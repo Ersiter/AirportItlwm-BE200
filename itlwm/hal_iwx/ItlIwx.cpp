@@ -225,7 +225,7 @@ static void
 iwx_record_diagnostic(struct iwx_softc *sc, const char *event,
     const char *function, int line, int error, uint32_t command,
     int old_state = -1, int next_state = -1,
-    const struct iwx_rx_packet *response = nullptr)
+    const struct iwx_rx_packet *response = nullptr, uint32_t raw_status = 0)
 {
     uint32_t sequence = __sync_add_and_fetch(&sc->sc_diagnostic_sequence, 1);
     struct iwx_diagnostic *record = &sc->sc_diagnostics[(sequence - 1) % 32];
@@ -244,7 +244,7 @@ iwx_record_diagnostic(struct iwx_softc *sc, const char *event,
     record->mac_reconfig = sc->sc_ic.ic_wcl_mac_reconfig;
     record->response_length = response ? iwx_rx_packet_payload_len(response) : 0;
     record->response_flags = response ? response->hdr.group_id : 0;
-    record->raw_status = 0;
+    record->raw_status = raw_status;
     record->tx_protected = -1;
     record->response_word0 = record->response_word1 = 0;
     if (record->response_length >= sizeof(uint32_t))
@@ -252,6 +252,28 @@ iwx_record_diagnostic(struct iwx_softc *sc, const char *event,
     if (record->response_length >= 2 * sizeof(uint32_t))
         memcpy(&record->response_word1, response->data + sizeof(uint32_t), sizeof(uint32_t));
     __atomic_store_n(&record->sequence, sequence, __ATOMIC_RELEASE);
+}
+
+static bool
+iwx_is_dhcp_tx_payload(mbuf_t m)
+{
+    uint8_t bytes[76]; // SNAP + maximum IPv4 header + UDP header.
+    const size_t length = m ? mbuf_pkthdr_len(m) : 0;
+    if (length < 36 || mbuf_copydata(m, 0, MIN(length, sizeof(bytes)), bytes))
+        return false;
+    static const uint8_t snap[] = { 0xaa, 0xaa, 0x03, 0, 0, 0, 0x08, 0 };
+    if (memcmp(bytes, snap, sizeof(snap)) || (bytes[8] >> 4) != 4 || bytes[17] != 17)
+        return false;
+    const size_t ip_header = (bytes[8] & 15) * 4;
+    const size_t ip_length = (bytes[10] << 8) | bytes[11];
+    if (ip_header < 20 || length < 8 + ip_header + 8 ||
+        ip_length < ip_header + 8 || ip_length > length - 8 ||
+        (bytes[14] & 0x3f) || bytes[15])
+        return false;
+    const uint8_t *udp = bytes + 8 + ip_header;
+    const size_t udp_length = (udp[4] << 8) | udp[5];
+    return udp[0] == 0 && udp[1] == 68 && udp[2] == 0 && udp[3] == 67 &&
+        udp_length >= 8 && udp_length <= ip_length - ip_header;
 }
 
 struct iwx_eapol_tx_info {
@@ -5468,7 +5490,9 @@ iwx_ba_task(void *arg)
                 goto out;
             }
             ring = &sc->txq[qid];
-            ba->ba_winstart = IWX_AGG_SSN_TO_TXQ_IDX(ring->cur, ring->ring_count);
+            /* MLD reuses a data queue; keep the negotiated per-TID SSN. */
+            if (!sc->sc_use_mld_api)
+                ba->ba_winstart = IWX_AGG_SSN_TO_TXQ_IDX(ring->cur, ring->ring_count);
             ba->ba_winend = (ba->ba_winstart + ba->ba_winsize - 1) & 0xfff;
             ba->ba_timeout_val = 0;
             ieee80211_addba_resp_accept(ic, ni, tid);
@@ -7127,6 +7151,11 @@ iwx_ampdu_txq_advance(struct iwx_softc *sc, struct iwx_tx_ring *ring, int idx)
     while (ring->tail != idx) {
         txd = &ring->data[ring->tail];
         if (txd->m != NULL) {
+#ifdef AIRPORT_WCL
+            if (iwx_is_dhcp_tx_payload(txd->m))
+                iwx_record_diagnostic(sc, "dhcp-tx-reclaimed", __FUNCTION__, __LINE__,
+                    0, (uint32_t(ring->qid) << 16) | uint32_t(ring->tail));
+#endif
             iwx_txd_done(sc, txd);
             iwx_clear_tx_desc(sc, ring, ring->tail);
             ring->queued--;
@@ -7208,6 +7237,12 @@ iwx_rx_tx_cmd(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
 #ifdef AIRPORT_WCL
         struct iwx_eapol_tx_info eapolInfo;
         const int txIndex = (int)(txd - ring->data);
+        if (iwx_is_dhcp_tx_payload(txd->m)) {
+            const uint16_t status = le16toh(tx_resp->status.status);
+            iwx_record_diagnostic(sc, "dhcp-tx-complete", __FUNCTION__, __LINE__,
+                iwx_tx_status_is_acked(status) ? 0 : EIO,
+                (uint32_t(qid) << 16) | uint32_t(txIndex), -1, -1, pkt, status);
+        }
         if (txd->in && iwx_eapol_tx_payload_info(txd->m,
             txd->in->in_ni.ni_bssid, sc->sc_ic.ic_myaddr, &eapolInfo)) {
             const uint16_t rawStatus = le16toh(tx_resp->status.status);
@@ -8196,11 +8231,21 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     tid = IWX_MGMT_TID;
     qid = sc->first_data_qid;
 
-    /* Put QoS frames on the data queue which maps to their TID. */
-    if (ieee80211_has_qos(wh)) {
+    /* iwl_mvm_tx_mpdu selects data TIDs independently of BA state. */
+    if (sc->sc_use_mld_api && type == IEEE80211_FC0_TYPE_DATA &&
+        !(subtype & IEEE80211_FC0_SUBTYPE_NODATA)) {
+        tid = ieee80211_has_qos(wh) ?
+            ieee80211_get_qos(wh) & IEEE80211_QOS_TID : 0;
+        if (tid >= IWX_MAX_TID_COUNT ||
+            sc->sc_tid_data[tid].qid == IWX_INVALID_QUEUE) {
+            mbuf_freem(m);
+            return ENXIO;
+        }
+        qid = sc->sc_tid_data[tid].qid;
+    } else if (!sc->sc_use_mld_api && ieee80211_has_qos(wh)) {
         struct ieee80211_tx_ba *ba;
         uint16_t qos = ieee80211_get_qos(wh);
-        uint8_t tid = qos & IEEE80211_QOS_TID;
+        tid = qos & IEEE80211_QOS_TID;
 
         ba = &ni->ni_tx_ba[tid];
         if (!IEEE80211_IS_MULTICAST(wh->i_addr1) &&
@@ -8382,6 +8427,11 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     }
     
 #ifdef AIRPORT_WCL
+    if (type == IEEE80211_FC0_TYPE_DATA && iwx_is_dhcp_tx_payload(m)) {
+        iwx_record_diagnostic(sc, "dhcp-tx-submitted", __FUNCTION__, __LINE__, 0,
+            (uint32_t(qid) << 16) | uint32_t(idx));
+        iwx_publish_diagnostics(sc);
+    }
     if (type == IEEE80211_FC0_TYPE_DATA && !(subtype & IEEE80211_FC0_SUBTYPE_NODATA))
         ++ic->ic_wcl_tx_packets[trafficAC];
 #endif
@@ -13578,7 +13628,8 @@ _iwx_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3
         if (txError != 0) {
 #ifdef AIRPORT_WCL
             if (isEapol) {
-                const uint32_t qid = sc->first_data_qid;
+                const uint32_t qid = sc->sc_use_mld_api ?
+                    sc->sc_tid_data[0].qid : sc->first_data_qid;
                 const uint32_t index = qid < nitems(sc->txq) ?
                     sc->txq[qid].cur : UINT32_MAX;
                 iwx_record_eapol_tx(sc, "dma-submit-failed", txError, qid,
@@ -13591,7 +13642,8 @@ _iwx_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3
         }
 #ifdef AIRPORT_WCL
         if (isEapol) {
-            const uint32_t qid = sc->first_data_qid;
+            const uint32_t qid = sc->sc_use_mld_api ?
+                    sc->sc_tid_data[0].qid : sc->first_data_qid;
             const uint32_t index = qid < nitems(sc->txq) ?
                 (sc->txq[qid].cur + sc->txq[qid].ring_count - 1) %
                     sc->txq[qid].ring_count : UINT32_MAX;
