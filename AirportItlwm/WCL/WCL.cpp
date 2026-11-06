@@ -525,6 +525,27 @@ IOReturn AirportItlwmSkywalkInterface::wclCommand(OSObject *, void *a0, void *a1
             if (!a2 || !self->wclBssValid)
                 return kIOReturnNotReady;
             memcpy(a2, self->wclBssInfo, sizeof(self->wclBssInfo));
+            /* WCL derives active PHY from this descriptor's EHT IEs. */
+            if (self->fHalService->get80211Controller()->ic_bss &&
+                !(self->fHalService->get80211Controller()->ic_bss->ni_flags &
+                    IEEE80211_NODE_EHT)) {
+                auto bss = static_cast<AirportWCL::BeaconMetadata *>(a2);
+                auto ies = reinterpret_cast<uint8_t *>(bss + 1);
+                size_t written = 0;
+                for (size_t offset = 0; offset < bss->ieLength;) {
+                    size_t size = 2 + ies[offset + 1];
+                    bool eht = ies[offset] == IEEE80211_ELEMID_EXTENSION &&
+                        size >= 3 && (ies[offset + 2] == IEEE80211_ELEMID_EXT_EHT_CAPABILITY ||
+                            ies[offset + 2] == IEEE80211_ELEMID_EXT_EHT_OPERATION);
+                    if (!eht) {
+                        memmove(ies + written, ies + offset, size);
+                        written += size;
+                    }
+                    offset += size;
+                }
+                bzero(ies + written, bss->ieLength - written);
+                bss->ieLength = uint32_t(written);
+            }
             return kIOReturnSuccess;
         case 4:
             self->finishWCLScan(kIOReturnAborted);
