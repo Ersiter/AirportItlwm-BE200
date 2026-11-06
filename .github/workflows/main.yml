@@ -76,6 +76,7 @@ jobs:
           python3 tests/host/scan/beacon_edca_host_test.py
           python3 tests/host/scan/scan_v17_host_test.py
           python3 tests/host/scan/wcl_scan_host_test.py
+          python3 tests/host/tx/rx_trailer_host_test.py
           python3 tests/host/tx/data_tid_host_test.py
           python3 tests/host/tx/tx_drain_host_test.py
           python3 tests/host/tx/tx_recovery_host_test.py

@@ -6463,8 +6463,10 @@ iwx_detect_duplicate(struct iwx_softc *sc, mbuf_t m,
     seq = letoh16(*(u_int16_t *)wh->i_seq) >> IEEE80211_SEQ_SEQ_SHIFT;
     if ((wh->i_fc[1] & IEEE80211_FC1_RETRY) &&
         dup_data->last_seq[tid] == seq &&
-        dup_data->last_sub_frame[tid] >= subframe_idx)
+        dup_data->last_sub_frame[tid] >= subframe_idx) {
+        ic->ic_stats.is_rx_dup++;
         return 1;
+    }
 
     /*
      * Allow the same frame sequence number for all A-MSDU subframes
@@ -6836,6 +6838,7 @@ iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
     if (!(desc->status & htole16(IWX_RX_MPDU_RES_STATUS_CRC_OK)) ||
         !(desc->status & htole16(IWX_RX_MPDU_RES_STATUS_OVERRUN_OK))) {
         mbuf_freem(m);
+        IC2IFP(ic)->netStat->inputErrors++;
         return; /* drop */
     }
     
@@ -6866,6 +6869,20 @@ iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
     mbuf_pkthdr_setlen(m, len);
     mbuf_setlen(m, len);
     
+    /* Match iwl_mvm_create_skb: remove the trailer retained by RADA. */
+    if (ic->ic_opmode != IEEE80211_M_MONITOR) {
+        const unsigned trailer =
+            (desc->mac_flags1 & IWX_RX_MPDU_MFLG1_MIC_CRC_LEN_MASK) >>
+                IWX_RX_MPDU_MFLG1_MIC_CRC_LEN_SHIFT;
+        if (len < ieee80211_get_hdrlen(mtod(m, struct ieee80211_frame *)) + trailer) {
+            IC2IFP(ic)->netStat->inputErrors++;
+            mbuf_freem(m);
+            return;
+        }
+        mbuf_adj(m, -int(trailer));
+        len -= trailer;
+    }
+
     /* Account for padding following the frame header. */
     if (desc->mac_flags2 & IWX_RX_MPDU_MFLG2_PAD) {
         struct ieee80211_frame *wh = mtod(m, struct ieee80211_frame *);
@@ -13809,6 +13826,21 @@ iwx_watchdog(struct _ifnet *ifp)
     ItlIwx *that = container_of(sc, ItlIwx, com);
     
     ifp->if_timer = 0;
+#ifdef AIRPORT_WCL
+    const struct ieee80211com *ic = &sc->sc_ic;
+    const struct ieee80211_stats *stats = &ic->ic_stats;
+    char rxstats[384];
+    snprintf(rxstats, sizeof(rxstats),
+        "gen=%d state=%d node_width=%u rx=%llu errors=%llu ccmp_dec=%u ccmp_replay=%u dup=%u badchan=%u reorder_old=%u reorder_nobuf=%u unencrypted=%u nowep=%u",
+        sc->sc_generation, ic->ic_state, unsigned(ic->ic_bss->ni_chw),
+        (unsigned long long)(ic->ic_wcl_rx_packets[0] + ic->ic_wcl_rx_packets[1] +
+            ic->ic_wcl_rx_packets[2] + ic->ic_wcl_rx_packets[3]),
+        (unsigned long long)ifp->netStat->inputErrors,
+        stats->is_ccmp_dec_errs, stats->is_ccmp_replays, stats->is_rx_dup,
+        stats->is_rx_badchan, stats->is_ht_rx_frame_below_ba_winstart,
+        stats->is_ht_rx_ba_no_buf, stats->is_rx_unencrypted, stats->is_rx_nowep);
+    sc->sc_pcitag->setProperty("AirportItlwm-RxStats", rxstats);
+#endif
     if (sc->sc_tx_timer > 0) {
         if (--sc->sc_tx_timer == 0) {
             XYLog("%s: device timeout\n", DEVNAME(sc));
