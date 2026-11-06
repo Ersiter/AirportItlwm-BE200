@@ -2689,7 +2689,9 @@ ieee80211_recv_probe_resp_bss(struct ieee80211com *ic, mbuf_t m,
      * We do not try to update EDCA parameters if QoS was not negotiated
      * with the AP at association time.
      */
-    if (ni->ni_flags & IEEE80211_NODE_QOS) {
+    if (ic->ic_state == IEEE80211_S_RUN &&
+        IEEE80211_ADDR_EQ(ni->ni_macaddr, ic->ic_bss->ni_bssid) &&
+        (ic->ic_bss->ni_flags & IEEE80211_NODE_QOS)) {
         /* always prefer EDCA IE over Wi-Fi Alliance WMM IE */
         if ((edcaie != NULL &&
              ieee80211_parse_edca_params(ic, edcaie) == 0) ||

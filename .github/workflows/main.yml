@@ -72,6 +72,7 @@ jobs:
         run: python3 tests/host/scan/scan_host_test.py
       - name: Check scan lifecycle and TX/RX recovery
         run: |
+          python3 tests/host/scan/beacon_edca_host_test.py
           python3 tests/host/scan/scan_v17_host_test.py
           python3 tests/host/scan/wcl_scan_host_test.py
           python3 tests/host/tx/tx_recovery_host_test.py

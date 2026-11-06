@@ -115,7 +115,7 @@ types += '\n'+block(mld_header,'struct iwx_mld_link_config_cmd {',True)
 # Extract the production state transitions in their connection order.
 start=rx.index('        int preserve_rsnxe;')+len('        int preserve_rsnxe;')
 scan_qos=rx[start:rx.index('#ifdef AIRPORT_WCL',start)]
-beacon_qos=block(rx,'    if (ni->ni_flags & IEEE80211_NODE_QOS)')
+beacon_qos=block(rx,'    if (ic->ic_state == IEEE80211_S_RUN &&\n        IEEE80211_ADDR_EQ(ni->ni_macaddr, ic->ic_bss->ni_bssid) &&')
 assoc_qos=block(rx,'    if (edcaie != NULL || wmmie != NULL ||')
 auth_qos=[]
 for source,name in [(driver,'iwx_auth'),(mld,'iwx_mld_auth')]:
@@ -153,6 +153,7 @@ struct ieee80211_node {
     size_t ni_eht_mcs_nss_len=0,ni_eht_ppe_len=0;
     uint16_t ni_htop1=0,ni_intval=100,ni_dtimperiod=1;
     uint8_t ni_mbssid_index=0,ni_mbssid_transmitted[6]{},ni_mld_link_id=0;
+    uint8_t ni_macaddr[6]{},ni_bssid[6]{};
     bool ni_mld_valid=false;
 };
 struct ieee80211_edca_ac_params {int ac_ecwmin=4,ac_ecwmax=10,ac_aifsn=3,ac_txoplimit=0;};
@@ -205,8 +206,9 @@ CONTEXT_UPDATE
     }
 };
 static ieee80211_edca_ac_params ieee80211_edca_table[IEEE80211_MODE_MAX][4];
-static int ieee80211_parse_edca_params(ieee80211com*,const uint8_t*ie){return ie[0];}
-static int ieee80211_parse_wmm_params(ieee80211com*,const uint8_t*ie){return ie[0];}
+static unsigned edca_parses=0;
+static int ieee80211_parse_edca_params(ieee80211com*,const uint8_t*ie){++edca_parses;return ie[0];}
+static int ieee80211_parse_wmm_params(ieee80211com*,const uint8_t*ie){++edca_parses;return ie[0];}
 static void scan_qos(ieee80211com*ic,ieee80211_node*ni,const uint8_t*edcaie,const uint8_t*wmmie){SCAN_QOS}
 static void auth_qos(iwx_node*in){AUTH_QOS}
 static void mld_auth_qos(iwx_node*in){MLD_AUTH_QOS}
@@ -413,6 +415,14 @@ int main(){
     assert(primary_rates.ht_rates[0][0]==0xfff&&primary_rates.ht_rates[1][1]==0xfff);
     assert(secondary_rates.ht_rates[0][0]==0xff&&secondary_rates.ht_rates[1][0]==0&&secondary_rates.ht_rates[0][1]==0);
 
+    ic.ic_state=IEEE80211_S_RUN;ni.ni_flags|=IEEE80211_NODE_QOS;
+    ieee80211_node cached=ni;cached.ni_macaddr[0]=1;
+    unsigned prior=edca_parses;
+    beacon_qos(&ic,&cached,nullptr,valid_wmm);assert(edca_parses==prior);
+    cached.ni_macaddr[0]=0;
+    beacon_qos(&ic,&cached,nullptr,valid_wmm);assert(edca_parses==prior+1);
+    ic.ic_state=IEEE80211_S_SCAN;
+    beacon_qos(&ic,&cached,nullptr,valid_wmm);assert(edca_parses==prior+1);
     puts("PASS QoS state: scan WMM, legacy/MLD authentication, association request, default OFDM EDCA and firmware TGN flags");
     puts("PASS HE/EHT state: 6 GHz 20/40/80/160 MHz, regulatory narrowing, MBSSID LINK reference, retained live 320 MHz EHT operation and puncturing");
 }
