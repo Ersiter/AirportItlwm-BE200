@@ -226,4 +226,14 @@ extern	void ieee80211_output_ba_move_window_to_first_unacked(
 extern	void ieee80211_output_ba_record_ack(struct ieee80211com *,
 	    struct ieee80211_node *, uint8_t, uint16_t);
 
+
+#ifdef AIRPORT_WCL
+void ieee80211_ttlm_reset(struct ieee80211com *);
+void ieee80211_ttlm_receive(struct ieee80211com *, struct ieee80211_node *, const uint8_t *, size_t, int);
+void ieee80211_ttlm_action(struct ieee80211com *, struct ieee80211_node *, const uint8_t *, size_t);
+void ieee80211_ttlm_task(struct ieee80211com *);
+uint8_t ieee80211_ttlm_allowed_links(struct ieee80211com *);
+int ieee80211_ttlm_request(struct ieee80211com *, uint16_t);
+#endif
+
 #endif /* _NET80211_IEEE80211_PROTO_H_ */

@@ -588,6 +588,12 @@ iwx_mld_active_link_task(void *arg)
             }, arg);
         return;
     }
+#ifdef AIRPORT_WCL
+    const int ttlm_generation = sc->sc_generation;
+    ieee80211_ttlm_task(&sc->sc_ic);
+    if (ttlm_generation != sc->sc_generation)
+        return;
+#endif
     int s = splnet();
     pending = sc->sc_mld_link_update_pending;
     links = sc->sc_mld_pending_links;
@@ -607,6 +613,15 @@ iwx_mld_active_link_task(void *arg)
         return;
     }
 
+#ifdef AIRPORT_WCL
+    uint8_t allowed = ieee80211_ttlm_allowed_links(&sc->sc_ic);
+    links &= allowed;
+    if (!links && allowed)
+        links = allowed & -allowed;
+    if (links && !(links & (1U << primary_link)))
+        primary_link = __builtin_ctz((unsigned)links);
+    emlsr_active = emlsr_active && __builtin_popcount((unsigned)links) == 2;
+#endif
     err = that->iwx_mld_update_active_links(sc, links, primary_link,
         emlsr_active);
     if (err && err != ENXIO) {
@@ -1651,6 +1666,10 @@ iwx_mld_run(struct iwx_softc *sc)
             return -qid;
         }
     }
+#ifdef AIRPORT_WCL
+    if (ic->ic_ttlm_schedule)
+        ic->ic_ttlm_schedule(ic);
+#endif
     return 0;
 }
 

@@ -2864,6 +2864,8 @@ ieee80211_recv_probe_resp_bss(struct ieee80211com *ic, mbuf_t m,
     /* NB: must be after ni_chan is setup */
     ieee80211_setup_rates(ic, ni, rates, xrates, IEEE80211_F_DOSORT);
 #ifdef AIRPORT_WCL
+    if (!isprobe)
+        ieee80211_ttlm_receive(ic, ni, tstamp + 12, frm - (tstamp + 12), 0);
     if (ic->ic_event_handler) {
         /*
          * The bytes after the element chain (FCS, MIC, padding) are
@@ -3596,6 +3598,7 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
         }
         frm += 2 + frm[1];
     }
+    const uint8_t *assoc_ie_end = frm;
     /* supported rates element is mandatory */
     if (rates == NULL || rates[1] > IEEE80211_RATE_MAXSIZE) {
         DPRINTF(("invalid supported rates element\n"));
@@ -3771,6 +3774,9 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
     
     if (ni->ni_rsnakms == IEEE80211_AKM_OWE && ic->ic_event_handler)
         (*ic->ic_event_handler)(ic, IEEE80211_EVT_STA_ASSOC_DONE, NULL);
+#ifdef AIRPORT_WCL
+    ieee80211_ttlm_receive(ic, ni, assoc_ies, assoc_ie_end - assoc_ies, 1);
+#endif
     ieee80211_new_state(ic, IEEE80211_S_RUN,
                         IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
 }
@@ -4368,6 +4374,11 @@ ieee80211_recv_action(struct ieee80211com *ic, mbuf_t m,
     frm = (const u_int8_t *)&wh[1];
     
     switch (frm[0]) {
+#ifdef AIRPORT_WCL
+        case 37: /* Protected EHT */
+            ieee80211_ttlm_action(ic, ni, frm, mbuf_len(m) - sizeof(*wh));
+            break;
+#endif
         case IEEE80211_CATEG_BA:
             switch (frm[1]) {
                 case IEEE80211_ACTION_ADDBA_REQ:

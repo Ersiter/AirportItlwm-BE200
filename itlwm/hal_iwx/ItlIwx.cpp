@@ -14289,6 +14289,17 @@ iwx_mld_schedule_active_links(struct iwx_softc *sc, uint8_t links,
     ItlIwx *that = container_of(sc, ItlIwx, com);
     int s = splnet();
 
+#ifdef AIRPORT_WCL
+    if (sc->sc_ic.ic_wcl_peer_is_mlo) {
+        uint8_t allowed = ieee80211_ttlm_allowed_links(&sc->sc_ic);
+        links &= allowed;
+        if (!links && allowed)
+            links = allowed & -allowed;
+        if (links && !(links & (1U << primary_link)))
+            primary_link = __builtin_ctz((unsigned)links);
+        emlsr_active = emlsr_active && __builtin_popcount((unsigned)links) == 2;
+    }
+#endif
     sc->sc_mld_pending_links = links;
     sc->sc_mld_pending_primary_link = primary_link;
     sc->sc_mld_pending_emlsr = emlsr_active;
@@ -14300,6 +14311,42 @@ iwx_mld_schedule_active_links(struct iwx_softc *sc, uint8_t links,
 }
 
 #ifdef AIRPORT_WCL
+static void
+iwx_ttlm_schedule(struct ieee80211com *ic)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+    if (!(sc->sc_flags & IWX_FLAG_SHUTDOWN))
+        that->iwx_add_task(sc, sc->sc_nswq, &sc->mld_link_task);
+}
+
+static int
+iwx_ttlm_apply(struct ieee80211com *ic, uint16_t ap_links)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+    uint8_t allowed = 0;
+    for (int i = 0; i < ic->ic_mld_link_count; i++)
+        if (ic->ic_mld_links[i].assoc_accepted &&
+            (ap_links & (1U << ic->ic_mld_links[i].ap_link_id)))
+            allowed |= 1U << i;
+    if (!allowed)
+        return EINVAL;
+    uint8_t links = sc->sc_mld_active_links & allowed;
+    if (!links)
+        links = allowed & -allowed;
+    uint8_t primary = sc->sc_mld_primary_link;
+    if (!(links & (1U << primary)))
+        primary = __builtin_ctz((unsigned)links);
+    int err = that->iwx_mld_update_active_links(sc, links, primary,
+        sc->sc_mld_emlsr_active && __builtin_popcount((unsigned)links) == 2);
+    if (!err) {
+        sc->sc_pcitag->setProperty("AirportItlwm-TTLMAllowedAPLinks", ap_links, 32);
+        sc->sc_pcitag->setProperty("AirportItlwm-TTLMActiveLinks", links, 32);
+    }
+    return err;
+}
+
 static void
 iwx_wcl_update_mld_active_link(struct ieee80211com *ic, uint8_t link_slot)
 {
@@ -16998,6 +17045,10 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     ic->ic_sae_defer_join = iwx_defer_sae_join;
 #ifdef AIRPORT_WCL
     ic->ic_wcl_update_mld_active_link = iwx_wcl_update_mld_active_link;
+    if (sc->sc_use_mld_api) {
+        ic->ic_ttlm_schedule = iwx_ttlm_schedule;
+        ic->ic_ttlm_apply = iwx_ttlm_apply;
+    }
 #endif
     ic->ic_bgscan_start = iwx_bgscan;
 #ifdef AIRPORT_WCL

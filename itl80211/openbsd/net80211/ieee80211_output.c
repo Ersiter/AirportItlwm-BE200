@@ -1670,7 +1670,7 @@ ieee80211_add_mld_assoc_req(uint8_t *frm, struct ieee80211com *ic,
         LE_WRITE_2(frm, eml_cap);
         frm += 2;
     }
-    LE_WRITE_2(frm, 0);
+    LE_WRITE_2(frm, ic->ic_ttlm_apply ? IEEE80211_MLD_CAP_OP_TTLM_SAME : 0);
     frm += 2;
 
     ieee80211_assoc_present_add(outer, &outer_count, IEEE80211_ELEMID_SSID);
@@ -2171,7 +2171,7 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
         (ni->ni_rsnakms == IEEE80211_AKM_OWE ? IEEE80211_OWE_IE_LEN : 0) +
         (ni->ni_mbssid_index ? 5 : 0)
 #ifdef AIRPORT_WCL
-        + ieee80211_mld_assoc_req_size(ic)
+        + ieee80211_mld_assoc_req_size(ic) + 4
 #endif
         );
 	if (m == NULL)
@@ -2255,8 +2255,16 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
 		frm = ieee80211_add_rsnxe(frm, ic, ni);
 #ifdef AIRPORT_WCL
     if (ni->ni_eht_requested && ic->ic_wcl_peer_is_mlo &&
-        ic->ic_mld_link_count != 0)
+        ic->ic_mld_link_count != 0) {
         frm = ieee80211_add_mld_assoc_req(frm, ic, capinfo);
+        if (ic->ic_ttlm_apply &&
+            (ni->ni_mld_capa_ops & IEEE80211_MLD_CAP_OP_TTLM_MASK)) {
+            *frm++ = IEEE80211_ELEMID_EXTENSION;
+            *frm++ = 2;
+            *frm++ = IEEE80211_ELEMID_EXT_TID_TO_LINK_MAPPING;
+            *frm++ = IEEE80211_TTLM_DIRECTION_BOTH | IEEE80211_TTLM_CONTROL_DEF_LINK_MAP;
+        }
+    }
 #endif
 
     size_t l = frm - mtod(m, u_int8_t *);

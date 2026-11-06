@@ -413,6 +413,20 @@ struct ieee80211_defrag {
 
 #ifdef AIRPORT_WCL
 #define IEEE80211_MLD_MAX_LINKS 4
+
+struct ieee80211_neg_ttlm { uint16_t downlink[8], uplink[8]; };
+struct ieee80211_adv_ttlm_info { uint16_t switch_time, map; uint32_t duration; };
+struct ieee80211_ttlm_state {
+    CTimeout *timer;
+    struct ieee80211_neg_ttlm candidate;
+    struct ieee80211_adv_ttlm_info advertised;
+    uint64_t switch_at, expire_at, next_expire_at, response_at;
+    uint32_t epoch;
+    uint16_t adv_map, neg_map, requested_map;
+    uint8_t initialized, event, token, dialog, waiting, retry;
+    uint8_t adv_valid, neg_valid, dirty, busy, disconnect;
+};
+
 struct ieee80211_mld_link_info {
 	struct ieee80211_node *ni;
 	uint8_t local_link_id;
@@ -481,6 +495,9 @@ struct ieee80211com {
     void (*ic_wcl_update_mld_active_link)(struct ieee80211com *, uint8_t);
     struct ieee80211_mld_link_info ic_mld_links[IEEE80211_MLD_MAX_LINKS];
     uint8_t ic_mld_link_count;
+    struct ieee80211_ttlm_state ic_ttlm;
+    void (*ic_ttlm_schedule)(struct ieee80211com *);
+    int (*ic_ttlm_apply)(struct ieee80211com *, uint16_t);
     uint8_t ic_wcl_active_mld_link;
     bool ic_mld_emlsr_peer_supported;
     bool ic_wcl_scan_requested;

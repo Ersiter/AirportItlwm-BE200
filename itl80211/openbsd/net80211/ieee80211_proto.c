@@ -125,6 +125,9 @@ ieee80211_proto_detach(struct _ifnet *ifp)
     XYLog("%s\n", __FUNCTION__);
 	struct ieee80211com *ic = (struct ieee80211com *)ifp;
 
+#ifdef AIRPORT_WCL
+    ieee80211_ttlm_reset(ic);
+#endif
 	mq_purge(&ic->ic_mgtq);
 	mq_purge(&ic->ic_pwrsaveq);
 }
@@ -2331,3 +2334,601 @@ ieee80211_set_link_state(struct ieee80211com *ic, int nstate)
 //		if_link_state_change(ifp);
 //	}
 }
+
+#ifdef AIRPORT_WCL
+/* TTLM parsers adapted from Linux linux-6.12.y net/mac80211/mlme.c and
+ * include/linux/ieee80211.h; Copyright (C) 2024 Intel Corporation, GPL-2.0.
+ * Driver acceptance follows iwl_mvm_mld_can_neg_ttlm() (dual BSD/GPLv2).
+ */
+extern mbuf_t ieee80211_getmgmt(int, int, u_int);
+extern int ieee80211_mgmt_output(struct _ifnet *, struct ieee80211_node *, mbuf_t, int);
+
+static uint64_t
+ieee80211_ttlm_now(void)
+{
+    struct timeval tv;
+    getmicrouptime(&tv);
+    return (uint64_t)tv.tv_sec * 1000000 + tv.tv_usec;
+}
+
+static uint16_t
+ieee80211_ttlm_setup_links(struct ieee80211com *ic)
+{
+    uint16_t links = 0;
+    for (int i = 0; i < ic->ic_mld_link_count; i++)
+        if (ic->ic_mld_links[i].assoc_accepted &&
+            ic->ic_mld_links[i].ni != NULL)
+            links |= 1U << ic->ic_mld_links[i].ap_link_id;
+    return links;
+}
+
+static uint16_t
+ieee80211_ttlm_map(struct ieee80211com *ic)
+{
+    struct ieee80211_ttlm_state *t = &ic->ic_ttlm;
+    uint16_t links = ieee80211_ttlm_setup_links(ic);
+    if (t->adv_valid)
+        links &= t->adv_map;
+    if (t->neg_valid)
+        links &= t->neg_map;
+    return links;
+}
+
+uint8_t
+ieee80211_ttlm_allowed_links(struct ieee80211com *ic)
+{
+    uint16_t map = ieee80211_ttlm_map(ic);
+    uint8_t local = 0;
+    if (!ic->ic_wcl_peer_is_mlo || !ic->ic_mld_link_count)
+        return 1;
+    for (int i = 0; i < ic->ic_mld_link_count; i++)
+        if (map & (1U << ic->ic_mld_links[i].ap_link_id))
+            local |= 1U << i;
+    return local;
+}
+
+static int
+ieee80211_tid_to_link_map_size_ok(const uint8_t *data, size_t len)
+{
+	const struct ieee80211_ttlm_elem *t2l = (const struct ieee80211_ttlm_elem *)data;
+	uint8_t control, fixed = sizeof(*t2l), elem_len = 0;
+
+	if (len < fixed)
+		return false;
+
+	control = t2l->control;
+
+	if (control & IEEE80211_TTLM_CONTROL_SWITCH_TIME_PRESENT)
+		elem_len += 2;
+	if (control & IEEE80211_TTLM_CONTROL_EXPECTED_DUR_PRESENT)
+		elem_len += 3;
+
+	if (!(control & IEEE80211_TTLM_CONTROL_DEF_LINK_MAP)) {
+		uint8_t bm_size;
+
+		elem_len += 1;
+		if (len < fixed + elem_len)
+			return false;
+
+		if (control & IEEE80211_TTLM_CONTROL_LINK_MAP_SIZE)
+			bm_size = 1;
+		else
+			bm_size = 2;
+
+		elem_len += __builtin_popcount(t2l->optional[0]) * bm_size;
+	}
+
+	return len >= fixed + elem_len;
+}
+
+static uint16_t
+ieee80211_get_ttlm(uint8_t bm_size, uint8_t *data)
+{
+	if (bm_size == 1)
+		return *data;
+	else
+		return LE_READ_2(data);
+}
+
+static int
+ieee80211_parse_neg_ttlm(struct ieee80211com *ic,
+			 const struct ieee80211_ttlm_elem *ttlm,
+			 struct ieee80211_neg_ttlm *neg_ttlm,
+			 uint8_t *direction)
+{
+	uint8_t control, link_map_presence, map_size, tid;
+	uint8_t *pos;
+
+	/* The element size was already validated in
+	 * ieee80211_tid_to_link_map_size_ok()
+	 */
+	pos = (uint8_t *)ttlm->optional;
+
+	control = ttlm->control;
+
+	/* mapping switch time and expected duration fields are not expected
+	 * in case of negotiated TTLM
+	 */
+	if (control & (IEEE80211_TTLM_CONTROL_SWITCH_TIME_PRESENT |
+		       IEEE80211_TTLM_CONTROL_EXPECTED_DUR_PRESENT)) {
+
+		return -EINVAL;
+	}
+
+	if (control & IEEE80211_TTLM_CONTROL_DEF_LINK_MAP) {
+		for (tid = 0; tid < IEEE80211_TTLM_NUM_TIDS; tid++) {
+			neg_ttlm->downlink[tid] = ieee80211_ttlm_setup_links(ic);
+			neg_ttlm->uplink[tid] = ieee80211_ttlm_setup_links(ic);
+		}
+		*direction = IEEE80211_TTLM_DIRECTION_BOTH;
+		return 0;
+	}
+
+	*direction = (control & IEEE80211_TTLM_CONTROL_DIRECTION);
+	if (*direction != IEEE80211_TTLM_DIRECTION_DOWN &&
+	    *direction != IEEE80211_TTLM_DIRECTION_UP &&
+	    *direction != IEEE80211_TTLM_DIRECTION_BOTH)
+		return -EINVAL;
+
+	link_map_presence = *pos;
+	pos++;
+
+	if (control & IEEE80211_TTLM_CONTROL_LINK_MAP_SIZE)
+		map_size = 1;
+	else
+		map_size = 2;
+
+	for (tid = 0; tid < IEEE80211_TTLM_NUM_TIDS; tid++) {
+		uint16_t map;
+
+		if (link_map_presence & (1U << tid)) {
+			map = ieee80211_get_ttlm(map_size, pos);
+			if (!map) {
+
+				return -EINVAL;
+			}
+			pos += map_size;
+		} else {
+			map = 0;
+		}
+
+		switch (*direction) {
+		case IEEE80211_TTLM_DIRECTION_BOTH:
+			neg_ttlm->downlink[tid] = map;
+			neg_ttlm->uplink[tid] = map;
+			break;
+		case IEEE80211_TTLM_DIRECTION_DOWN:
+			neg_ttlm->downlink[tid] = map;
+			break;
+		case IEEE80211_TTLM_DIRECTION_UP:
+			neg_ttlm->uplink[tid] = map;
+			break;
+		default:
+			return -EINVAL;
+		}
+	}
+	return 0;
+}
+
+static int
+ieee80211_parse_adv_t2l(struct ieee80211com *ic,
+			const struct ieee80211_ttlm_elem *ttlm,
+			struct ieee80211_adv_ttlm_info *ttlm_info)
+{
+	/* The element size was already validated in
+	 * ieee80211_tid_to_link_map_size_ok()
+	 */
+	uint8_t control, link_map_presence, map_size, tid;
+	uint8_t *pos;
+
+	memset(ttlm_info, 0, sizeof(*ttlm_info));
+	pos = (uint8_t *)ttlm->optional;
+	control	= ttlm->control;
+
+	if ((control & IEEE80211_TTLM_CONTROL_DEF_LINK_MAP) ||
+	    !(control & IEEE80211_TTLM_CONTROL_SWITCH_TIME_PRESENT))
+		return 0;
+
+	if ((control & IEEE80211_TTLM_CONTROL_DIRECTION) !=
+	    IEEE80211_TTLM_DIRECTION_BOTH) {
+
+		return -EINVAL;
+	}
+
+	link_map_presence = *pos;
+	pos++;
+
+	ttlm_info->switch_time = LE_READ_2(pos);
+
+	/* Since ttlm_info->switch_time == 0 means no switch time, bump it
+	 * by 1.
+	 */
+	if (!ttlm_info->switch_time)
+		ttlm_info->switch_time = 1;
+
+	pos += 2;
+
+	if (control & IEEE80211_TTLM_CONTROL_EXPECTED_DUR_PRESENT) {
+		ttlm_info->duration = pos[0] | pos[1] << 8 | pos[2] << 16;
+		pos += 3;
+	}
+
+	if (control & IEEE80211_TTLM_CONTROL_LINK_MAP_SIZE)
+		map_size = 1;
+	else
+		map_size = 2;
+
+	/* According to Draft P802.11be_D3.0 clause 35.3.7.1.7, an AP MLD shall
+	 * not advertise a TID-to-link mapping that does not map all TIDs to the
+	 * same link set, reject frame if not all links have mapping
+	 */
+	if (link_map_presence != 0xff) {
+
+		return -EINVAL;
+	}
+
+	ttlm_info->map = ieee80211_get_ttlm(map_size, pos);
+	if (!ttlm_info->map) {
+
+		return -EINVAL;
+	}
+
+	pos += map_size;
+
+	for (tid = 1; tid < 8; tid++) {
+		uint16_t map = ieee80211_get_ttlm(map_size, pos);
+
+		if (map != ttlm_info->map) {
+
+			return -EINVAL;
+		}
+
+		pos += map_size;
+	}
+	return 0;
+}
+
+static int
+ieee80211_ttlm_can_negotiate(struct ieee80211com *ic,
+    const struct ieee80211_neg_ttlm *map)
+{
+    uint16_t links = map->downlink[0];
+    if (!links || (links & ~ieee80211_ttlm_setup_links(ic)))
+        return EINVAL;
+    /* iwl_mvm_mld_can_neg_ttlm(): identical UL/DL link sets for every TID. */
+    for (int i = 0; i < IEEE80211_TTLM_NUM_TIDS; i++)
+        if (map->downlink[i] != map->uplink[i] || map->uplink[i] != links)
+            return EINVAL;
+    return 0;
+}
+
+static int
+ieee80211_ttlm_parse_neg(struct ieee80211com *ic, const uint8_t *ies,
+    size_t len, struct ieee80211_neg_ttlm *map)
+{
+    unsigned count = 0, directions = 0;
+    memset(map, 0, sizeof(*map));
+    for (size_t off = 0; off < len;) {
+        if (len - off < 2 || ies[off + 1] > len - off - 2)
+            return EINVAL;
+        size_t size = ies[off + 1] + 2;
+        if (ies[off] == IEEE80211_ELEMID_EXTENSION && size >= 3 &&
+            ies[off + 2] == IEEE80211_ELEMID_EXT_TID_TO_LINK_MAPPING) {
+            uint8_t direction;
+            if (++count > 2 ||
+                !ieee80211_tid_to_link_map_size_ok(ies + off + 3, size - 3) ||
+                ieee80211_parse_neg_ttlm(ic,
+                    (const struct ieee80211_ttlm_elem *)(ies + off + 3), map, &direction))
+                return EINVAL;
+            unsigned bits = direction == IEEE80211_TTLM_DIRECTION_BOTH ? 3 : 1U << direction;
+            if (directions & bits)
+                return EINVAL;
+            directions |= bits;
+        }
+        off += size;
+    }
+    return count ? ieee80211_ttlm_can_negotiate(ic, map) : ENOENT;
+}
+
+static void ieee80211_ttlm_timeout(void *);
+
+static void
+ieee80211_ttlm_schedule(struct ieee80211com *ic)
+{
+    if (!ic->ic_ttlm.initialized) {
+        timeout_set(&ic->ic_ttlm.timer, ieee80211_ttlm_timeout, ic);
+        ic->ic_ttlm.initialized = 1;
+    }
+    if (ic->ic_ttlm_schedule)
+        ic->ic_ttlm_schedule(ic);
+}
+
+static void
+ieee80211_ttlm_timeout(void *arg)
+{
+    ieee80211_ttlm_schedule((struct ieee80211com *)arg);
+}
+
+void
+ieee80211_ttlm_reset(struct ieee80211com *ic)
+{
+    if (ic->ic_ttlm.initialized)
+        timeout_free(&ic->ic_ttlm.timer);
+    uint32_t epoch = ic->ic_ttlm.epoch + 1;
+    memset(&ic->ic_ttlm, 0, sizeof(ic->ic_ttlm));
+    ic->ic_ttlm.epoch = epoch;
+}
+
+static int
+ieee80211_ttlm_send(struct ieee80211com *ic, uint8_t action,
+    uint8_t token, uint16_t status, uint16_t map)
+{
+    uint8_t body[24], *pos = body;
+    *pos++ = 37; /* Protected EHT action category. */
+    *pos++ = action;
+    if (action != 2)
+        *pos++ = token;
+    if (action == 1) {
+        LE_WRITE_2(pos, status);
+        pos += 2;
+    }
+    if (action == 0) {
+        *pos++ = IEEE80211_ELEMID_EXTENSION;
+        *pos++ = 19;
+        *pos++ = IEEE80211_ELEMID_EXT_TID_TO_LINK_MAPPING;
+        *pos++ = IEEE80211_TTLM_DIRECTION_BOTH;
+        *pos++ = 0xff;
+        for (int i = 0; i < 8; i++) {
+            LE_WRITE_2(pos, map);
+            pos += 2;
+        }
+    }
+    size_t len = pos - body;
+    mbuf_t m = ieee80211_getmgmt(MBUF_DONTWAIT, MT_DATA, len);
+    if (m == NULL)
+        return ENOMEM;
+    memcpy(mbuf_data(m), body, len);
+    mbuf_setlen(m, len);
+    mbuf_pkthdr_setlen(m, len);
+    struct ieee80211_node *ni = ic->ic_bss;
+    ieee80211_ref_node(ni);
+    int err = ieee80211_mgmt_output((struct _ifnet *)ic, ni, m, IEEE80211_FC0_SUBTYPE_ACTION);
+    if (err)
+        ieee80211_release_node(ic, ni);
+    return err;
+}
+
+int
+ieee80211_ttlm_request(struct ieee80211com *ic, uint16_t map)
+{
+    struct ieee80211_ttlm_state *t = &ic->ic_ttlm;
+    if (!ic->ic_wcl_peer_is_mlo || ic->ic_state != IEEE80211_S_RUN ||
+        !ic->ic_bss->ni_port_valid || !ic->ic_ttlm_apply ||
+        !(ic->ic_bss->ni_mld_capa_ops & IEEE80211_MLD_CAP_OP_TTLM_MASK))
+        return ENOTSUP;
+    if (!map || (map & ~ieee80211_ttlm_setup_links(ic)) ||
+        (t->adv_valid && !(map & t->adv_map)))
+        return EINVAL;
+    if (t->waiting || t->event)
+        return EBUSY;
+    t->requested_map = map;
+    t->event = 3; /* Send from the firmware work loop. */
+    ieee80211_ttlm_schedule(ic);
+    return 0;
+}
+
+void
+ieee80211_ttlm_receive(struct ieee80211com *ic, struct ieee80211_node *ni,
+    const uint8_t *ies, size_t len, int association)
+{
+    struct ieee80211_ttlm_state *t = &ic->ic_ttlm;
+    struct ieee80211_adv_ttlm_info adv = {};
+    unsigned found = 0;
+    if (!ic->ic_wcl_peer_is_mlo || !ic->ic_ttlm_apply ||
+        !ic->ic_bss || !IEEE80211_ADDR_EQ(ni->ni_bssid, ic->ic_bss->ni_bssid) ||
+        (!association && ic->ic_state != IEEE80211_S_RUN))
+        return;
+    for (size_t off = 0; off < len;) {
+        if (len - off < 2 || ies[off + 1] > len - off - 2)
+            return;
+        size_t size = ies[off + 1] + 2;
+        if (ies[off] == IEEE80211_ELEMID_EXTENSION && size >= 3 &&
+            ies[off + 2] == IEEE80211_ELEMID_EXT_TID_TO_LINK_MAPPING) {
+            const struct ieee80211_ttlm_elem *elem =
+                (const struct ieee80211_ttlm_elem *)(ies + off + 3);
+            if (++found > 2 || !ieee80211_tid_to_link_map_size_ok(ies + off + 3, size - 3))
+                return;
+            if (association && !(elem->control & IEEE80211_TTLM_CONTROL_SWITCH_TIME_PRESENT)) {
+                struct ieee80211_neg_ttlm map;
+                if (ieee80211_ttlm_parse_neg(ic, ies, len, &map)) {
+                    t->disconnect = 1;
+                    ieee80211_ttlm_schedule(ic);
+                    return;
+                }
+                adv.map = map.downlink[0];
+                break;
+            }
+            struct ieee80211_adv_ttlm_info parsed;
+            if (ieee80211_parse_adv_t2l(ic, elem, &parsed)) {
+                t->disconnect = 1;
+                ieee80211_ttlm_schedule(ic);
+                return;
+            }
+            if (parsed.switch_time)
+                adv = parsed;
+        }
+        off += size;
+    }
+    if (!found || !adv.map) {
+        if (t->adv_valid || t->switch_at) {
+            t->adv_valid = 0;
+            t->switch_at = t->expire_at = 0;
+            memset(&t->advertised, 0, sizeof(t->advertised));
+            t->dirty = 1;
+            ieee80211_ttlm_schedule(ic);
+        }
+        return;
+    }
+    adv.map &= ieee80211_ttlm_setup_links(ic);
+    if (!adv.map) {
+        t->disconnect = 1;
+        ieee80211_ttlm_schedule(ic);
+        return;
+    }
+    if (adv.map == t->advertised.map && adv.switch_time == t->advertised.switch_time)
+        return;
+    uint16_t delay = adv.switch_time ?
+        (uint16_t)(adv.switch_time - (uint16_t)(LE_READ_4(ni->ni_tstamp) >> 10)) : 0;
+    if (delay > 0xff00)
+        return;
+    t->advertised = adv;
+    uint64_t usec = (uint64_t)delay * 1024;
+    /* Linux prepares advertised link switching 100 ms ahead of the TSF. */
+    uint64_t now = ieee80211_ttlm_now();
+    t->switch_at = now + (usec > 100000 ? usec - 100000 : 1);
+    t->next_expire_at = adv.duration ? now + usec + (uint64_t)adv.duration * 1024 : 0;
+    ieee80211_ttlm_schedule(ic);
+}
+
+void
+ieee80211_ttlm_action(struct ieee80211com *ic, struct ieee80211_node *ni,
+    const uint8_t *frm, size_t len)
+{
+    struct ieee80211_ttlm_state *t = &ic->ic_ttlm;
+    if (!ic->ic_wcl_peer_is_mlo || !ic->ic_ttlm_apply ||
+        ic->ic_state != IEEE80211_S_RUN || !ic->ic_bss->ni_port_valid ||
+        ieee80211_mld_primary_node(ic, ni) != ic->ic_bss || len < 2 || frm[0] != 37)
+        return;
+    if (frm[1] == 2) {
+        t->event = 2;
+        ieee80211_ttlm_schedule(ic);
+        return;
+    }
+    if (len < 3)
+        return;
+    if (frm[1] == 0) {
+        struct ieee80211_neg_ttlm map;
+        if (t->busy || t->event || t->waiting ||
+            ieee80211_ttlm_parse_neg(ic, frm + 3, len - 3, &map) ||
+            (t->adv_valid && !(map.downlink[0] & t->adv_map))) {
+            ieee80211_ttlm_send(ic, 1, frm[2], 133, 0);
+            return;
+        }
+        t->candidate = map;
+        t->token = frm[2];
+        t->event = 1;
+    } else if (frm[1] == 1) {
+        if (len < 5 || !t->waiting || frm[2] != t->dialog)
+            return;
+        uint16_t status = LE_READ_2(frm + 3);
+        t->waiting = 0;
+        t->response_at = 0;
+        if (status == 134 && !t->retry &&
+            !ieee80211_ttlm_parse_neg(ic, frm + 5, len - 5, &t->candidate)) {
+            t->requested_map = t->candidate.downlink[0];
+            t->retry = 1;
+            t->event = 3;
+        } else if (!status) {
+            t->event = 4;
+        } else {
+            t->disconnect = 1;
+        }
+    } else {
+        return;
+    }
+    ieee80211_ttlm_schedule(ic);
+}
+
+void
+ieee80211_ttlm_task(struct ieee80211com *ic)
+{
+    struct ieee80211_ttlm_state *t = &ic->ic_ttlm;
+    if (!t->initialized || !ic->ic_wcl_peer_is_mlo || !ic->ic_ttlm_apply ||
+        ic->ic_state != IEEE80211_S_RUN || t->busy)
+        return;
+    uint64_t now = ieee80211_ttlm_now();
+    if (t->waiting && t->response_at && now >= t->response_at)
+        t->disconnect = 1;
+    if (t->disconnect) {
+        ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+        return;
+    }
+    uint8_t event = t->event;
+    t->event = 0;
+    if (event == 3) {
+        if (++t->dialog == 0)
+            ++t->dialog;
+        if (ieee80211_ttlm_send(ic, 0, t->dialog, 0, t->requested_map)) {
+            ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+            return;
+        }
+        t->waiting = 1;
+        t->response_at = now + 200000; /* Linux negotiated TTLM response timeout. */
+    }
+    uint16_t old_adv = t->adv_map, old_neg = t->neg_map;
+    uint8_t old_av = t->adv_valid, old_nv = t->neg_valid;
+    if (t->switch_at && now >= t->switch_at) {
+        t->adv_map = t->advertised.map;
+        t->adv_valid = 1;
+        t->neg_valid = 0;
+        t->switch_at = 0;
+        t->expire_at = t->next_expire_at;
+        t->waiting = t->retry = 0;
+        t->response_at = 0;
+        t->dirty = 1;
+    }
+    if (t->expire_at && now >= t->expire_at) {
+        t->expire_at = 0;
+        t->adv_valid = 0;
+        t->dirty = 1;
+    }
+    if ((event == 1 || event == 4) && t->adv_valid &&
+        !((event == 1 ? t->candidate.downlink[0] : t->requested_map) & t->adv_map)) {
+        if (event == 1) {
+            ieee80211_ttlm_send(ic, 1, t->token, 133, 0);
+            event = 0;
+        } else {
+            ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+            return;
+        }
+    }
+    if (event == 1 || event == 4) {
+        t->neg_map = event == 1 ? t->candidate.downlink[0] : t->requested_map;
+        t->neg_valid = 1;
+        t->dirty = 1;
+    } else if (event == 2) {
+        t->neg_valid = t->waiting = t->retry = 0;
+        t->response_at = 0;
+        t->dirty = 1;
+    }
+    if (t->dirty) {
+        t->busy = 1;
+        uint32_t epoch = t->epoch;
+        int err = ic->ic_ttlm_apply(ic, ieee80211_ttlm_map(ic));
+        if (epoch != t->epoch)
+            return;
+        t->busy = 0;
+        if (err) {
+            t->adv_map = old_adv; t->neg_map = old_neg;
+            t->adv_valid = old_av; t->neg_valid = old_nv;
+            if (event == 1)
+                ieee80211_ttlm_send(ic, 1, t->token, 133, 0);
+            ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
+            return;
+        }
+        t->dirty = 0;
+        if (event == 1)
+            ieee80211_ttlm_send(ic, 1, t->token, 0, 0);
+        if (event == 4)
+            t->retry = 0;
+    }
+    uint64_t next = 0;
+    uint64_t deadlines[] = { t->switch_at, t->expire_at, t->response_at };
+    for (unsigned i = 0; i < 3; i++)
+        if (deadlines[i] && (!next || deadlines[i] < next))
+            next = deadlines[i];
+    timeout_del(&t->timer);
+    if (next)
+        timeout_add_msec(&t->timer, (unsigned)((next > now ? next - now : 0) / 1000 + 1));
+}
+#endif
