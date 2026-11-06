@@ -10988,10 +10988,14 @@ iwx_rs_init(struct iwx_softc *sc, struct iwx_node *in, bool update)
         }
         if (cfg_cmd_v6.phy_id == htole32(IWX_FW_CTXT_INVALID))
             return ENXIO;
+        sc->sc_pcitag->setProperty("AirportItlwm-TLCConfigRequest",
+            &cfg_cmd_v6, sizeof(cfg_cmd_v6));
         return iwx_send_cmd_pdu(sc, cmd_id, IWX_CMD_ASYNC,
             sizeof(cfg_cmd_v6), &cfg_cmd_v6);
     }
     if (cmdver == 4) {
+        sc->sc_pcitag->setProperty("AirportItlwm-TLCConfigRequest",
+            &cfg_cmd, sizeof(cfg_cmd));
         return iwx_send_cmd_pdu(sc, cmd_id, IWX_CMD_ASYNC,
                                 sizeof(cfg_cmd), &cfg_cmd);
     } else if (cmdver < 4 || cmdver == IWX_FW_CMD_VER_UNKNOWN) {
@@ -11017,6 +11021,8 @@ iwx_rs_init(struct iwx_softc *sc, struct iwx_node *in, bool update)
         if (cmdver == IWX_FW_CMD_VER_UNKNOWN || cmdver < 3)
             cmd_size -= 4;
         
+        sc->sc_pcitag->setProperty("AirportItlwm-TLCConfigRequest",
+            &cfg_cmd_v3, cmd_size);
         return iwx_send_cmd_pdu(sc, cmd_id, IWX_CMD_ASYNC, cmd_size,
                                 &cfg_cmd_v3);
     } else {
