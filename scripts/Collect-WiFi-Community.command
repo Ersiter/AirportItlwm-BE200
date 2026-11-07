@@ -133,6 +133,11 @@ kernel_tail() {
     /sbin/dmesg | /usr/bin/tail -n 2000
 }
 
+# airportd writes this one itself; it never reaches the unified log.
+wifi_log_tail() {
+    /usr/bin/tail -n 5000 /var/log/wifi.log
+}
+
 snapshot_after() {
     local phase="after"
     capture "$phase-wifi-driver" /usr/sbin/ioreg -p IOService -r -c AirportItlwm -l -w 0
@@ -140,6 +145,7 @@ snapshot_after() {
     capture "$phase-airport-prefix" dump_prefix
     capture "$phase-ifconfig" /sbin/ifconfig -a
     capture "$phase-wifi-status" /usr/bin/wdutil info
+    capture "$phase-wifi-log" wifi_log_tail
     capture "$phase-wifi-profiler" /usr/sbin/system_profiler -timeout 30 -detailLevel basic SPAirPortDataType
 }
 
@@ -155,6 +161,7 @@ snapshot() {
     capture "$phase-wifi-status" /usr/bin/wdutil info
     capture "$phase-dhcp-state" dhcp_state
     capture "$phase-kernel-buffer" kernel_tail
+    capture "$phase-wifi-log" wifi_log_tail
     capture "$phase-network-state" /usr/sbin/scutil --nwi
     capture "$phase-routes" /usr/sbin/netstat -rn
     capture "$phase-wifi-profiler" /usr/sbin/system_profiler -timeout 30 -detailLevel full SPAirPortDataType
@@ -239,7 +246,7 @@ printf 'Result entered: %s\nTerminal read status: %s\n' "$(date '+%Y-%m-%d %H:%M
 sleep 20
 stop_live
 snapshot_after
-capture recent-log /usr/bin/log show --last 3m --info --style compact --predicate "$predicate"
+capture recent-log /usr/bin/log show --last 30m --info --style compact --predicate "$predicate"
 
 /bin/rm -f "$out/.sample-properties"
 
