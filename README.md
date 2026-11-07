@@ -1,15 +1,23 @@
-# AirportItlwm BE200 / Tahoe development
+<p align="center"><img src="Assets/be200-icon.png" width="160" alt="AirportItlwm BE200"></p>
 
-This repository develops a source port for Intel BE200 (`8086:272B`) on the
-native macOS Tahoe AirportItlwm target. An experimental GL-86 single-link port
-is implemented but has not been validated on hardware. Baseline CI artifacts
-do not contain this port; use the source commit recorded with each artifact.
+# AirportItlwm BE200 — native macOS Wi-Fi for Intel Wi-Fi 7
 
-The base is laobamac/itlwm commit `d695c971420cc8af0daa286dcd3297e8236c0a63`.
-See [BE200 development status](BE200.md) for the implementation and validation
-record. CI builds changed source or a requested configuration on a standard
-Intel macOS runner.
-There is no automatic installation or modification of OpenCore configurations.
+A source port that brings the Intel Wi-Fi 7 family up on macOS through the native
+AirportItlwm / IO80211 path, built on [laobamac/itlwm](https://github.com/laobamac/itlwm).
+
+| Family | PCI ID | Models |
+| --- | --- | --- |
+| GL (Gale Peak 2) | `8086:272B` | Intel Wi-Fi 7 BE200, BE202, Killer Wi-Fi 7 series (GL) |
+| BZ | `8086:A840`, `8086:7740`, `8086:4D40` | Intel Wi-Fi 7 BE201, Killer Wi-Fi 7 series (BZ) |
+
+WPA2-Personal, WPA2-Enterprise (PEAP), WPA3-Personal (SAE/H2E) and Enhanced Open (OWE)
+are implemented. 802.11ax (HE) and experimental 802.11be (EHT/MLO) are wired through,
+including 6 GHz. Wi-Fi 7/MLO and 6 GHz WPA3 still need hardware validation.
+
+Installable builds, the current change list and known limitations are published under
+[Releases](https://github.com/Ersiter/AirportItlwm-BE200/releases). Implementation and
+validation records live in [BE200 development status](BE200.md). Nothing here installs
+itself or touches an OpenCore configuration on its own.
 
 The following documentation describes the upstream adapter support and targets.
 
