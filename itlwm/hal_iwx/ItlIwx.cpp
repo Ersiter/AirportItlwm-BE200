@@ -120,6 +120,7 @@
 #include <IOKit/IOCommandGate.h>
 #include <IOKit/network/IONetworkMedium.h>
 #include <net/ethernet.h>
+#include <net/if_llc.h>
 
 #include <sys/_task.h>
 #include <sys/pcireg.h>
@@ -8139,6 +8140,177 @@ iwx_tx_update_byte_tbl(struct iwx_softc *sc, struct iwx_tx_ring *txq, int idx, u
     }
 }
 
+/*
+ * A-MSDU subframe construction adapted from Linux net/mac80211/tx.c
+ * ieee80211_amsdu_prepare_head()/ieee80211_amsdu_aggregate().
+ * Copyright (C) 2018-2024 Intel Corporation. GPL-2.0-only.
+ * Queue and buffer operations use the macOS mbuf/IOPacketQueue APIs.
+ */
+static int
+iwx_amsdu_append(mbuf_t aggregate, size_t offset, const struct ether_header *eth,
+    mbuf_t packet, size_t payload_offset, size_t payload_length, bool add_snap)
+{
+    struct ether_header subframe = *eth;
+    subframe.ether_type = htons(payload_length + (add_snap ? LLC_SNAPFRAMELEN : 0));
+    int err = mbuf_copyback(aggregate, offset, sizeof(subframe), &subframe, MBUF_DONTWAIT);
+    if (err)
+        return err;
+    offset += sizeof(subframe);
+    if (add_snap) {
+        struct llc snap = {};
+        snap.llc_dsap = snap.llc_ssap = LLC_SNAP_LSAP;
+        snap.llc_control = LLC_UI;
+        snap.llc_snap.ether_type = eth->ether_type;
+        err = mbuf_copyback(aggregate, offset, LLC_SNAPFRAMELEN, &snap, MBUF_DONTWAIT);
+        if (err)
+            return err;
+        offset += LLC_SNAPFRAMELEN;
+    }
+    uint8_t bytes[256];
+    while (payload_length) {
+        size_t length = MIN(sizeof(bytes), payload_length);
+        err = mbuf_copydata(packet, payload_offset, length, bytes);
+        if (!err)
+            err = mbuf_copyback(aggregate, offset, length, bytes, MBUF_DONTWAIT);
+        if (err)
+            return err;
+        offset += length;
+        payload_offset += length;
+        payload_length -= length;
+    }
+    return 0;
+}
+
+static bool
+iwx_amsdu_ip_packet(mbuf_t packet, uint16_t type, size_t offset)
+{
+    size_t minimum = type == htons(ETHERTYPE_IP) ? 20 :
+        type == htons(ETHERTYPE_IPV6) ? 40 : 0;
+    mbuf_tso_request_flags_t tso = 0;
+    uint32_t segment_size = 0;
+    return minimum && mbuf_pkthdr_len(packet) >= offset + minimum &&
+        mbuf_get_tso_requested(packet, &tso, &segment_size) == 0 && !tso;
+}
+
+static mbuf_t
+iwx_tx_amsdu(struct iwx_softc *sc, mbuf_t packet, struct ieee80211_node *ni,
+    struct iwx_node *tx_in, const struct ether_header *addresses, uint8_t tid,
+    unsigned *subframes)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct ieee80211_frame *wh = mtod(packet, struct ieee80211_frame *);
+    *subframes = 1;
+    if (!(ic->ic_caps & IEEE80211_C_TX_AMSDU) || ic->ic_opmode != IEEE80211_M_STA ||
+        ic->ic_state != IEEE80211_S_RUN || !ni->ni_port_valid ||
+        tid >= IWX_MAX_TID_COUNT || !ieee80211_has_qos(wh) ||
+        (wh->i_fc[1] & IEEE80211_FC1_DIR_MASK) != IEEE80211_FC1_DIR_TODS ||
+        !(wh->i_fc[1] & IEEE80211_FC1_PROTECTED) ||
+        (ieee80211_get_qos(wh) & (IEEE80211_QOS_AMSDU | IEEE80211_QOS_ACK_POLICY_NOACK)) ||
+        ni->ni_tx_ba[tid].ba_state != IEEE80211_BA_AGREED ||
+        !(ni->ni_tx_ba[tid].ba_params & IEEE80211_ADDBA_AMSDU) ||
+        IEEE80211_IS_MULTICAST(addresses->ether_dhost))
+        return packet;
+    size_t hdrlen = ieee80211_get_hdrlen(wh);
+    if (hdrlen != sizeof(struct ieee80211_qosframe))
+        return packet;
+    if (ni->ni_rsncipher != IEEE80211_CIPHER_CCMP)
+        return packet;
+    int s = splnet();
+    uint16_t max_mpdu = tx_in->in_max_mpdu_len;
+    uint16_t limit = tx_in->in_amsdu_size;
+    bool enabled = tx_in->in_amsdu_generation == sc->sc_generation &&
+        (tx_in->in_amsdu_tids & (1U << tid));
+    splx(s);
+    /* Leave room for the CCMP IV, MIC and FCS added by the existing TX path. */
+    size_t overhead = hdrlen + 8 + 8 + 4;
+    if (!enabled || limit < 2000 || max_mpdu <= overhead)
+        return packet;
+    limit = MIN(limit, max_mpdu - overhead);
+    size_t body_length = mbuf_pkthdr_len(packet) - hdrlen;
+    struct llc snap;
+    if (mbuf_copydata(packet, hdrlen, LLC_SNAPFRAMELEN, &snap) != 0 ||
+        snap.llc_dsap != LLC_SNAP_LSAP || snap.llc_ssap != LLC_SNAP_LSAP ||
+        !iwx_amsdu_ip_packet(packet, snap.llc_snap.ether_type, hdrlen + LLC_SNAPFRAMELEN))
+        return packet;
+    size_t length = sizeof(struct ether_header) + body_length;
+    if (length >= limit)
+        return packet;
+    struct ether_header first = *addresses;
+    first.ether_type = snap.llc_snap.ether_type;
+    mbuf_t aggregate = NULL;
+    size_t allocation = hdrlen + limit;
+    for (;;) {
+        mbuf_t next = ifq_dequeue(&ic->ic_if.if_snd);
+        if (!next)
+            break;
+        struct ether_header eth;
+        size_t next_length = mbuf_pkthdr_len(next);
+        size_t pad = (-length) & 3;
+        bool compatible = next_length >= sizeof(eth) &&
+            mbuf_copydata(next, 0, sizeof(eth), &eth) == 0 &&
+            IEEE80211_ADDR_EQ(eth.ether_dhost, first.ether_dhost) &&
+            IEEE80211_ADDR_EQ(eth.ether_shost, first.ether_shost) &&
+            iwx_amsdu_ip_packet(next, eth.ether_type, sizeof(eth)) &&
+            ieee80211_classify(ic, next) == tid;
+        size_t subframe_length = next_length + LLC_SNAPFRAMELEN;
+        if (!compatible || length + pad + subframe_length > limit) {
+            ic->ic_if.if_snd.queue->lockPrepend(next);
+            break;
+        }
+        if (!aggregate) {
+            unsigned chunks = 1;
+            if (mbuf_allocpacket(MBUF_DONTWAIT, allocation, &chunks, &aggregate) != 0) {
+                ic->ic_if.if_snd.queue->lockPrepend(next);
+                break;
+            }
+            mbuf_setlen(aggregate, allocation);
+            mbuf_pkthdr_setlen(aggregate, allocation);
+            mbuf_outbound_finalize(packet, first.ether_type == htons(ETHERTYPE_IP) ?
+                AF_INET : AF_INET6, hdrlen + LLC_SNAPFRAMELEN);
+            if (mbuf_copyback(aggregate, 0, hdrlen, mtod(packet, void *), MBUF_DONTWAIT) ||
+                iwx_amsdu_append(aggregate, hdrlen, &first, packet, hdrlen, body_length, false)) {
+                ic->ic_if.if_snd.queue->lockPrepend(next);
+                mbuf_freem(aggregate);
+                return packet;
+            }
+        }
+        mbuf_outbound_finalize(next, eth.ether_type == htons(ETHERTYPE_IP) ?
+            AF_INET : AF_INET6, sizeof(eth));
+        const uint8_t padding[3] = {};
+        if ((pad && mbuf_copyback(aggregate, hdrlen + length, pad, padding, MBUF_DONTWAIT)) ||
+            iwx_amsdu_append(aggregate, hdrlen + length + pad, &eth, next,
+                sizeof(eth), next_length - sizeof(eth), true)) {
+            ic->ic_if.if_snd.queue->lockPrepend(next);
+            break;
+        }
+#if NBPFILTER > 0
+        if (ic->ic_if.if_bpf != NULL)
+            bpf_mtap(ic->ic_if.if_bpf, next, BPF_DIRECTION_OUT);
+#endif
+        mbuf_freem(next);
+        length += pad + subframe_length;
+        ++*subframes;
+    }
+    if (*subframes == 1) {
+        if (aggregate)
+            mbuf_freem(aggregate);
+        return packet;
+    }
+    mbuf_adj(aggregate, -int(allocation - (hdrlen + length)));
+    struct ieee80211_qosframe *qwh = mtod(aggregate, struct ieee80211_qosframe *);
+    uint16_t qos = ieee80211_get_qos((struct ieee80211_frame *)qwh);
+    LE_WRITE_2(qwh->i_qos, qos | IEEE80211_QOS_AMSDU);
+    /* Linux vif.cfg.ap_addr is the AP MLD address for an MLO association. */
+#ifdef AIRPORT_WCL
+    if (ic->ic_wcl_peer_is_mlo)
+        IEEE80211_ADDR_COPY(qwh->i_addr3, ni->ni_mld_addr);
+    else
+#endif
+        IEEE80211_ADDR_COPY(qwh->i_addr3, qwh->i_addr1);
+    mbuf_freem(packet);
+    return aggregate;
+}
+
 int ItlIwx::
 iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
 {
@@ -8156,6 +8328,8 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     struct iwx_tx_cmd_gen3 *tx_gen3;
     struct iwx_node *tx_in = in;
     struct ieee80211_frame *wh;
+    struct ether_header amsdu_addresses = {};
+    unsigned amsdu_subframes = 1;
     struct ieee80211_key *k = NULL;
     const struct iwx_rate *rinfo;
     uint64_t paddr;
@@ -8179,6 +8353,11 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     wh = mtod(m, struct ieee80211_frame *);
     type = wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK;
     subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+    if (type == IEEE80211_FC0_TYPE_DATA &&
+        (wh->i_fc[1] & IEEE80211_FC1_DIR_MASK) == IEEE80211_FC1_DIR_TODS) {
+        IEEE80211_ADDR_COPY(amsdu_addresses.ether_dhost, wh->i_addr3);
+        IEEE80211_ADDR_COPY(amsdu_addresses.ether_shost, wh->i_addr2);
+    }
 #ifdef AIRPORT_WCL
     if (sc->sc_use_mld_api && ic->ic_wcl_peer_is_mlo &&
         (sc->sc_mld_active_links & (sc->sc_mld_active_links - 1)) &&
@@ -8303,6 +8482,10 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     cmd->hdr.qid = ring->qid;
     cmd->hdr.idx = idx;
     
+    if (type == IEEE80211_FC0_TYPE_DATA && !(subtype & IEEE80211_FC0_SUBTYPE_NODATA)) {
+        m = iwx_tx_amsdu(sc, m, ni, tx_in, &amsdu_addresses, tid, &amsdu_subframes);
+        wh = mtod(m, struct ieee80211_frame *);
+    }
     rinfo = iwx_tx_fill_cmd(sc, tx_in, wh, &flags, &rate_n_flags);
     
 #if NBPFILTER > 0
@@ -8350,6 +8533,8 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     totlen = mbuf_pkthdr_len(m);
     
     offload_assist = itlTxOffloadHeader(hdrlen);
+    if (amsdu_subframes > 1)
+        offload_assist |= IWX_TX_CMD_OFFLD_AMSDU;
     
     if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210) {
         tx_gen3 = (struct iwx_tx_cmd_gen3 *)cmd->data;
@@ -8754,6 +8939,8 @@ iwx_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
         return 0;
     }
     
+    if (!update)
+        iwx_rs_reset_amsdu(in);
     memset(&add_sta_cmd, 0, sizeof(add_sta_cmd));
     
     if (ic->ic_opmode == IEEE80211_M_MONITOR) {
@@ -8921,8 +9108,10 @@ iwx_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
     err = iwx_send_cmd_pdu(sc, IWX_REMOVE_STA, 0, sizeof(rm_sta_cmd),
                            &rm_sta_cmd);
     
-    if (!err)
+    if (!err) {
         sc->sc_flags &= ~IWX_FLAG_STA_ACTIVE;
+        iwx_rs_reset_amsdu(in);
+    }
 
     return err;
 }
@@ -10923,6 +11112,17 @@ iwx_mld_rate_node(struct iwx_softc *sc, uint32_t sta_id)
     return NULL;
 }
 
+void ItlIwx::
+iwx_rs_reset_amsdu(struct iwx_node *in)
+{
+    int s = splnet();
+    in->in_max_mpdu_len = 0;
+    in->in_amsdu_size = 0;
+    in->in_amsdu_tids = 0;
+    in->in_amsdu_generation = 0;
+    splx(s);
+}
+
 int ItlIwx::
 iwx_rs_init(struct iwx_softc *sc, struct iwx_node *in, bool update)
 {
@@ -10993,6 +11193,7 @@ iwx_rs_init(struct iwx_softc *sc, struct iwx_node *in, bool update)
         cfg_cmd.max_mpdu_len = htole16(3839);
     else
         cfg_cmd.max_mpdu_len = htole16(IEEE80211_MAX_LEN);
+    in->in_max_mpdu_len = le16toh(cfg_cmd.max_mpdu_len);
     cfg_cmd.chains = iwx_rs_fw_set_active_chains(iwx_fw_valid_tx_ant(sc));
     cfg_cmd.flags = iwx_rs_fw_get_config_flags(sc, ni);
     if ((ni->ni_flags & IEEE80211_NODE_HE) == 0) {
@@ -11074,7 +11275,7 @@ iwx_rs_init(struct iwx_softc *sc, struct iwx_node *in, bool update)
             .max_ch_width = cfg_cmd.max_ch_width,
             .mode = cfg_cmd.mode,
             .chains = cfg_cmd.chains,
-            .amsdu = 0,
+            .amsdu = !!(ic->ic_caps & IEEE80211_C_TX_AMSDU),
             .flags = cfg_cmd.flags,
             .non_ht_rates = cfg_cmd.non_ht_rates,
             .ht_rates[0][0] = cfg_cmd.ht_rates[0][0],
@@ -11249,10 +11450,35 @@ iwx_rs_update(struct iwx_softc *sc, struct iwx_tlc_update_notif *notif)
     uint8_t notifver;
     uint32_t format;
 
-    if ((le32toh(notif->flags) & IWX_TLC_NOTIF_FLAG_RATE) == 0)
-        return;
+    uint32_t flags = le32toh(notif->flags);
     ni = iwx_mld_rate_node(sc, notif->sta_id);
     if (ni == NULL)
+        return;
+    struct iwx_node *in = (struct iwx_node *)ni;
+    if (flags & IWX_TLC_NOTIF_FLAG_AMSDU) {
+        uint32_t size = le32toh(notif->amsdu_size);
+        uint32_t enabled = le32toh(notif->amsdu_enabled);
+        if (size < 2000) {
+            size = 0;
+            enabled = 0;
+        }
+        /* Linux rs-fw.c rejects limits beyond the configured peer maximum. */
+        if (size <= in->in_max_mpdu_len) {
+            int s = splnet();
+            in->in_amsdu_size = uint16_t(size);
+            in->in_amsdu_tids = uint8_t(enabled & ((1U << IWX_MAX_TID_COUNT) - 1));
+            in->in_amsdu_generation = sc->sc_generation;
+            splx(s);
+            char key[64];
+            snprintf(key, sizeof(key), "AirportItlwm-AMSDUSta%u", notif->sta_id);
+            uint32_t state[] = {size, in->in_amsdu_tids};
+            sc->sc_pcitag->setProperty(key, state, sizeof(state));
+        } else {
+            XYLog("%s: rejected A-MSDU size %u beyond configured MPDU %u\n",
+                __FUNCTION__, size, in->in_max_mpdu_len);
+        }
+    }
+    if (!(flags & IWX_TLC_NOTIF_FLAG_RATE))
         return;
     rs = &ni->ni_rates;
 
@@ -16909,7 +17135,8 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     ic->ic_txbfcaps = 0;
     ic->ic_aselcaps = 0;
     ic->ic_ampdu_params = (IEEE80211_AMPDU_PARAM_SS_4 | 0x3 /* 64k */);
-    ic->ic_caps |= (IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU_SETUP_IN_HW | IEEE80211_C_TX_AMPDU | IEEE80211_C_AMSDU_IN_AMPDU);
+    ic->ic_caps |= (IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU_SETUP_IN_HW |
+        IEEE80211_C_TX_AMPDU | IEEE80211_C_TX_AMSDU | IEEE80211_C_AMSDU_IN_AMPDU);
     ic->ic_caps |= IEEE80211_C_SUPPORTS_VHT_EXT_NSS_BW;
     
     ic->ic_sup_rates[IEEE80211_MODE_11A] = ieee80211_std_rateset_11a;

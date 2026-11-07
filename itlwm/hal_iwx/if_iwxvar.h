@@ -884,6 +884,11 @@ struct iwx_node {
 	uint16_t in_id;
 	uint16_t in_color;
     
+    uint16_t in_max_mpdu_len;
+    uint16_t in_amsdu_size;
+    uint8_t in_amsdu_tids;
+    int in_amsdu_generation;
+
     struct iwx_rxq_dup_data dup_data;
 };
 #define IWX_STATION_ID 0

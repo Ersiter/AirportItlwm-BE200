@@ -436,6 +436,7 @@ public:
     uint16_t iwx_rs_fw_get_config_flags(struct iwx_softc *sc, struct ieee80211_node *ni);
     int    iwx_rs_init(struct iwx_softc *, struct iwx_node *, bool update);
     void iwx_rs_update(struct iwx_softc *sc, struct iwx_tlc_update_notif *notif);
+    static void iwx_rs_reset_amsdu(struct iwx_node *);
     int    iwx_enable_mgmt_queue(struct iwx_softc *);
     int    iwx_phy_ctxt_update(struct iwx_softc *, struct iwx_phy_ctxt *,
                                struct ieee80211_channel *, uint8_t, uint8_t, uint32_t);

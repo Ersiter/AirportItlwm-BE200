@@ -4156,6 +4156,10 @@ ieee80211_recv_addba_resp(struct ieee80211com *ic, mbuf_t m,
         return;
     }
     
+    if (!(ba->ba_params & IEEE80211_ADDBA_AMSDU) ||
+        !(params & IEEE80211_ADDBA_AMSDU))
+        ba->ba_params &= ~IEEE80211_ADDBA_AMSDU;
+
     /* notify drivers of this new Block Ack agreement */
     if (ic->ic_ampdu_tx_start != NULL)
         err = ic->ic_ampdu_tx_start(ic, ni, tid);

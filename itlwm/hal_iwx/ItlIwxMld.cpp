@@ -885,6 +885,8 @@ iwx_mld_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
         sc->sc_mld_sta_ids[link_slot] == 0xff)
         return ENOSPC;
     sta_id = sc->sc_mld_sta_ids[link_slot];
+    if (!update && !(sc->sc_mld_sta_mask & (1U << sta_id)))
+        iwx_rs_reset_amsdu(in);
 
     if (!update && !(sc->sc_mld_link_active & (1U << link_slot))) {
         memset(&link_cmd, 0, sizeof(link_cmd));
@@ -1314,6 +1316,10 @@ void ItlIwx::
 iwx_mld_rm_sta_local(struct iwx_softc *sc, struct iwx_node *in)
 {
     struct ieee80211com *ic = &sc->sc_ic;
+    iwx_rs_reset_amsdu(in);
+    for (int i = 0; i < ic->ic_mld_link_count; i++)
+        if (ic->ic_mld_links[i].ni)
+            iwx_rs_reset_amsdu((struct iwx_node *)ic->ic_mld_links[i].ni);
 
     for (int tid = 0; tid < IWX_MAX_TID_COUNT; tid++) {
         const uint16_t qid = sc->sc_tid_data[tid].qid;
@@ -1554,6 +1560,10 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
             return err;
         sc->sc_mld_link_active &= ~(1U << i);
     }
+    iwx_rs_reset_amsdu(in);
+    for (int i = 0; i < ic->ic_mld_link_count; i++)
+        if (ic->ic_mld_links[i].ni)
+            iwx_rs_reset_amsdu((struct iwx_node *)ic->ic_mld_links[i].ni);
     sc->sc_mld_sta_mask = 0;
     sc->sc_mld_active_sta_mask = 0;
     sc->sc_mld_active_links = 0;
