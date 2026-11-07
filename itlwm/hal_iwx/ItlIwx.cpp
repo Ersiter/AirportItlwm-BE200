@@ -10986,6 +10986,13 @@ iwx_rs_init(struct iwx_softc *sc, struct iwx_node *in, bool update)
     }
     cfg_cmd.sta_id = sta_id;
     cfg_cmd.max_ch_width = update ? iwx_rs_fw_bw_from_sta_bw(ni->ni_chw) : IWX_RATE_MCS_CHAN_WIDTH_20;
+    if (ni->ni_flags & (IEEE80211_NODE_HE | IEEE80211_NODE_EHT |
+        IEEE80211_NODE_VHT))
+        cfg_cmd.max_mpdu_len = htole16(3895);
+    else if (ni->ni_flags & IEEE80211_NODE_HT)
+        cfg_cmd.max_mpdu_len = htole16(3839);
+    else
+        cfg_cmd.max_mpdu_len = htole16(IEEE80211_MAX_LEN);
     cfg_cmd.chains = iwx_rs_fw_set_active_chains(iwx_fw_valid_tx_ant(sc));
     cfg_cmd.flags = iwx_rs_fw_get_config_flags(sc, ni);
     if ((ni->ni_flags & IEEE80211_NODE_HE) == 0) {
@@ -11067,7 +11074,7 @@ iwx_rs_init(struct iwx_softc *sc, struct iwx_node *in, bool update)
             .max_ch_width = cfg_cmd.max_ch_width,
             .mode = cfg_cmd.mode,
             .chains = cfg_cmd.chains,
-            .amsdu = !!cfg_cmd.max_mpdu_len,
+            .amsdu = 0,
             .flags = cfg_cmd.flags,
             .non_ht_rates = cfg_cmd.non_ht_rates,
             .ht_rates[0][0] = cfg_cmd.ht_rates[0][0],
