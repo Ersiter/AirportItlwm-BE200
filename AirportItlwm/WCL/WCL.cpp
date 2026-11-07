@@ -32,6 +32,7 @@ static uint16_t wclCurrentChannelSpec(ieee80211com *ic)
     if (ic->ic_state != IEEE80211_S_RUN || !ni || !ni->ni_chan ||
         ni->ni_chan == IEEE80211_CHAN_ANYC)
         return 0;
+    unsigned primary = ieee80211_chan2number(ic, ni->ni_chan);
     unsigned width;
     switch (ni->ni_chw) {
         case IEEE80211_CHAN_WIDTH_20_NOHT:
@@ -39,9 +40,11 @@ static uint16_t wclCurrentChannelSpec(ieee80211com *ic)
         case IEEE80211_CHAN_WIDTH_40: width = 40; break;
         case IEEE80211_CHAN_WIDTH_80: width = 80; break;
         case IEEE80211_CHAN_WIDTH_160: width = 160; break;
-        default: return 0; /* Native 16-bit descriptor supports contiguous widths through 160. */
+        case IEEE80211_CHAN_WIDTH_320:
+            /* Native chanspec carries the primary 20 MHz; EHT Operation retains 320 MHz. */
+            return AirportWCL::channelSpec20(primary, wclChannelBand(ni->ni_chan));
+        default: return 0;
     }
-    unsigned primary = ieee80211_chan2number(ic, ni->ni_chan);
     int centerFrequency = ni->ni_eht_center_freq1 ? ni->ni_eht_center_freq1 :
         ni->ni_chan->ic_center_freq1;
     int offset = centerFrequency - ni->ni_chan->ic_freq;
