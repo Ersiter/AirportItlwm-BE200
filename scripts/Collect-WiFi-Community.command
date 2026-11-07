@@ -129,6 +129,20 @@ extension_metadata() {
     done < "$out/extension-paths.txt"
 }
 
+kernel_tail() {
+    /sbin/dmesg | /usr/bin/tail -n 2000
+}
+
+snapshot_after() {
+    local phase="after"
+    capture "$phase-wifi-driver" /usr/sbin/ioreg -p IOService -r -c AirportItlwm -l -w 0
+    capture "$phase-wrapper" /usr/sbin/ioreg -p IOService -r -c IOPCIEDeviceWrapper -l -w 0
+    capture "$phase-airport-prefix" dump_prefix
+    capture "$phase-ifconfig" /sbin/ifconfig -a
+    capture "$phase-wifi-status" /usr/bin/wdutil info
+    capture "$phase-wifi-profiler" /usr/sbin/system_profiler -timeout 30 -detailLevel basic SPAirPortDataType
+}
+
 snapshot() {
     local phase="$1"
     capture "$phase-pci" /usr/sbin/ioreg -p IOService -r -c IOPCIDevice -d 2 -l -w 0
@@ -140,7 +154,7 @@ snapshot() {
     capture "$phase-ifconfig" /sbin/ifconfig -a
     capture "$phase-wifi-status" /usr/bin/wdutil info
     capture "$phase-dhcp-state" dhcp_state
-    capture "$phase-kernel-buffer" /sbin/dmesg
+    capture "$phase-kernel-buffer" kernel_tail
     capture "$phase-network-state" /usr/sbin/scutil --nwi
     capture "$phase-routes" /usr/sbin/netstat -rn
     capture "$phase-wifi-profiler" /usr/sbin/system_profiler -timeout 30 -detailLevel full SPAirPortDataType
@@ -172,14 +186,9 @@ capture boot-source /usr/sbin/ioreg -p IODeviceTree -r -n chosen -d 1 -l -w 0
 capture boot-args /usr/sbin/sysctl kern.bootargs
 capture framework-layout framework_layout
 capture extension-paths extension_paths
-capture extension-metadata extension_metadata
 capture crash-reports collect_crash_reports
 capture kext-load-log /usr/bin/log show --last 24h --info --style compact --predicate \
     '(process == "kernelmanagerd" OR process == "kextd") AND (eventMessage CONTAINS[c] "itlwm" OR eventMessage CONTAINS[c] "IO80211" OR eventMessage CONTAINS[c] "IOSkywalk")'
-airport_pid="$(/usr/bin/pgrep -x airportd | /usr/bin/head -n 1)"
-if [ -n "$airport_pid" ]; then
-    capture airportd-vmmap /usr/bin/vmmap "$airport_pid"
-fi
 snapshot before
 
 live_start="$(date '+%Y-%m-%d %H:%M:%S %z')"
@@ -229,8 +238,8 @@ read_status=$?
 printf 'Result entered: %s\nTerminal read status: %s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')" "$read_status" >> "$out/attempt.txt"
 sleep 20
 stop_live
-snapshot after
-capture recent-log /usr/bin/log show --last 15m --info --debug --style compact --predicate "$predicate"
+snapshot_after
+capture recent-log /usr/bin/log show --last 3m --info --style compact --predicate "$predicate"
 
 /bin/rm -f "$out/.sample-properties"
 
