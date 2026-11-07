@@ -573,6 +573,94 @@ iwx_mld_associated_channel_usable(struct iwx_softc *sc)
 }
 
 void ItlIwx::
+iwx_mld_schedule_active_links(struct iwx_softc *sc, uint8_t links,
+    uint8_t primary_link, bool emlsr_active, bool disconnect)
+{
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+    int s = splnet();
+
+#ifdef AIRPORT_WCL
+    if (sc->sc_ic.ic_wcl_peer_is_mlo) {
+        uint8_t allowed = ieee80211_ttlm_allowed_links(&sc->sc_ic);
+        links &= allowed;
+        if (!links && allowed)
+            links = allowed & -allowed;
+        if (links && !(links & (1U << primary_link)))
+            primary_link = __builtin_ctz((unsigned)links);
+        emlsr_active = emlsr_active && __builtin_popcount((unsigned)links) == 2;
+    }
+#endif
+    sc->sc_mld_pending_links = links;
+    sc->sc_mld_pending_primary_link = primary_link;
+    sc->sc_mld_pending_emlsr = emlsr_active;
+    sc->sc_mld_disconnect_pending = disconnect;
+    sc->sc_mld_link_update_pending = 1;
+    sc->sc_mld_pending_generation = sc->sc_generation;
+    splx(s);
+    that->iwx_add_task(sc, sc->sc_nswq, &sc->mld_link_task);
+}
+
+#ifdef AIRPORT_WCL
+void ItlIwx::
+iwx_ttlm_schedule(struct ieee80211com *ic)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+    if (!(sc->sc_flags & IWX_FLAG_SHUTDOWN))
+        that->iwx_add_task(sc, sc->sc_nswq, &sc->mld_link_task);
+}
+
+int ItlIwx::
+iwx_ttlm_apply(struct ieee80211com *ic, uint16_t ap_links)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+    uint8_t allowed = 0;
+    for (int i = 0; i < ic->ic_mld_link_count; i++)
+        if (ic->ic_mld_links[i].assoc_accepted &&
+            (ap_links & (1U << ic->ic_mld_links[i].ap_link_id)))
+            allowed |= 1U << i;
+    if (!allowed)
+        return EINVAL;
+    uint8_t links = sc->sc_mld_active_links & allowed;
+    if (!links)
+        links = allowed & -allowed;
+    uint8_t primary = sc->sc_mld_primary_link;
+    if (!(links & (1U << primary)))
+        primary = __builtin_ctz((unsigned)links);
+    int err = that->iwx_mld_update_active_links(sc, links, primary,
+        sc->sc_mld_emlsr_active && __builtin_popcount((unsigned)links) == 2);
+    if (!err) {
+        sc->sc_pcitag->setProperty("AirportItlwm-TTLMAllowedAPLinks", ap_links, 32);
+        sc->sc_pcitag->setProperty("AirportItlwm-TTLMActiveLinks", links, 32);
+    }
+    return err;
+}
+
+void ItlIwx::
+iwx_wcl_update_mld_active_link(struct ieee80211com *ic, uint8_t link_slot)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
+    uint8_t emlsr_active, links;
+    int s;
+
+    if (!sc->sc_use_mld_api || link_slot >= IWX_MLD_MAX_LINKS)
+        return;
+    s = splnet();
+    emlsr_active = sc->sc_mld_emlsr_active;
+    links = sc->sc_mld_active_links;
+    if (!links)
+        links = 1U << link_slot;
+    if (emlsr_active && !(links & (1U << link_slot))) {
+        links = 1U << link_slot;
+        emlsr_active = false;
+    }
+    splx(s);
+    iwx_mld_schedule_active_links(sc, links, link_slot, emlsr_active, false);
+}
+#endif
+
+void ItlIwx::
 iwx_mld_active_link_task(void *arg)
 {
     struct iwx_softc *sc = (struct iwx_softc *)arg;

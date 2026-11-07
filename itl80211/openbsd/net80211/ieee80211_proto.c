@@ -2664,15 +2664,15 @@ ieee80211_ttlm_send(struct ieee80211com *ic, uint8_t action,
     uint8_t token, uint16_t status, uint16_t map)
 {
     uint8_t body[24], *pos = body;
-    *pos++ = 37; /* Protected EHT action category. */
+    *pos++ = IEEE80211_CATEG_PROT_EHT;
     *pos++ = action;
-    if (action != 2)
+    if (action != IEEE80211_ACTION_TID_TO_LINK_MAPPING_TEARDOWN)
         *pos++ = token;
-    if (action == 1) {
+    if (action == IEEE80211_ACTION_TID_TO_LINK_MAPPING_RESP) {
         LE_WRITE_2(pos, status);
         pos += 2;
     }
-    if (action == 0) {
+    if (action == IEEE80211_ACTION_TID_TO_LINK_MAPPING_REQ) {
         *pos++ = IEEE80211_ELEMID_EXTENSION;
         *pos++ = 19;
         *pos++ = IEEE80211_ELEMID_EXT_TID_TO_LINK_MAPPING;
@@ -2797,33 +2797,34 @@ ieee80211_ttlm_action(struct ieee80211com *ic, struct ieee80211_node *ni,
     struct ieee80211_ttlm_state *t = &ic->ic_ttlm;
     if (!ic->ic_wcl_peer_is_mlo || !ic->ic_ttlm_apply ||
         ic->ic_state != IEEE80211_S_RUN || !ic->ic_bss->ni_port_valid ||
-        ieee80211_mld_primary_node(ic, ni) != ic->ic_bss || len < 2 || frm[0] != 37)
+        ieee80211_mld_primary_node(ic, ni) != ic->ic_bss || len < 2 || frm[0] != IEEE80211_CATEG_PROT_EHT)
         return;
-    if (frm[1] == 2) {
+    if (frm[1] == IEEE80211_ACTION_TID_TO_LINK_MAPPING_TEARDOWN) {
         t->event = 2;
         ieee80211_ttlm_schedule(ic);
         return;
     }
     if (len < 3)
         return;
-    if (frm[1] == 0) {
+    if (frm[1] == IEEE80211_ACTION_TID_TO_LINK_MAPPING_REQ) {
         struct ieee80211_neg_ttlm map;
         if (t->busy || t->event || t->waiting ||
             ieee80211_ttlm_parse_neg(ic, frm + 3, len - 3, &map) ||
             (t->adv_valid && !(map.downlink[0] & t->adv_map))) {
-            ieee80211_ttlm_send(ic, 1, frm[2], 133, 0);
+            ieee80211_ttlm_send(ic, IEEE80211_ACTION_TID_TO_LINK_MAPPING_RESP,
+                frm[2], IEEE80211_STATUS_DENIED_TID_TO_LINK_MAPPING, 0);
             return;
         }
         t->candidate = map;
         t->token = frm[2];
         t->event = 1;
-    } else if (frm[1] == 1) {
+    } else if (frm[1] == IEEE80211_ACTION_TID_TO_LINK_MAPPING_RESP) {
         if (len < 5 || !t->waiting || frm[2] != t->dialog)
             return;
         uint16_t status = LE_READ_2(frm + 3);
         t->waiting = 0;
         t->response_at = 0;
-        if (status == 134 && !t->retry &&
+        if (status == IEEE80211_STATUS_PREF_TID_TO_LINK_MAPPING_SUGGESTED && !t->retry &&
             !ieee80211_ttlm_parse_neg(ic, frm + 5, len - 5, &t->candidate)) {
             t->requested_map = t->candidate.downlink[0];
             t->retry = 1;
@@ -2858,7 +2859,9 @@ ieee80211_ttlm_task(struct ieee80211com *ic)
     if (event == 3) {
         if (++t->dialog == 0)
             ++t->dialog;
-        if (ieee80211_ttlm_send(ic, 0, t->dialog, 0, t->requested_map)) {
+        if (ieee80211_ttlm_send(ic,
+            IEEE80211_ACTION_TID_TO_LINK_MAPPING_REQ, t->dialog,
+            IEEE80211_STATUS_SUCCESS, t->requested_map)) {
             ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
             return;
         }
@@ -2885,7 +2888,8 @@ ieee80211_ttlm_task(struct ieee80211com *ic)
     if ((event == 1 || event == 4) && t->adv_valid &&
         !((event == 1 ? t->candidate.downlink[0] : t->requested_map) & t->adv_map)) {
         if (event == 1) {
-            ieee80211_ttlm_send(ic, 1, t->token, 133, 0);
+            ieee80211_ttlm_send(ic, IEEE80211_ACTION_TID_TO_LINK_MAPPING_RESP,
+                    t->token, IEEE80211_STATUS_DENIED_TID_TO_LINK_MAPPING, 0);
             event = 0;
         } else {
             ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
@@ -2912,13 +2916,15 @@ ieee80211_ttlm_task(struct ieee80211com *ic)
             t->adv_map = old_adv; t->neg_map = old_neg;
             t->adv_valid = old_av; t->neg_valid = old_nv;
             if (event == 1)
-                ieee80211_ttlm_send(ic, 1, t->token, 133, 0);
+                ieee80211_ttlm_send(ic, IEEE80211_ACTION_TID_TO_LINK_MAPPING_RESP,
+                    t->token, IEEE80211_STATUS_DENIED_TID_TO_LINK_MAPPING, 0);
             ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
             return;
         }
         t->dirty = 0;
         if (event == 1)
-            ieee80211_ttlm_send(ic, 1, t->token, 0, 0);
+            ieee80211_ttlm_send(ic, IEEE80211_ACTION_TID_TO_LINK_MAPPING_RESP,
+                t->token, IEEE80211_STATUS_SUCCESS, 0);
         if (event == 4)
             t->retry = 0;
     }

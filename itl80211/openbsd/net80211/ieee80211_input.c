@@ -4375,7 +4375,7 @@ ieee80211_recv_action(struct ieee80211com *ic, mbuf_t m,
     
     switch (frm[0]) {
 #ifdef AIRPORT_WCL
-        case 37: /* Protected EHT */
+        case IEEE80211_CATEG_PROT_EHT: /* Protected EHT */
             ieee80211_ttlm_action(ic, ni, frm, mbuf_len(m) - sizeof(*wh));
             break;
 #endif

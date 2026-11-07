@@ -94,6 +94,7 @@ enum BeaconFlags : uint32_t {
 };
 
 enum Message : uint32_t {
+    LqmUpdate = 39,
     ResetInterface = 49,
     DriverAvailable = 55,
     Supplicant = 76,
@@ -104,7 +105,6 @@ enum Message : uint32_t {
     ConnectComplete = 213,
     JoinAbortComplete = 214,
     LinkStatus = 216,
-    LqmUpdate = 39,
     ScanDone = 237
 };
 

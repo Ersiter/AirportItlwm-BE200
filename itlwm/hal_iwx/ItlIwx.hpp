@@ -146,25 +146,6 @@ class ItlIwx : public ItlHalService, ItlDriverInfo, ItlDriverController {
     OSDeclareDefaultStructors(ItlIwx)
     
 public:
-    void iwx_mld_modify_link_fill(iwx_softc *, iwx_node *, iwx_mld_link_config_cmd *, int, int);
-    int iwx_mld_mac_ctxt_cmd(iwx_softc *, iwx_node *, uint32_t, int);
-    int iwx_mld_add_sta_cmd(iwx_softc *, iwx_node *, int);
-    int iwx_mld_rm_sta_cmd(iwx_softc *, iwx_node *);
-    void iwx_mld_rm_sta_local(iwx_softc *, iwx_node *);
-    int iwx_mld_auth(iwx_softc *);
-    int iwx_mld_run(iwx_softc *);
-    int iwx_mld_run_stop(iwx_softc *);
-    int iwx_mld_deauth(iwx_softc *);
-    int iwx_mld_set_key(iwx_softc *, ieee80211_node *, ieee80211_key *, int);
-    int iwx_mld_queue_cmd(iwx_softc *, uint32_t, int, int, uint32_t, uint64_t, uint64_t, uint16_t *, uint16_t *);
-    int iwx_mld_update_active_links(iwx_softc *, uint8_t, uint8_t, bool);
-    bool iwx_mld_associated_channels_valid(iwx_softc *);
-    bool iwx_mld_associated_channel_usable(iwx_softc *);
-#ifdef AIRPORT_WCL
-    uint8_t iwx_mld_select_emlsr_links(iwx_softc *, uint8_t *);
-#endif
-    int iwx_umac_scan_v17(struct iwx_softc *, int);
-    
     //kext
     void free() override;
     virtual bool attach(IOPCIDevice *device) override;
@@ -431,6 +412,7 @@ public:
     int    iwx_umac_scan(struct iwx_softc *, int);
     int    iwx_umac_scan_v12(struct iwx_softc *, int);
     int    iwx_umac_scan_v14(struct iwx_softc *, int);
+    int    iwx_umac_scan_v17(struct iwx_softc *, int);
     void    iwx_mcc_update(struct iwx_softc *, struct iwx_mcc_chub_notif *);
     uint8_t    iwx_ridx2rate(struct ieee80211_rateset *, int);
     int    iwx_rval2ridx(int);
@@ -475,6 +457,27 @@ public:
     static void    iwx_scan_task(void *);
     static int     iwx_defer_sae_join(struct ieee80211com *, const uint8_t *, int);
     static void    iwx_sae_join_task(void *);
+    void iwx_mld_modify_link_fill(iwx_softc *, iwx_node *, iwx_mld_link_config_cmd *, int, int);
+    int iwx_mld_mac_ctxt_cmd(iwx_softc *, iwx_node *, uint32_t, int);
+    int iwx_mld_add_sta_cmd(iwx_softc *, iwx_node *, int);
+    int iwx_mld_rm_sta_cmd(iwx_softc *, iwx_node *);
+    void iwx_mld_rm_sta_local(iwx_softc *, iwx_node *);
+    int iwx_mld_auth(iwx_softc *);
+    int iwx_mld_run(iwx_softc *);
+    int iwx_mld_run_stop(iwx_softc *);
+    int iwx_mld_deauth(iwx_softc *);
+    int iwx_mld_set_key(iwx_softc *, ieee80211_node *, ieee80211_key *, int);
+    int iwx_mld_queue_cmd(iwx_softc *, uint32_t, int, int, uint32_t, uint64_t, uint64_t, uint16_t *, uint16_t *);
+    int iwx_mld_update_active_links(iwx_softc *, uint8_t, uint8_t, bool);
+    bool iwx_mld_associated_channels_valid(iwx_softc *);
+    bool iwx_mld_associated_channel_usable(iwx_softc *);
+#ifdef AIRPORT_WCL
+    uint8_t iwx_mld_select_emlsr_links(iwx_softc *, uint8_t *);
+    static void iwx_ttlm_schedule(ieee80211com *);
+    static int iwx_ttlm_apply(ieee80211com *, uint16_t);
+    static void iwx_wcl_update_mld_active_link(ieee80211com *, uint8_t);
+#endif
+    static void iwx_mld_schedule_active_links(iwx_softc *, uint8_t, uint8_t, bool, bool);
     static void    iwx_mld_active_link_task(void *);
     static int    iwx_newstate(struct ieee80211com *, enum ieee80211_state, int);
     void    iwx_endscan(struct iwx_softc *, uint8_t, bool = true);
