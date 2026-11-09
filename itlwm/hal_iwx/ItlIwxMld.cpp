@@ -822,6 +822,128 @@ iwx_mld_modify_link_fill(struct iwx_softc *sc, struct iwx_node *in,
 }
 
 
+/* iwl_mld_get_htc_flags() */
+static uint32_t
+iwx_mld_get_htc_flags(const struct ieee80211_node *ni)
+{
+    const uint8_t *mac = ni->ni_he_cap_elem.mac_cap_info;
+    uint32_t htc = (mac[0] & IEEE80211_HE_MAC_CAP0_HTC_HE) ? 1 : 0;
+    uint8_t link_adaptation =
+        (((mac[2] & IEEE80211_HE_MAC_CAP2_LINK_ADAPTATION) << 1) |
+        ((mac[1] & IEEE80211_HE_MAC_CAP1_LINK_ADAPTATION) >> 7));
+
+    if (link_adaptation == 2)
+        htc |= 2U << 1;
+    else if (link_adaptation == 3)
+        htc |= 3U << 1;
+    if (mac[2] & IEEE80211_HE_MAC_CAP2_BSR)
+        htc |= 1U << 4;
+    if (mac[3] & IEEE80211_HE_MAC_CAP3_OMI_CONTROL)
+        htc |= 1U << 5;
+    if (mac[4] & IEEE80211_HE_MAC_CAP4_BQR)
+        htc |= 1U << 6;
+    return htc;
+}
+
+/* iwl_mld_fill_ampdu_size_and_dens() */
+static void
+iwx_mld_fill_ampdu_size_and_dens(const struct ieee80211_node *ni,
+    uint32_t *aggsize_out, uint32_t *mpdu_dens_out)
+{
+    const uint32_t max_aggsize = IWX_STA_FLG_MAX_AGG_SIZE_4M >>
+        IWX_STA_FLG_MAX_AGG_SIZE_SHIFT;
+    uint32_t aggsize, mpdu_dens;
+
+    if (IEEE80211_IS_CHAN_6GHZ(ni->ni_chan)) {
+        mpdu_dens = ni->ni_he_6ghz_capa & IEEE80211_HE_6GHZ_CAP_MIN_MPDU_START;
+        aggsize = (ni->ni_he_6ghz_capa &
+            IEEE80211_HE_6GHZ_CAP_MAX_AMPDU_LEN_EXP) >> 3;
+    } else {
+        mpdu_dens = (ni->ni_ampdu_param & IEEE80211_AMPDU_PARAM_SS) >> 2;
+        if (ni->ni_flags & IEEE80211_NODE_VHT)
+            aggsize = (ni->ni_vhtcaps &
+                IEEE80211_VHTCAP_MAX_A_MPDU_LENGTH_EXPONENT_MASK) >>
+                IEEE80211_VHTCAP_MAX_A_MPDU_LENGTH_EXPONENT_SHIFT;
+        else
+            aggsize = ni->ni_ampdu_param & IEEE80211_AMPDU_PARAM_LE;
+    }
+    if (ni->ni_flags & IEEE80211_NODE_HE)
+        aggsize += (ni->ni_he_cap_elem.mac_cap_info[3] &
+            IEEE80211_HE_MAC_CAP3_MAX_AMPDU_LEN_EXP_MASK) >>
+            IEEE80211_HE_MAC_CAP3_MAX_AMPDU_LEN_EXP_SHIFT;
+    if (ni->ni_flags & IEEE80211_NODE_EHT)
+        aggsize += ni->ni_eht_cap_elem.mac_cap_info[1] & 0x01;
+    *aggsize_out = MIN(aggsize, max_aggsize);
+    *mpdu_dens_out = mpdu_dens;
+}
+
+/* iwl_mld_fill_pkt_ext(): PPE thresholds, or the nominal padding without them. */
+static void
+iwx_mld_fill_pkt_ext(const struct ieee80211_node *ni,
+    struct iwx_mld_he_pkt_ext_v2 *pkt_ext)
+{
+    memset(pkt_ext, 7, sizeof(*pkt_ext));
+    if (ni->ni_he_cap_elem.phy_cap_info[6] &
+        IEEE80211_HE_PHY_CAP6_PPE_THRESHOLD_PRESENT) {
+        unsigned nss = (ni->ni_ppe_thres[0] & 7) + 1;
+        unsigned mask = (ni->ni_ppe_thres[0] >> 3) & 15;
+        unsigned bit = 7;
+
+        for (unsigned ss = 0; ss < nss && ss < 2; ss++) {
+            for (unsigned bw = 0; bw < 4; bw++) {
+                if (!(mask & (1U << bw)))
+                    continue;
+                pkt_ext->pkt_ext_qam_th[ss][bw][1] =
+                    iwx_mld_he_ppe_value(ni->ni_ppe_thres, bit);
+                pkt_ext->pkt_ext_qam_th[ss][bw][0] =
+                    iwx_mld_he_ppe_value(ni->ni_ppe_thres, bit + 3);
+                bit += 6;
+            }
+        }
+    } else {
+        unsigned padding = (ni->ni_he_cap_elem.phy_cap_info[9] >> 6) & 3;
+
+        if (padding == 3)
+            return;
+        for (unsigned ss = 0; ss < 2; ss++) {
+            for (unsigned bw = 0; bw < 4; bw++) {
+                pkt_ext->pkt_ext_qam_th[ss][bw][0] = padding == 1 ? 0 : 7;
+                pkt_ext->pkt_ext_qam_th[ss][bw][1] = padding == 2 ? 0 : 7;
+            }
+        }
+    }
+}
+
+/* iwl_mld_add_link(): the firmware link context of one link slot. */
+int ItlIwx::
+iwx_mld_add_link(struct iwx_softc *sc, struct iwx_node *in, int link_slot)
+
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct iwx_mld_link_config_cmd link_cmd;
+    int err;
+
+    memset(&link_cmd, 0, sizeof(link_cmd));
+    link_cmd.link_id = htole32(link_slot);
+    link_cmd.mac_id = htole32(in->in_id);
+    link_cmd.spec_link_id = in->in_ni.ni_mld_valid ?
+        in->in_ni.ni_mld_link_id : 0;
+    link_cmd.phy_id = htole32(in->in_phyctxt ? in->in_phyctxt->id :
+        IWX_FW_CTXT_INVALID);
+    IEEE80211_ADDR_COPY(link_cmd.local_link_addr,
+        ic->ic_mld_link_count != 0 ?
+            ic->ic_mld_links[link_slot].local_addr : ic->ic_myaddr);
+    link_cmd.listen_lmac = 0;
+    link_cmd.action = IWX_FW_CTXT_ACTION_ADD;
+
+    err = iwx_send_cmd_pdu(sc,
+        IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD),
+        0, sizeof(link_cmd), &link_cmd);
+    if (!err)
+        sc->sc_mld_link_active |= 1U << link_slot;
+    return err;
+}
+
 int ItlIwx::
 iwx_mld_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
 {
@@ -831,8 +953,6 @@ iwx_mld_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
     int cmd_ver;
     size_t cmd_size;
     uint32_t aggsize, mpdu_dens;
-    const uint32_t max_aggsize = (IWX_STA_FLG_MAX_AGG_SIZE_4M >>
-            IWX_STA_FLG_MAX_AGG_SIZE_SHIFT);
     int err, changes, link_slot, sta_id;
     uint32_t old_sta_mask, new_sta_mask;
     uint32_t old_active_sta_mask, new_active_sta_mask;
@@ -870,27 +990,9 @@ iwx_mld_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
         iwx_rs_reset_amsdu(in);
 
     if (!update && !(sc->sc_mld_link_active & (1U << link_slot))) {
-        memset(&link_cmd, 0, sizeof(link_cmd));
-        link_cmd.link_id = htole32(link_slot);
-        link_cmd.mac_id = htole32(in->in_id);
-        link_cmd.spec_link_id = in->in_ni.ni_mld_valid ?
-            in->in_ni.ni_mld_link_id : 0;
-        if (in->in_phyctxt)
-            link_cmd.phy_id = htole32(in->in_phyctxt->id);
-        else
-            link_cmd.phy_id = htole32(IWX_FW_CTXT_INVALID);
-        IEEE80211_ADDR_COPY(link_cmd.local_link_addr,
-            ic->ic_mld_link_count != 0 ?
-                ic->ic_mld_links[link_slot].local_addr : ic->ic_myaddr);
-        link_cmd.listen_lmac = 0;
-        link_cmd.action = IWX_FW_CTXT_ACTION_ADD;
-
-        err = iwx_send_cmd_pdu(sc,
-            IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD),
-            0, sizeof(link_cmd), &link_cmd);
+        err = iwx_mld_add_link(sc, in, link_slot);
         if (err)
             return err;
-        sc->sc_mld_link_active |= 1U << link_slot;
     }
 
     changes = IWX_MLD_LINK_CONTEXT_MODIFY_ACTIVE;
@@ -932,90 +1034,18 @@ iwx_mld_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
             (IEEE80211_NODE_HE | IEEE80211_NODE_EHT)))) {
         if (iwx_mimo_enabled(sc) && in->in_ni.ni_rx_nss > 1)
             sta_cmd.mimo = htole32(1);
-
-        if (is_6ghz) {
-            mpdu_dens = in->in_ni.ni_he_6ghz_capa &
-                IEEE80211_HE_6GHZ_CAP_MIN_MPDU_START;
-            aggsize = (in->in_ni.ni_he_6ghz_capa &
-                IEEE80211_HE_6GHZ_CAP_MAX_AMPDU_LEN_EXP) >> 3;
-        } else {
-            mpdu_dens = (in->in_ni.ni_ampdu_param &
-                IEEE80211_AMPDU_PARAM_SS) >> 2;
-
-            if (in->in_ni.ni_flags & IEEE80211_NODE_VHT) {
-                aggsize = (in->in_ni.ni_vhtcaps &
-                    IEEE80211_VHTCAP_MAX_A_MPDU_LENGTH_EXPONENT_MASK) >>
-                    IEEE80211_VHTCAP_MAX_A_MPDU_LENGTH_EXPONENT_SHIFT;
-            } else {
-                aggsize = (in->in_ni.ni_ampdu_param &
-                    IEEE80211_AMPDU_PARAM_LE);
-            }
-        }
-        if (in->in_ni.ni_flags & IEEE80211_NODE_HE)
-            aggsize += (in->in_ni.ni_he_cap_elem.mac_cap_info[3] &
-                IEEE80211_HE_MAC_CAP3_MAX_AMPDU_LEN_EXP_MASK) >>
-                IEEE80211_HE_MAC_CAP3_MAX_AMPDU_LEN_EXP_SHIFT;
-        if (in->in_ni.ni_flags & IEEE80211_NODE_EHT)
-            aggsize += in->in_ni.ni_eht_cap_elem.mac_cap_info[1] & 0x01;
-        if (aggsize > max_aggsize)
-            aggsize = max_aggsize;
-
+        iwx_mld_fill_ampdu_size_and_dens(&in->in_ni, &aggsize, &mpdu_dens);
         sta_cmd.tx_ampdu_spacing = htole32(mpdu_dens);
         sta_cmd.tx_ampdu_max_size = htole32(aggsize);
     }
 
     if (in->in_ni.ni_flags & IEEE80211_NODE_HE) {
-        const uint8_t *mac = in->in_ni.ni_he_cap_elem.mac_cap_info;
-        uint32_t htc = (mac[0] & IEEE80211_HE_MAC_CAP0_HTC_HE) ? 1 : 0;
-        uint8_t link_adaptation =
-            (((mac[2] & IEEE80211_HE_MAC_CAP2_LINK_ADAPTATION) << 1) |
-            ((mac[1] & IEEE80211_HE_MAC_CAP1_LINK_ADAPTATION) >> 7));
-
-        if (link_adaptation == 2)
-            htc |= 2U << 1;
-        else if (link_adaptation == 3)
-            htc |= 3U << 1;
-        if (mac[2] & IEEE80211_HE_MAC_CAP2_BSR)
-            htc |= 1U << 4;
-        if (mac[3] & IEEE80211_HE_MAC_CAP3_OMI_CONTROL)
-            htc |= 1U << 5;
-        if (mac[4] & IEEE80211_HE_MAC_CAP4_BQR)
-            htc |= 1U << 6;
-        sta_cmd.htc_flags = htole32(htc);
-        sta_cmd.ack_enabled = htole32(
-            (mac[2] & IEEE80211_HE_MAC_CAP2_ACK_EN) ? 1 : 0);
-
-        memset(&sta_cmd.pkt_ext, 7, sizeof(sta_cmd.pkt_ext));
-        if (in->in_ni.ni_he_cap_elem.phy_cap_info[6] &
-            IEEE80211_HE_PHY_CAP6_PPE_THRESHOLD_PRESENT) {
-            unsigned nss = (in->in_ni.ni_ppe_thres[0] & 7) + 1;
-            unsigned mask = (in->in_ni.ni_ppe_thres[0] >> 3) & 15;
-            unsigned bit = 7;
-            for (unsigned ss = 0; ss < nss && ss < 2; ss++) {
-                for (unsigned bw = 0; bw < 4; bw++) {
-                    if (!(mask & (1U << bw)))
-                        continue;
-                    sta_cmd.pkt_ext.pkt_ext_qam_th[ss][bw][1] =
-                        iwx_mld_he_ppe_value(in->in_ni.ni_ppe_thres, bit);
-                    sta_cmd.pkt_ext.pkt_ext_qam_th[ss][bw][0] =
-                        iwx_mld_he_ppe_value(in->in_ni.ni_ppe_thres, bit + 3);
-                    bit += 6;
-                }
-            }
-        } else {
-            unsigned padding =
-                (in->in_ni.ni_he_cap_elem.phy_cap_info[9] >> 6) & 3;
-            if (padding != 3) {
-                for (unsigned ss = 0; ss < 2; ss++)
-                    for (unsigned bw = 0; bw < 4; bw++) {
-                        sta_cmd.pkt_ext.pkt_ext_qam_th[ss][bw][0] =
-                            padding == 1 ? 0 : 7;
-                        sta_cmd.pkt_ext.pkt_ext_qam_th[ss][bw][1] =
-                            padding == 2 ? 0 : 7;
-                    }
-            }
-        }
+        sta_cmd.htc_flags = htole32(iwx_mld_get_htc_flags(&in->in_ni));
+        sta_cmd.ack_enabled = htole32((in->in_ni.ni_he_cap_elem.mac_cap_info[2] &
+            IEEE80211_HE_MAC_CAP2_ACK_EN) ? 1 : 0);
+        iwx_mld_fill_pkt_ext(&in->in_ni, &sta_cmd.pkt_ext);
     }
+
 
     err = iwx_send_cmd_pdu(sc,
         IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_STA_CONFIG_CMD),
@@ -1317,11 +1347,153 @@ iwx_mld_rm_sta_local(struct iwx_softc *sc, struct iwx_node *in)
     sc->sc_mld_txq_tidmask = 0;
 }
 
+/*
+ * iwl_mvm_wait_sta_queues_empty(): wait for the station's TID queues, with one
+ * deadline per queue as in iwl_trans_pcie_wait_txq_empty(). The rings are
+ * freed afterwards, which must not happen while firmware may still read them.
+ * The shared management queue (first_data_qid) is not released here, so it is
+ * not waited on either.
+ */
+int ItlIwx::
+iwx_mld_wait_sta_queues_empty(struct iwx_softc *sc, int generation)
+{
+    for (int tid = 0; tid < IWX_MAX_TID_COUNT; tid++) {
+        uint16_t qid = sc->sc_tid_data[tid].qid;
+        struct iwx_tx_ring *ring;
+        AbsoluteTime deadline;
+
+        if (qid == IWX_INVALID_QUEUE || qid >= nitems(sc->txq))
+            continue;
+        ring = &sc->txq[qid];
+        clock_interval_to_deadline(IWX_FLUSH_WAIT_MS, kMillisecondScale,
+            reinterpret_cast<uint64_t *>(&deadline));
+        /* Logical write pointers map to the descriptor window, as in reclaim. */
+        while (ring->tail != IWX_AGG_SSN_TO_TXQ_IDX(ring->cur, ring->ring_count)) {
+            int result = getMainCommandGate()->commandSleep(
+                &ring->queued, deadline, THREAD_UNINT);
+            if (generation != sc->sc_generation)
+                return ENXIO;
+            if (result != THREAD_AWAKENED &&
+                ring->tail != IWX_AGG_SSN_TO_TXQ_IDX(ring->cur, ring->ring_count))
+                return result == THREAD_TIMED_OUT ? EWOULDBLOCK : EINTR;
+        }
+    }
+    return 0;
+}
+
+/* Remove the station's firmware TX queues and release their rings. */
+int ItlIwx::
+iwx_mld_remove_sta_queues(struct iwx_softc *sc)
+{
+    for (int tid = 0; tid <= IWX_MGMT_TID; tid++) {
+        int err;
+
+        if (!(sc->sc_mld_txq_tidmask & (1U << tid)))
+            continue;
+        err = iwx_mld_queue_cmd(sc, sc->sc_mld_active_sta_mask, tid, 1, 0, 0, 0,
+            NULL, NULL);
+        if (err) {
+            iwx_mld_log_failure(sc, "deauth", "station-queue-remove",
+                err, IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
+                    IWX_MLD_SCD_QUEUE_CONFIG_CMD), tid);
+            return err;
+        }
+        if (tid < IWX_MAX_TID_COUNT) {
+            const uint16_t qid = sc->sc_tid_data[tid].qid;
+            if (qid != IWX_INVALID_QUEUE && qid < nitems(sc->txq)) {
+                iwx_free_tx_ring(sc, &sc->txq[qid]);
+                sc->sc_tid_data[tid].qid = IWX_INVALID_QUEUE;
+            }
+        }
+    }
+    return 0;
+}
+
+/* Remove the group keys, every link's group keys and the pairwise key. */
+int ItlIwx::
+iwx_mld_remove_sta_keys(struct iwx_softc *sc, struct iwx_node *in)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct ieee80211_key *key;
+    int err;
+
+    for (int i = 0; i < IEEE80211_GROUP_NKID; i++) {
+        key = &ic->ic_nw_keys[i];
+        if (key->k_cipher != IEEE80211_CIPHER_CCMP &&
+            !ieee80211_is_bip_cipher(key->k_cipher))
+            continue;
+        err = iwx_mld_set_key(sc, &in->in_ni, key, 1);
+        if (err) {
+            iwx_mld_log_failure(sc, "deauth", "group-key-remove",
+                err, IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_MLD_SEC_KEY_CMD), i);
+            return err;
+        }
+        if (ieee80211_is_bip_cipher(key->k_cipher))
+            ieee80211_delete_key(ic, &in->in_ni, key);
+        explicit_bzero(key, sizeof(*key));
+    }
+    for (int slot = 0; slot < ic->ic_mld_link_count; slot++) {
+        struct ieee80211_mld_link_info *link = &ic->ic_mld_links[slot];
+
+        for (int kid = 0; kid < IEEE80211_GROUP_NKID; kid++) {
+            key = &link->keys[kid];
+            if (key->k_cipher == IEEE80211_CIPHER_NONE)
+                continue;
+            err = iwx_mld_set_key(sc, link->ni, key, 1);
+            if (err) {
+                iwx_mld_log_failure(sc, "deauth", "link-key-remove",
+                    err, IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_MLD_SEC_KEY_CMD), slot);
+                return err;
+            }
+            ieee80211_delete_key(ic, link->ni, key);
+            explicit_bzero(key, sizeof(*key));
+        }
+    }
+    key = &in->in_ni.ni_pairwise_key;
+    if (key->k_cipher == IEEE80211_CIPHER_CCMP) {
+        err = iwx_mld_set_key(sc, &in->in_ni, key, 1);
+        if (err) {
+            iwx_mld_log_failure(sc, "deauth", "pairwise-key-remove",
+                err, IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_MLD_SEC_KEY_CMD), -1);
+            return err;
+        }
+        explicit_bzero(key, sizeof(*key));
+    }
+    return 0;
+}
+
+/* iwl_mld_remove_link(): deactivate, then remove one firmware link context. */
+int ItlIwx::
+iwx_mld_remove_link(struct iwx_softc *sc, struct iwx_node *in, int link_slot)
+{
+    struct iwx_mld_link_config_cmd link_cmd;
+    int err;
+
+    memset(&link_cmd, 0, sizeof(link_cmd));
+    iwx_mld_modify_link_fill(sc, in, &link_cmd,
+        IWX_MLD_LINK_CONTEXT_MODIFY_ACTIVE, 0);
+    err = iwx_send_cmd_pdu(sc,
+        IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD),
+        0, sizeof(link_cmd), &link_cmd);
+    if (err)
+        return err;
+    memset(&link_cmd, 0, sizeof(link_cmd));
+    link_cmd.action = htole32(IWX_FW_CTXT_ACTION_REMOVE);
+    link_cmd.link_id = htole32(link_slot);
+    link_cmd.spec_link_id = in->in_ni.ni_mld_valid ? in->in_ni.ni_mld_link_id : 0;
+    link_cmd.phy_id = htole32(IWX_FW_CTXT_INVALID);
+    err = iwx_send_cmd_pdu(sc,
+        IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD),
+        0, sizeof(link_cmd), &link_cmd);
+    if (!err)
+        sc->sc_mld_link_active &= ~(1U << link_slot);
+    return err;
+}
+
 int ItlIwx::
 iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
 {
     struct iwx_mld_mvm_remove_sta_cmd sta_cmd;
-    struct iwx_mld_link_config_cmd link_cmd;
     struct ieee80211com *ic = &sc->sc_ic;
     int err;
     int generation = sc->sc_generation;
@@ -1368,103 +1540,18 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
                 return err;
             }
         }
-        /*
-         * One deadline per queue, matching iwl_trans_pcie_wait_txq_empty().
-         * A timeout ends the removal: the queues below are freed and their
-         * rings released, which must not happen while firmware may still be
-         * reading them.
-         */
-        auto wait_txq = [&](uint16_t qid) {
-            if (qid == IWX_INVALID_QUEUE || qid >= nitems(sc->txq))
-                return 0;
-            struct iwx_tx_ring *ring = &sc->txq[qid];
-            AbsoluteTime deadline;
-            clock_interval_to_deadline(IWX_FLUSH_WAIT_MS, kMillisecondScale,
-                reinterpret_cast<uint64_t *>(&deadline));
-            /* Logical write pointers map to the descriptor window, as in reclaim. */
-            while (ring->tail != IWX_AGG_SSN_TO_TXQ_IDX(ring->cur, ring->ring_count)) {
-                int result = getMainCommandGate()->commandSleep(
-                    &ring->queued, deadline, THREAD_UNINT);
-                if (generation != sc->sc_generation)
-                    return ENXIO;
-                if (result != THREAD_AWAKENED &&
-                    ring->tail != IWX_AGG_SSN_TO_TXQ_IDX(ring->cur, ring->ring_count))
-                    return result == THREAD_TIMED_OUT ? EWOULDBLOCK : EINTR;
-            }
-            return 0;
-        };
-        /*
-         * iwl_mvm_wait_sta_queues_empty() walks only the station's own TID
-         * queues. first_data_qid is the shared management queue and its ring
-         * is not released here, so waiting on it would only stall the deauth
-         * behind unrelated traffic.
-         */
-        for (int tid = 0; !err && tid < IWX_MAX_TID_COUNT; tid++)
-            err = wait_txq(sc->sc_tid_data[tid].qid);
+        err = iwx_mld_wait_sta_queues_empty(sc, generation);
         if (err) {
             iwx_mld_log_failure(sc, "deauth", "station-tx-drain",
                 err, IWX_TXPATH_FLUSH, -1);
             return err;
         }
-        for (int tid = 0; tid <= IWX_MGMT_TID; tid++) {
-            if (!(sc->sc_mld_txq_tidmask & (1U << tid)))
-                continue;
-            err = iwx_mld_queue_cmd(sc, sc->sc_mld_active_sta_mask, tid, 1, 0, 0, 0, NULL, NULL);
-            if (err) {
-                iwx_mld_log_failure(sc, "deauth", "station-queue-remove",
-                    err, IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
-                        IWX_MLD_SCD_QUEUE_CONFIG_CMD), tid);
-                return err;
-            }
-            if (tid < IWX_MAX_TID_COUNT) {
-                const uint16_t qid = sc->sc_tid_data[tid].qid;
-                if (qid != IWX_INVALID_QUEUE && qid < nitems(sc->txq)) {
-                    iwx_free_tx_ring(sc, &sc->txq[qid]);
-                    sc->sc_tid_data[tid].qid = IWX_INVALID_QUEUE;
-                }
-            }
-        }
-        for (int i = 0; i < IEEE80211_GROUP_NKID; i++) {
-            struct ieee80211_key *key = &sc->sc_ic.ic_nw_keys[i];
-            if (key->k_cipher != IEEE80211_CIPHER_CCMP &&
-                !ieee80211_is_bip_cipher(key->k_cipher))
-                continue;
-            err = iwx_mld_set_key(sc, &in->in_ni, key, 1);
-            if (err) {
-                iwx_mld_log_failure(sc, "deauth", "group-key-remove",
-                    err, IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_MLD_SEC_KEY_CMD), i);
-                return err;
-            }
-            if (ieee80211_is_bip_cipher(key->k_cipher))
-                ieee80211_delete_key(&sc->sc_ic, &in->in_ni, key);
-            explicit_bzero(key, sizeof(*key));
-        }
-        for (int slot = 0; slot < sc->sc_ic.ic_mld_link_count; slot++) {
-            struct ieee80211_mld_link_info *link = &sc->sc_ic.ic_mld_links[slot];
-            for (int kid = 0; kid < IEEE80211_GROUP_NKID; kid++) {
-                struct ieee80211_key *key = &link->keys[kid];
-                if (key->k_cipher == IEEE80211_CIPHER_NONE)
-                    continue;
-                err = iwx_mld_set_key(sc, link->ni, key, 1);
-                if (err) {
-                    iwx_mld_log_failure(sc, "deauth", "link-key-remove",
-                        err, IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_MLD_SEC_KEY_CMD), slot);
-                    return err;
-                }
-                ieee80211_delete_key(&sc->sc_ic, link->ni, key);
-                explicit_bzero(key, sizeof(*key));
-            }
-        }
-        struct ieee80211_key *key = &in->in_ni.ni_pairwise_key;
-        if (key->k_cipher == IEEE80211_CIPHER_CCMP) {
-            err = iwx_mld_set_key(sc, &in->in_ni, key, 1);
-            if (err) {
-                iwx_mld_log_failure(sc, "deauth", "pairwise-key-remove",
-                    err, IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_MLD_SEC_KEY_CMD), -1);
-                return err;
-            }
-            explicit_bzero(key, sizeof(*key));
-        }
+        err = iwx_mld_remove_sta_queues(sc);
+        if (err)
+            return err;
+        err = iwx_mld_remove_sta_keys(sc, in);
+        if (err)
+            return err;
         for (int i = 0; i < IWX_MLD_MAX_LINKS; i++) {
             uint8_t sta_id = sc->sc_mld_sta_ids[i];
             if (sta_id == 0xff || !(sc->sc_mld_sta_mask & (1U << sta_id)))
@@ -1483,37 +1570,21 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
         }
         sc->sc_flags &= ~IWX_FLAG_STA_ACTIVE;
     }
-    // The primary firmware slot exists even when non-MLO discovery reports zero links.
+    /* The primary firmware slot exists even when non-MLO discovery reports zero links. */
     for (int i = IWX_MLD_MAX_LINKS - 1; i >= 0; i--) {
         struct ieee80211_node *ni;
-        struct iwx_node *linkin;
+
         if (!(sc->sc_mld_link_active & (1U << i)))
             continue;
         ni = i == 0 ? &in->in_ni :
             (i < ic->ic_mld_link_count ? ic->ic_mld_links[i].ni : NULL);
         if (ni == NULL)
             return EINVAL;
-        linkin = (struct iwx_node *)ni;
-        memset(&link_cmd, 0, sizeof(link_cmd));
-        iwx_mld_modify_link_fill(sc, linkin, &link_cmd,
-            IWX_MLD_LINK_CONTEXT_MODIFY_ACTIVE, 0);
-        err = iwx_send_cmd_pdu(sc,
-            IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD),
-            0, sizeof(link_cmd), &link_cmd);
+        err = iwx_mld_remove_link(sc, (struct iwx_node *)ni, i);
         if (err)
             return err;
-        memset(&link_cmd, 0, sizeof(link_cmd));
-        link_cmd.action = htole32(IWX_FW_CTXT_ACTION_REMOVE);
-        link_cmd.link_id = htole32(i);
-        link_cmd.spec_link_id = ni->ni_mld_valid ? ni->ni_mld_link_id : 0;
-        link_cmd.phy_id = htole32(IWX_FW_CTXT_INVALID);
-        err = iwx_send_cmd_pdu(sc,
-            IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD),
-            0, sizeof(link_cmd), &link_cmd);
-        if (err)
-            return err;
-        sc->sc_mld_link_active &= ~(1U << i);
     }
+
     iwx_rs_reset_amsdu(in);
     for (int i = 0; i < ic->ic_mld_link_count; i++)
         if (ic->ic_mld_links[i].ni)

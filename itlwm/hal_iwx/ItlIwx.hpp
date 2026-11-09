@@ -460,7 +460,12 @@ public:
     static void    iwx_sae_join_task(void *);
     void iwx_mld_modify_link_fill(iwx_softc *, iwx_node *, iwx_mld_link_config_cmd *, int, int);
     int iwx_mld_mac_ctxt_cmd(iwx_softc *, iwx_node *, uint32_t, int);
+    int iwx_mld_add_link(iwx_softc *, iwx_node *, int);
     int iwx_mld_add_sta_cmd(iwx_softc *, iwx_node *, int);
+    int iwx_mld_wait_sta_queues_empty(iwx_softc *, int);
+    int iwx_mld_remove_sta_queues(iwx_softc *);
+    int iwx_mld_remove_sta_keys(iwx_softc *, iwx_node *);
+    int iwx_mld_remove_link(iwx_softc *, iwx_node *, int);
     int iwx_mld_rm_sta_cmd(iwx_softc *, iwx_node *);
     void iwx_mld_rm_sta_local(iwx_softc *, iwx_node *);
     int iwx_mld_auth(iwx_softc *);
