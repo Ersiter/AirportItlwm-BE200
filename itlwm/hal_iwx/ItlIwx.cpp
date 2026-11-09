@@ -8340,6 +8340,7 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     uint32_t flags = 0, rate_n_flags = 0;
     uint16_t offload_assist = 0;
     uint16_t cmd_size = 0;
+    uint16_t tb1_len;
 
     uint16_t num_tbs;
     uint8_t tid, type, subtype;
@@ -8532,9 +8533,7 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     //    totlen = m->m_pkthdr.len;
     totlen = mbuf_pkthdr_len(m);
     
-    offload_assist = itlTxOffloadHeader(hdrlen);
-    if (amsdu_subframes > 1)
-        offload_assist |= IWX_TX_CMD_OFFLD_AMSDU;
+    offload_assist = itlTxOffloadHeader(hdrlen, amsdu_subframes > 1);
     
     if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210) {
         tx_gen3 = (struct iwx_tx_cmd_gen3 *)cmd->data;
@@ -8588,8 +8587,11 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     memcpy(&desc->tbs[0].addr, &paddr, sizeof(paddr));
     if (data->cmd_paddr >> 32 != (data->cmd_paddr + le32toh(desc->tbs[0].tb_len)) >> 32)
         DPRINTF(("%s: TB0 crosses 32bit boundary\n", __func__));
-    desc->tbs[1].tb_len = htole16(_ALIGN(sizeof(struct iwx_cmd_header) +
-                                  cmd_size + hdrlen - IWX_FIRST_TB_SIZE, 4));
+    /* Linux iwl_txq_gen2_build_tx() pads TB1 only when the frame is not an A-MSDU. */
+    tb1_len = sizeof(struct iwx_cmd_header) + cmd_size + hdrlen - IWX_FIRST_TB_SIZE;
+    if (amsdu_subframes == 1)
+        tb1_len = _ALIGN(tb1_len, 4);
+    desc->tbs[1].tb_len = htole16(tb1_len);
     paddr = htole64(data->cmd_paddr + IWX_FIRST_TB_SIZE);
     memcpy(&desc->tbs[1].addr, &paddr, sizeof(paddr));
     

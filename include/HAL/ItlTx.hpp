@@ -55,8 +55,13 @@ inline bool itlTxCompletionValid(unsigned tail, unsigned queued,
     return advance <= queued;
 }
 
-constexpr uint16_t itlTxOffloadHeader(unsigned headerBytes) {
-    return uint16_t(((headerBytes / 2) << 8) | ((headerBytes % 4) ? (1U << 13) : 0));
+/*
+ * Linux iwl_mvm_tx_csum(): an A-MSDU is sent without header padding, so the
+ * AMSDU and PAD offload bits are mutually exclusive.
+ */
+constexpr uint16_t itlTxOffloadHeader(unsigned headerBytes, bool amsdu) {
+    return uint16_t(((headerBytes / 2) << 8) |
+        (amsdu ? (1U << 14) : (headerBytes % 4) ? (1U << 13) : 0));
 }
 
 #endif
