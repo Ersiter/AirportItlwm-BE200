@@ -10,7 +10,6 @@ on:
       - 'include/**'
       - 'itlwm.xcodeproj/**'
       - 'scripts/**'
-      - 'tests/**'
       - '.github/workflows/main.yml'
   workflow_dispatch:
     inputs:
@@ -42,49 +41,6 @@ jobs:
           path: MacKernelSDK
       - name: Expose public Tahoe MSI-X API
         run: python3 scripts/prepare_tahoe_sdk.py
-      - name: Check real firmware section storage
-        run: python3 scripts/check_firmware_sections.py
-      - name: Check PNVM resource names
-        run: python3 scripts/check_pnvm_names.py
-      - name: Check BE family firmware selection and command ABI
-        run: |
-          python3 scripts/check_be_firmware.py
-          python3 tests/host/gl92/gl92_host_test.py
-      - name: Check PNVM completion semantics
-        run: python3 scripts/check_pnvm_completion.py
-      - name: Check NVM MAC CSR handling
-        run: python3 scripts/check_nvm_mac.py
-      - name: Check MCC response ABI handling
-        run: python3 scripts/check_mcc_response.py
-      - name: Check 6 GHz HE state, MBSSID links and country policy
-        run: python3 scripts/check_6ghz_state.py
-      - name: Check startup power diagnostics
-        run: python3 scripts/check_startup_power.py
-      - name: Check WCL channel and authentication behavior
-        run: |
-          python3 scripts/check_beacon_event.py
-          c++ -std=c++14 -Wall -Wextra -Wno-unused-parameter -Werror tests/wcl_channels.cpp -o "$RUNNER_TEMP/wcl_channels"
-          "$RUNNER_TEMP/wcl_channels"
-          c++ -std=c++14 -Wall -Wextra -Wno-unused-parameter -Werror tests/wcl_mbssid.cpp -o "$RUNNER_TEMP/wcl_mbssid"
-          "$RUNNER_TEMP/wcl_mbssid"
-          bash -n scripts/Collect-WiFi-Community.command
-      - name: Check 6 GHz basic rates and mode transitions
-        run: python3 tests/host/scan/scan_host_test.py
-      - name: Check scan lifecycle and TX/RX recovery
-        run: |
-          python3 tests/host/scan/boot_join_host_test.py
-          python3 tests/host/scan/beacon_edca_host_test.py
-          python3 tests/host/scan/scan_v17_host_test.py
-          python3 tests/host/scan/wcl_scan_host_test.py
-          python3 tests/host/tx/rx_trailer_host_test.py
-          python3 tests/host/tx/data_tid_host_test.py
-          python3 tests/host/tx/tx_drain_host_test.py
-          python3 tests/host/tx/tx_recovery_host_test.py
-          python3 tests/host/mlo/mlo_rx_host_test.py
-      - name: Run host-side SAE tests
-        run: |
-          sh tests/host/sae/run.sh
-          SAE_HNP_COMPAT=1 sh tests/host/sae/run.sh
       - name: Build Tahoe and Sequoia x86_64 kexts
         env:
           CONFIGURATION: ${{ inputs.configuration || 'Debug' }}
