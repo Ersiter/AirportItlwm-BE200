@@ -2549,20 +2549,34 @@ ieee80211_mld_discovery_iter(void *arg, struct ieee80211_node *ni)
 	struct ieee80211_mld_link_info *link;
 	uint8_t i, j;
 
+	/*
+	 * A link is usable as in wpa_supplicant's wpa_bss_get_usable_links():
+	 * same AP MLD and MLD/EML capabilities, and an RSNE with MFP that
+	 * offers the AKM and pairwise cipher chosen for the association link.
+	 * The links of an AP MLD may advertise different AKM sets, e.g. a
+	 * 6 GHz link without PSK. Group ciphers must match because the group
+	 * keys of every link are installed with the association link's cipher.
+	 */
 	if (discovery->count >= IEEE80211_MLD_MAX_LINKS || ni == primary ||
 	    !ni->ni_mld_valid || ni->ni_mld_link_id >= 16 || ni->ni_chan == NULL ||
 	    (ni->ni_flags & (IEEE80211_NODE_HECAP | IEEE80211_NODE_EHTCAP)) !=
 	        (IEEE80211_NODE_HECAP | IEEE80211_NODE_EHTCAP) ||
 	    memcmp(ni->ni_mld_addr, primary->ni_mld_addr,
 	        IEEE80211_ADDR_LEN) != 0 ||
+	    (ni->ni_mld_capa_ops & ~IEEE80211_MLD_CAP_OP_RESERVED) !=
+	        (primary->ni_mld_capa_ops & ~IEEE80211_MLD_CAP_OP_RESERVED) ||
+	    (ni->ni_mld_eml_capa & ~IEEE80211_EML_CAP_RESERVED) !=
+	        (primary->ni_mld_eml_capa & ~IEEE80211_EML_CAP_RESERVED) ||
 	    ni->ni_esslen != primary->ni_esslen ||
 	    memcmp(ni->ni_essid, primary->ni_essid, ni->ni_esslen) != 0 ||
 	    ni->ni_rsnprotos != primary->ni_rsnprotos ||
-	    ni->ni_supported_rsnakms != primary->ni_supported_rsnakms ||
-	    ni->ni_rsnciphers != primary->ni_rsnciphers ||
+	    !(ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC) ||
+	    !(ni->ni_supported_rsnakms & primary->ni_rsnakms) ||
+	    !(ni->ni_rsnciphers & primary->ni_rsncipher) ||
 	    ni->ni_rsngroupcipher != primary->ni_rsngroupcipher ||
 	    ni->ni_rsngroupmgmtcipher != primary->ni_rsngroupmgmtcipher)
 		return;
+
 
 	for (i = 0; i < discovery->count; i++) {
 		link = &discovery->ic->ic_mld_links[i];
