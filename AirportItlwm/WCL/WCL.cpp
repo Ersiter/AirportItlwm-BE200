@@ -1267,8 +1267,10 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
             wpa.i_akms |= IEEE80211_WPA_AKM_PSK;
         if (join.upperAuth & (APPLE80211_AUTHTYPE_WPA | APPLE80211_AUTHTYPE_WPA2))
             wpa.i_akms |= IEEE80211_WPA_AKM_8021X;
-        if (join.upperAuth & APPLE80211_AUTHTYPE_SHA256_PSK)
+        if (join.upperAuth & APPLE80211_AUTHTYPE_SHA256_PSK) {
             wpa.i_akms |= IEEE80211_WPA_AKM_SHA256_PSK;
+            wpa.i_akms |= IEEE80211_WPA_AKM_PSK;
+        }
         if (join.upperAuth & APPLE80211_AUTHTYPE_SHA256_8021X)
             wpa.i_akms |= IEEE80211_WPA_AKM_SHA256_8021X;
         if (sae)

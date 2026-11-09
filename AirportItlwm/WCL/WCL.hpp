@@ -357,7 +357,7 @@ struct ScanTiming {
 };
 
 // Off-channel timing for scans while associated, after Linux iwlwifi's scan
-// types: the visit fits the requested dwell plus a 10 TU margin, followed by 120 TU
+// types: a 120 TU visit fits a whole passive dwell (110 TU), followed by 120 TU
 // back on the home channel. Passive dwells are split into short fragments
 // (44 TU out, 95 TU home) only when the caller asks for a short away time,
 // i.e. low latency. Splitting by default made each passive channel cost

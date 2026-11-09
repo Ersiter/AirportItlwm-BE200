@@ -1712,10 +1712,12 @@ ieee80211_choose_rsnparams(struct ieee80211com *ic)
     } else if ((ic->ic_flags & IEEE80211_F_PSK) && (ni->ni_rsnakms &
                                              (IEEE80211_AKM_PSK | IEEE80211_AKM_SHA256_PSK))) {
         /* AP supports PSK AKMP and a PSK is configured */
-        if (ni->ni_rsnakms & IEEE80211_AKM_SHA256_PSK)
+        if ((ni->ni_rsnakms & IEEE80211_AKM_SHA256_PSK) && (ic->ic_caps & IEEE80211_C_MFP))
             ni->ni_rsnakms = IEEE80211_AKM_SHA256_PSK;
-        else
+        else if (ni->ni_rsnakms & IEEE80211_AKM_PSK)
             ni->ni_rsnakms = IEEE80211_AKM_PSK;
+        else
+            ni->ni_rsnakms = IEEE80211_AKM_SHA256_PSK;
     } else {
         if (ni->ni_rsnakms & IEEE80211_AKM_SHA256_8021X)
             ni->ni_rsnakms = IEEE80211_AKM_SHA256_8021X;
