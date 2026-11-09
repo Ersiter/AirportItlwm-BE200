@@ -7408,9 +7408,9 @@ iwx_phy_ctxt_cmd(struct iwx_softc *sc, struct iwx_phy_ctxt *ctxt,
 }
 
 /*
- * Every ENXIO out of the command path comes from one of these gates, and the
- * diagnostic record used to carry only the error code, so a capture could not
- * tell "device gone" from "wrong generation".
+ * Every ENXIO out of the command path comes from one of these gates; the
+ * diagnostic record names the gate so "device gone" and "wrong generation"
+ * can be told apart.
  */
 #define IWX_CMD_STAGE_NONE       0
 #define IWX_CMD_STAGE_DETACHING  1
@@ -13005,34 +13005,28 @@ iwx_init_hw(struct iwx_softc *sc)
     XYLog("%s\n", __FUNCTION__);
     struct ieee80211com *ic = &sc->sc_ic;
     int err, i, generation = sc->sc_generation;
-    const char *stage = "iwx_preinit";
     sc->sc_mcc_profile_synced = 0;
 
-    
     err = iwx_preinit(sc);
     if (err) {
         return err;
     }
     
-    stage = "iwx_start_hw";
     err = iwx_start_hw(sc);
     if (err) {
         XYLog("%s: could not initialize hardware\n", DEVNAME(sc));
         return err;
     }
     
-    stage = "iwx_run_init_mvm_ucode";
     err = iwx_run_init_mvm_ucode(sc, 0);
     if (err) {
         return err;
     }
     
-    stage = "iwx_nic_lock";
     if (!iwx_nic_lock(sc)) {
         return EBUSY;
     }
     
-    stage = "iwx_send_tx_ant_cfg";
     err = iwx_send_tx_ant_cfg(sc, iwx_fw_valid_tx_ant(sc));
     if (err) {
         XYLog("%s: could not init tx ant config (error %d)\n",
@@ -13043,7 +13037,6 @@ iwx_init_hw(struct iwx_softc *sc)
     iwx_toggle_tx_ant(sc, &sc->sc_mgmt_last_antenna_idx);
     
     if (sc->sc_tx_with_siso_diversity) {
-        stage = "iwx_send_phy_cfg_cmd";
         err = iwx_send_phy_cfg_cmd(sc);
         if (err) {
             XYLog("%s: could not send phy config (error %d)\n",
@@ -13052,7 +13045,6 @@ iwx_init_hw(struct iwx_softc *sc)
         }
     }
     
-    stage = "iwx_send_bt_init_conf";
     err = iwx_send_bt_init_conf(sc);
     if (err) {
         XYLog("%s: could not init bt coex (error %d)\n",
@@ -13060,20 +13052,17 @@ iwx_init_hw(struct iwx_softc *sc)
         goto err;
     }
     
-    stage = "iwx_send_soc_conf";
     err = iwx_send_soc_conf(sc);
     if (err)
         goto err;
     
     if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_DQA_SUPPORT)){
-        stage = "iwx_send_dqa_cmd";
         err = iwx_send_dqa_cmd(sc);
         if (err)
             goto err;
     }
     
     /* Add auxiliary station for scanning */
-    stage = "iwx_add_aux_sta";
     err = sc->sc_use_mld_api ? 0 : iwx_add_aux_sta(sc);
     if (err) {
         XYLog("%s: could not add aux station (error %d)\n",
@@ -13089,7 +13078,6 @@ iwx_init_hw(struct iwx_softc *sc)
          */
         sc->sc_phyctxt[i].id = i;
         sc->sc_phyctxt[i].channel = &ic->ic_channels[1];
-        stage = "iwx_phy_ctxt_cmd";
         err = iwx_phy_ctxt_cmd(sc, &sc->sc_phyctxt[i], 1, 1,
                                IWX_FW_CTXT_ACTION_ADD, 0);
         if (err) {
@@ -13100,7 +13088,6 @@ iwx_init_hw(struct iwx_softc *sc)
     }
     
     if (!isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_SET_LTR_GEN2)) {
-        stage = "iwx_config_ltr";
         err = iwx_config_ltr(sc);
         if (err) {
             XYLog("%s: PCIe LTR configuration failed (error %d)\n",
@@ -13110,13 +13097,11 @@ iwx_init_hw(struct iwx_softc *sc)
     }
     
     if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_CT_KILL_BY_FW)) {
-        stage = "iwx_send_temp_report_ths_cmd";
         err = iwx_send_temp_report_ths_cmd(sc);
         if (err)
             goto err;
     }
     
-    stage = "iwx_power_update_device";
     err = iwx_power_update_device(sc);
     if (err) {
         XYLog("%s: could not send power command (error %d)\n",
@@ -13125,7 +13110,6 @@ iwx_init_hw(struct iwx_softc *sc)
     }
     
     if (sc->sc_nvm.lar_enabled) {
-        stage = "iwx_send_update_mcc_cmd";
         char lastMcc[3] = {};
         uint8_t lastSource = IWX_MCC_SOURCE_OLD_FW;
         bool restoreLastMcc = sc->sc_mcc_last_valid != 0;
@@ -13180,7 +13164,6 @@ iwx_init_hw(struct iwx_softc *sc)
         }
     }
     
-    stage = "iwx_config_umac_scan";
     err = iwx_config_umac_scan(sc);
     if (err) {
         XYLog("%s: could not configure scan (error %d)\n",
@@ -13188,7 +13171,6 @@ iwx_init_hw(struct iwx_softc *sc)
         goto err;
     }
     
-    stage = "iwx_disable_beacon_filter";
     err = iwx_disable_beacon_filter(sc);
     if (err) {
         XYLog("%s: could not disable beacon filter (error %d)\n",
@@ -13880,7 +13862,7 @@ iwx_nic_error(struct iwx_softc *sc)
      * dmesg is a ring buffer: the dump below survives only until the next
      * few seconds of output, and a fatal assert usually arrives together
      * with a flood of recovery traffic. Mirror the fields that identify the
-     * assert into ioreg so a later capture still has them.
+     * assert into the registry so a later report still has them.
      */
     sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorCount",
         ++sc->sc_fw_error_count, 32);

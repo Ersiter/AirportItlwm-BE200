@@ -184,7 +184,6 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
     const uint8_t channelLimit = MIN(nitems(cp->channel_config),
                                      sc->sc_capa_n_scan_channels);
     uint16_t channelIndex = sc->sc_scan_next_channel;
-    uint8_t sixGHzCount = 0;
     bool hasLegacyChannel = false;
 #ifdef AIRPORT_WCL
     const bool directedJoin = explicitWclChannels && ic->ic_wcl_join_requested &&
@@ -221,7 +220,6 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
     }
 #endif
     int batchBand = -1;
-    int batchBandValue = 0;
     for (; channelIndex <= IEEE80211_CHAN_MAX; channelIndex++) {
         auto c = &ic->ic_channels[channelIndex];
         if (!isset(ic->ic_chan_active, channelIndex) || !c->ic_freq || !c->ic_flags)
@@ -260,7 +258,6 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
         if (cp->count >= channelLimit)
             break;
         batchBand = channelBand;
-        batchBandValue = is6GHz ? 6 : (is5GHz ? 5 : 2);
         auto channel = &cp->channel_config[cp->count++];
         uint32_t band = is6GHz ? IWX_PHY_BAND_6 :
             is2GHz ? IWX_PHY_BAND_24 : IWX_PHY_BAND_5;
@@ -313,7 +310,6 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
 #else
             channelFlags |= IWX_UHB_CHAN_CFG_FLAG_FORCE_PASSIVE;
 #endif
-            sixGHzCount++;
         } else {
             hasLegacyChannel = true;
 #ifdef AIRPORT_WCL

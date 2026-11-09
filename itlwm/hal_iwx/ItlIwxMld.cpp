@@ -1536,32 +1536,23 @@ iwx_mld_auth(struct iwx_softc *sc)
     int err, cleanup_err;
     int generation = sc->sc_generation;
     uint32_t duration;
-    const char *stage = "preconditions";
-    auto record_error = [&](int error) {
-    };
     int link_version = iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD);
 
     if (ic->ic_opmode != IEEE80211_M_STA ||
         (link_version != 1 && link_version != 2 &&
             link_version != IWX_FW_CMD_VER_UNKNOWN) ||
-        !isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_SESSION_PROT_CMD)) {
-        record_error(ENOTSUP);
+        !isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_SESSION_PROT_CMD))
         return ENOTSUP;
-    }
-    if (sc->sc_mld_phy_active || (sc->sc_flags & IWX_FLAG_MAC_ACTIVE)) {
-        record_error(EBUSY);
+    if (sc->sc_mld_phy_active || (sc->sc_flags & IWX_FLAG_MAC_ACTIVE))
         return EBUSY;
-    }
 
 #ifdef AIRPORT_WCL
     ieee80211_mld_discover_links(ic, &in->in_ni);
 #endif
     iwx_mld_limit_link_resources(sc);
     /* Every context programmed below derives its centre from the BSS channel. */
-    if (in->in_ni.ni_chan == NULL) {
-        record_error(EINVAL);
+    if (in->in_ni.ni_chan == NULL)
         return EINVAL;
-    }
     sc->sc_mld_link_active = 0;
     sc->sc_mld_phy_active = 0;
     sc->sc_mld_active_links = 1;
@@ -1587,28 +1578,21 @@ iwx_mld_auth(struct iwx_softc *sc)
     in->in_phyctxt->mld_center_freq = in->in_ni.ni_chan->ic_center_freq1;
     in->in_phyctxt->mld_config_valid = 1;
     IEEE80211_ADDR_COPY(in->in_macaddr, in->in_ni.ni_macaddr);
-    stage = "phy-context-add";
     err = iwx_phy_ctxt_cmd(sc, in->in_phyctxt, 1, 1, IWX_FW_CTXT_ACTION_ADD, 0);
-    if (err) {
-        record_error(err);
+    if (err)
         return err;
-    }
     sc->sc_mld_phy_active |= 1U;
-    stage = "mac-context-add";
     err = iwx_mld_mac_ctxt_cmd(sc, in, IWX_FW_CTXT_ACTION_ADD, 0);
     if (err)
         goto fail;
     sc->sc_flags |= IWX_FLAG_MAC_ACTIVE;
-    stage = "station-link-add";
     err = iwx_mld_add_sta_cmd(sc, in, 0);
     if (err)
         goto fail;
-    stage = "management-queue-enable";
     err = iwx_enable_mgmt_queue(sc);
     if (err)
         goto fail;
     duration = in->in_ni.ni_intval ? in->in_ni.ni_intval * 9 : 900;
-    stage = "session-protection";
     err = iwx_schedule_protect_session(sc, in, duration);
     if (err)
         goto fail;
@@ -1616,7 +1600,6 @@ iwx_mld_auth(struct iwx_softc *sc)
     return 0;
 
 fail:
-    record_error(err);
     if (generation == sc->sc_generation) {
         cleanup_err = iwx_mld_deauth(sc);
         if (cleanup_err)

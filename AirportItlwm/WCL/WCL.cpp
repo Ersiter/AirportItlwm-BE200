@@ -274,12 +274,6 @@ IOReturn AirportItlwmSkywalkInterface::wclCountryUpdateGated(
 
 bool AirportItlwmSkywalkInterface::initWCL()
 {
-    /*
-     * Publish the counters before anything can move them. A key that only
-     * appears once its branch runs cannot be told apart from a branch that
-     * never ran, and reading the absence of a key as "never happened" is what
-     * made the 6 GHz result look like it had no path at all.
-     */
 #if __IO80211_TARGET != __MAC_15_2
     auto ic = fHalService->get80211Controller();
     ic->ic_wcl_defer_user_eapol = deferWCLUserEapol;
@@ -558,21 +552,19 @@ IOReturn AirportItlwmSkywalkInterface::startWCLScan(const AirportWCL::ScanReques
     }
     uint8_t mappedChannels[sizeof(ic->ic_wcl_scan_channels)] = {};
     uint8_t mappedChannels6GHz[sizeof(ic->ic_wcl_scan_channels6GHz)] = {};
-    unsigned mappedCount = 0, mapped6GHz = 0;
+    unsigned mappedCount = 0;
     for (unsigned index = 1; index <= IEEE80211_CHAN_MAX; ++index) {
         const auto channel = &ic->ic_channels[index];
         if (!channel->ic_freq || !isset(ic->ic_chan_active, index))
             continue;
         bool sixGHz = IEEE80211_IS_CHAN_6GHZ(channel);
-        if (!AirportWCL::scanChannelSelected(sixGHz ? scan.channels6GHz : scan.channels,
-                scan.channelCount != 0, ieee80211_chan2number(ic, channel)))
-            continue;
         const unsigned channelNumber = ieee80211_chan2number(ic, channel);
+        if (!AirportWCL::scanChannelSelected(sixGHz ? scan.channels6GHz : scan.channels,
+                scan.channelCount != 0, channelNumber))
+            continue;
         auto mapped = sixGHz ? mappedChannels6GHz : mappedChannels;
         setbit(mapped, channelNumber);
         ++mappedCount;
-        if (sixGHz)
-            ++mapped6GHz;
     }
     if (!mappedCount) {
         return kIOReturnUnsupported;
@@ -687,12 +679,6 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
     if (!node || !iePrefix) {
         return;
     }
-    /*
-     * The channel comes before the name. A frame without a name is still a
-     * frame this radio heard on a channel, and the 6 GHz counters have to see
-     * it, or a capture cannot tell "no 6 GHz frames" from "6 GHz frames all
-     * dropped".
-     */
     ieee80211com *ic = fHalService->get80211Controller();
     if (!node->ni_chan || node->ni_chan == IEEE80211_CHAN_ANYC) {
         return;
@@ -751,8 +737,7 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
             sizeof(wclResultRing[0].ssid) : ssidBytes;
         /*
          * One slot per BSSID, so a scan leaves one entry per network instead of
-         * whatever happened to be heard last. The ring used to rotate blindly,
-         * which meant a full scan kept only its final few results.
+         * whatever happened to be heard last.
          */
         unsigned slotIndex = nitems(wclResultRing);
         for (unsigned i = 0; i < nitems(wclResultRing); ++i) {
@@ -827,13 +812,6 @@ void AirportItlwmSkywalkInterface::postWCLScanResult(const ieee80211_node *node,
             deferredScan.channels, deferredScan.channelCount != 0, channel))
         keepWCLScanResult(metadata, messageSize);
     instance->postMessage(this, AirportWCL::ScanResult, metadata, messageSize, true);
-    if (sixGHz) {
-        /*
-         * Received counts what reached this function, published counts the
-         * messages handed to WCL. Equal counts mean the loss is behind the
-         * driver; unequal means a filter here dropped it.
-         */
-    }
     IOFree(metadata, size);
 }
 
@@ -969,10 +947,8 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
     }
     /*
      * Taking the current link down for this very request clears IFF_RUNNING
-     * for a moment, and WCL used to answer that with kIOReturnBusy and drop
-     * the request - which is the "click the network twice" behaviour: the
-     * first click lands in the teardown window and only the second one, issued
-     * after the driver is running again, is accepted. Keep the request while
+     * for a moment. Answering kIOReturnBusy then drops the request, so the
+     * user has to choose the network a second time. Keep the request while
      * the interface is still up and let the READY path issue it.
      */
     if (supported && !joinPending && !(ic->ic_if.if_flags & IFF_RUNNING) &&
