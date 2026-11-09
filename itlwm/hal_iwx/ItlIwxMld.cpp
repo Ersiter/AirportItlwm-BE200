@@ -369,6 +369,8 @@ iwx_mld_update_active_links(struct iwx_softc *sc, uint8_t link_mask,
         }
         removed_done |= 1U << i;
     }
+    XYLog("%s: active links 0x%x -> 0x%x, primary %u, EMLSR %d\n", __FUNCTION__,
+        old_links, link_mask, primary_link, emlsr_active);
     sc->sc_mld_active_links = link_mask;
     sc->sc_mld_active_sta_mask = new_sta_mask;
     sc->sc_mld_primary_link = primary_link;
