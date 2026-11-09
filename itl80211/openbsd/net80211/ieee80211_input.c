@@ -233,12 +233,50 @@ ieee80211_parse_mld_basic(const uint8_t *data, size_t data_len,
 }
 
 #ifdef AIRPORT_WCL
+/*
+ * Reassemble the next Per-STA Profile subelement of a defragmented Multi-Link
+ * element, joining the Fragment subelements that follow a 255-byte one.
+ * Returns 1 with the profile in buf, 0 at the end, -1 if malformed.
+ */
+static int
+ieee80211_mle_next_sta_profile(const uint8_t *data, size_t data_len,
+    size_t *offset, uint8_t *buf, size_t capacity, size_t *profile_len)
+{
+    while (*offset + 2 <= data_len) {
+        size_t len = data[*offset + 1];
+
+        if (*offset + 2 + len > data_len)
+            return -1;
+        if (data[*offset] != IEEE80211_MLE_SUBELEM_PER_STA_PROFILE) {
+            *offset += 2 + len;
+            continue;
+        }
+        if (len > capacity)
+            return -1;
+        memcpy(buf, data + *offset + 2, len);
+        *profile_len = len;
+        *offset += 2 + len;
+        while (len == 255 && *offset + 2 <= data_len &&
+            data[*offset] == IEEE80211_MLE_SUBELEM_FRAGMENT) {
+            len = data[*offset + 1];
+            if (*offset + 2 + len > data_len ||
+                len > capacity - *profile_len)
+                return -1;
+            memcpy(buf + *profile_len, data + *offset + 2, len);
+            *profile_len += len;
+            *offset += 2 + len;
+        }
+        return 1;
+    }
+    return 0;
+}
+
 static void
 ieee80211_mld_assoc_response_links(struct ieee80211com *ic,
     const uint8_t *data, size_t data_len, uint16_t assoc_id)
 {
     uint8_t profile_data[MCLBYTES];
-    size_t offset, common_end;
+    size_t offset, common_end, profile_len;
     uint8_t i;
 
     for (i = 1; i < ic->ic_mld_link_count; i++) {
@@ -254,53 +292,25 @@ ieee80211_mld_assoc_response_links(struct ieee80211com *ic,
     if (common_end > data_len)
         return;
     offset = common_end;
-    while (offset + 2 <= data_len) {
-        const uint8_t *profile;
-        size_t profile_len, fixed_offset;
+    while (ieee80211_mle_next_sta_profile(data, data_len, &offset,
+        profile_data, sizeof(profile_data), &profile_len) == 1) {
+        const uint8_t *profile = profile_data;
+        size_t fixed_offset;
         uint16_t control;
         int link_addr_matches = 1;
 
-        profile_len = data[offset + 1];
-        if (offset + 2 + profile_len > data_len)
-            return;
-        if (data[offset] != IEEE80211_MLE_SUBELEM_PER_STA_PROFILE) {
-            offset += 2 + profile_len;
+        if (profile_len < 3)
             continue;
-        }
-        if (profile_len > sizeof(profile_data))
-            return;
-        memcpy(profile_data, data + offset + 2, profile_len);
-        offset += 2 + profile_len;
-        while (offset + 2 <= data_len &&
-            data[offset] == IEEE80211_MLE_SUBELEM_FRAGMENT) {
-            size_t fragment_len = data[offset + 1];
-            if (offset + 2 + fragment_len > data_len ||
-                fragment_len > sizeof(profile_data) - profile_len)
-                return;
-            memcpy(profile_data + profile_len, data + offset + 2,
-                fragment_len);
-            profile_len += fragment_len;
-            offset += 2 + fragment_len;
-            if (fragment_len < 255)
-                break;
-        }
-        profile = profile_data;
-        if (profile_len < 3) {
-            continue;
-        }
         control = LE_READ_2(profile);
-        if (!(control & IEEE80211_MLE_STA_CONTROL_COMPLETE_PROFILE)) {
+        if (!(control & IEEE80211_MLE_STA_CONTROL_COMPLETE_PROFILE))
             continue;
-        }
         fixed_offset = 2 + profile[2];
-        if (profile[2] < 1 || fixed_offset + 4 > profile_len) {
+        if (profile[2] < 1 || fixed_offset + 4 > profile_len)
             continue;
-        }
-        if (control & IEEE80211_MLE_STA_CONTROL_STA_MAC_ADDR_PRESENT) {
-            if (profile[2] < 1 + IEEE80211_ADDR_LEN) {
-                continue;
-            }
-        }
+        if ((control & IEEE80211_MLE_STA_CONTROL_STA_MAC_ADDR_PRESENT) &&
+            profile[2] < 1 + IEEE80211_ADDR_LEN)
+            continue;
+
         uint8_t ap_link_id = control & IEEE80211_MLE_STA_CONTROL_LINK_ID;
         uint16_t status = LE_READ_2(profile + fixed_offset + 2);
         for (i = 1; i < ic->ic_mld_link_count; i++) {

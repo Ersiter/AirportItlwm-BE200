@@ -115,16 +115,19 @@ inline bool profileControl(const uint8_t *ie)
         (ie[0] == 255 && ie[2] == 56);
 }
 
-inline bool mergeProfile(const uint8_t *ies, size_t length, const Profile &profile,
+/*
+ * Element inheritance for a profile carried inside another BSS's frame, after
+ * cfg80211_gen_new_ie(): the reporting frame's elements are kept unless the
+ * profile has its own element of that type or lists it in a Non-Inheritance
+ * element, then the profile's elements follow. Used for Multiple BSSID
+ * nontransmitted profiles and for Multi-Link per-STA profiles.
+ */
+inline bool mergeElements(const uint8_t *ies, size_t length,
+    const uint8_t *own, size_t ownLength, const Profile *dtim,
     uint8_t *out, size_t capacity, size_t &outLength)
 {
     outLength = 0;
-    if (profile.offset > length || profile.length > length - profile.offset ||
-        !validElements(ies, length))
-        return false;
-    const uint8_t *own = ies + profile.offset;
-    const size_t ownLength = profile.length;
-    if (!validElements(own, ownLength))
+    if (!validElements(ies, length) || !validElements(own, ownLength))
         return false;
     const uint8_t *noninherit = nullptr;
     for (size_t pos = 0; pos < ownLength; pos += 2 + own[pos + 1]) {
@@ -161,9 +164,9 @@ inline bool mergeProfile(const uint8_t *ies, size_t length, const Profile &profi
         if (size > capacity - written)
             return false;
         memcpy(out + written, ie, size);
-        if (ie[0] == 5 && ie[1] >= 4 && profile.hasDtim) {
-            out[written + 2] = profile.dtimCount;
-            out[written + 3] = profile.dtimPeriod;
+        if (ie[0] == 5 && ie[1] >= 4 && dtim && dtim->hasDtim) {
+            out[written + 2] = dtim->dtimCount;
+            out[written + 3] = dtim->dtimPeriod;
         }
         written += size;
         inheritFragment = ie[1] == 255;
@@ -180,6 +183,16 @@ inline bool mergeProfile(const uint8_t *ies, size_t length, const Profile &profi
     }
     outLength = written;
     return true;
+}
+
+inline bool mergeProfile(const uint8_t *ies, size_t length, const Profile &profile,
+    uint8_t *out, size_t capacity, size_t &outLength)
+{
+    outLength = 0;
+    if (profile.offset > length || profile.length > length - profile.offset)
+        return false;
+    return mergeElements(ies, length, ies + profile.offset, profile.length,
+        &profile, out, capacity, outLength);
 }
 
 } // namespace IEEE80211Mbssid
