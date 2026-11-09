@@ -30,6 +30,62 @@ static constexpr uint16_t IWX_SCAN_ADWELL_MAX_BUDGET_FULL_SCAN = 300;
 static constexpr uint8_t IWX_SCAN_ADWELL_N_APS_GO_FRIENDLY = 10;
 static constexpr uint8_t IWX_SCAN_ADWELL_N_APS_SOCIAL_CHS = 2;
 
+/* General parameters of a v17 UMAC scan, after iwl_mvm_scan_umac_fill_general_p_v12(). */
+static void
+iwx_umac_scan_v17_fill_general(struct iwx_softc *sc,
+    struct iwx_api86_scan_general *general_params, int bgscan, bool scanActive,
+    bool directed)
+{
+    uint16_t gen_flags = 0;
+#ifdef AIRPORT_WCL
+    struct ieee80211com *ic = &sc->sc_ic;
+    const auto timing = AirportWCL::scanTiming(ic->ic_wcl_scan_away_time_ms, bgscan,
+        isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_FRAGMENTED_SCAN));
+    const uint32_t timeout = htole32(timing.suspendTU);
+    const uint32_t maxOut = htole32(timing.maxOutTU);
+#else
+    const uint32_t timeout = bgscan ?  htole32(120) : htole32(0);
+    const uint32_t maxOut = timeout;
+#endif
+
+    if (!scanActive)
+        gen_flags |= IWX_UMAC_SCAN_GEN_FLAGS_V2_FORCE_PASSIVE;
+    gen_flags |= IWX_UMAC_SCAN_GEN_FLAGS_V2_PASS_ALL |
+        IWX_UMAC_SCAN_GEN_FLAGS_V2_ADAPTIVE_DWELL;
+#ifdef AIRPORT_WCL
+    if (timing.fragmented) {
+        gen_flags |= IWX_UMAC_SCAN_GEN_FLAGS_V2_FRAGMENTED_LMAC1;
+        general_params->num_of_fragments[IWX_SCAN_LB_LMAC_IDX] = IWL_SCAN_NUM_OF_FRAGS;
+        if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_CDB_SUPPORT)) {
+            gen_flags |= IWX_UMAC_SCAN_GEN_FLAGS_V2_FRAGMENTED_LMAC2;
+            general_params->num_of_fragments[IWX_SCAN_HB_LMAC_IDX] = IWL_SCAN_NUM_OF_FRAGS;
+        }
+    }
+#endif
+    general_params->flags = htole16(gen_flags);
+
+    general_params->adwell_default_social_chn =
+        IWX_SCAN_ADWELL_DEFAULT_N_APS_SOCIAL;
+    general_params->adwell_default_2g = IWX_SCAN_ADWELL_DEFAULT_LB_N_APS;
+    general_params->adwell_default_5g = IWX_SCAN_ADWELL_DEFAULT_HB_N_APS;
+    general_params->adwell_max_budget = cpu_to_le16(directed ?
+        IWX_SCAN_ADWELL_MAX_BUDGET_DIRECTED_SCAN :
+        IWX_SCAN_ADWELL_MAX_BUDGET_FULL_SCAN);
+
+    general_params->scan_priority = htole32(IWX_SCAN_PRIORITY_EXT_6);
+    general_params->max_out_of_time[IWX_SCAN_LB_LMAC_IDX] = maxOut;
+    general_params->suspend_time[IWX_SCAN_LB_LMAC_IDX] = timeout;
+    if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_CDB_SUPPORT)) {
+        general_params->max_out_of_time[IWX_SCAN_HB_LMAC_IDX] = maxOut;
+        general_params->suspend_time[IWX_SCAN_HB_LMAC_IDX] = timeout;
+    }
+
+    general_params->active_dwell[IWX_SCAN_LB_LMAC_IDX] = IWL_SCAN_DWELL_ACTIVE;
+    general_params->passive_dwell[IWX_SCAN_LB_LMAC_IDX] = IWL_SCAN_DWELL_PASSIVE;
+    general_params->active_dwell[IWX_SCAN_HB_LMAC_IDX] = IWL_SCAN_DWELL_ACTIVE;
+    general_params->passive_dwell[IWX_SCAN_HB_LMAC_IDX] = IWL_SCAN_DWELL_PASSIVE;
+}
+
 int ItlIwx::
 iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
 {
@@ -50,18 +106,7 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
     int err = 0, async = bgscan;
     struct iwx_api86_scan_req *req;
     size_t req_len;
-    uint16_t gen_flags = 0;
-    struct iwx_api86_scan_general *general_params;
     struct iwx_api86_scan_channels *cp;
-#ifdef AIRPORT_WCL
-    const auto timing = AirportWCL::scanTiming(ic->ic_wcl_scan_away_time_ms, bgscan,
-        isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_FRAGMENTED_SCAN));
-    const uint32_t timeout = htole32(timing.suspendTU);
-    const uint32_t maxOut = htole32(timing.maxOutTU);
-#else
-    const uint32_t timeout = bgscan ?  htole32(120) : htole32(0);
-    const uint32_t maxOut = timeout;
-#endif
     struct iwx_host_cmd hcmd = {
         .id = iwx_cmd_id(IWX_SCAN_REQ_UMAC, IWX_LONG_GROUP, 0),
         .len = { 0, },
@@ -78,56 +123,12 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
     hcmd.len[0] = (uint16_t)req_len;
     hcmd.data[0] = (void *)req;
     hcmd.flags |= async ? IWX_CMD_ASYNC : 0;
-    
-    general_params = &req->scan_params.general_params;
-    
-    req->ooc_priority = htole32(IWX_SCAN_PRIORITY_EXT_6);
-    
-    if (!scanActive)
-        gen_flags |= IWX_UMAC_SCAN_GEN_FLAGS_V2_FORCE_PASSIVE;
-    
-    gen_flags |= IWX_UMAC_SCAN_GEN_FLAGS_V2_PASS_ALL |
-    IWX_UMAC_SCAN_GEN_FLAGS_V2_ADAPTIVE_DWELL;
-    
-#ifdef AIRPORT_WCL
-    if (timing.fragmented) {
-        gen_flags |= IWX_UMAC_SCAN_GEN_FLAGS_V2_FRAGMENTED_LMAC1;
-        general_params->num_of_fragments[IWX_SCAN_LB_LMAC_IDX] = IWL_SCAN_NUM_OF_FRAGS;
-        if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_CDB_SUPPORT)) {
-            gen_flags |= IWX_UMAC_SCAN_GEN_FLAGS_V2_FRAGMENTED_LMAC2;
-            general_params->num_of_fragments[IWX_SCAN_HB_LMAC_IDX] = IWL_SCAN_NUM_OF_FRAGS;
-        }
-    }
-#endif
-    req->scan_params.general_params.flags = htole16(gen_flags);
-    
-    general_params->adwell_default_social_chn =
-        IWX_SCAN_ADWELL_DEFAULT_N_APS_SOCIAL;
-    general_params->adwell_default_2g = IWX_SCAN_ADWELL_DEFAULT_LB_N_APS;
-    general_params->adwell_default_5g = IWX_SCAN_ADWELL_DEFAULT_HB_N_APS;
-    if (scanActive && scanSSIDLength != 0)
-        general_params->adwell_max_budget =
-            cpu_to_le16(IWX_SCAN_ADWELL_MAX_BUDGET_DIRECTED_SCAN);
-    else
-        general_params->adwell_max_budget =
-            cpu_to_le16(IWX_SCAN_ADWELL_MAX_BUDGET_FULL_SCAN);
-    
-    general_params->scan_priority = htole32(IWX_SCAN_PRIORITY_EXT_6);
-    general_params->max_out_of_time[IWX_SCAN_LB_LMAC_IDX] =
-        maxOut;
-    general_params->suspend_time[IWX_SCAN_LB_LMAC_IDX] =
-        timeout;
-    
-    if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_CDB_SUPPORT)) {
-        general_params->max_out_of_time[IWX_SCAN_HB_LMAC_IDX] = maxOut;
-        general_params->suspend_time[IWX_SCAN_HB_LMAC_IDX] = timeout;
-    }
 
-    general_params->active_dwell[IWX_SCAN_LB_LMAC_IDX] = IWL_SCAN_DWELL_ACTIVE;
-    general_params->passive_dwell[IWX_SCAN_LB_LMAC_IDX] = IWL_SCAN_DWELL_PASSIVE;
-    general_params->active_dwell[IWX_SCAN_HB_LMAC_IDX] = IWL_SCAN_DWELL_ACTIVE;
-    general_params->passive_dwell[IWX_SCAN_HB_LMAC_IDX] = IWL_SCAN_DWELL_PASSIVE;
-    
+    req->ooc_priority = htole32(IWX_SCAN_PRIORITY_EXT_6);
+    iwx_umac_scan_v17_fill_general(sc, &req->scan_params.general_params,
+        bgscan, scanActive, scanActive && scanSSIDLength != 0);
+
+
     /* Specify the scan plan: We'll do one iteration. */
     req->scan_params.periodic_params.schedule[0].interval = 0;
     req->scan_params.periodic_params.schedule[0].iter_count = 1;
