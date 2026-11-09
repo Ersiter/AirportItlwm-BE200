@@ -9100,8 +9100,29 @@ iwx_fill_probe_req(struct iwx_softc *sc, struct iwx_scan_probe_req *preq)
         frm = ieee80211_add_htcaps(frm, ic);
         /* XXX add WME info? */
     }
+#ifdef AIRPORT_WCL
+    /*
+     * Joining an AP MLD probes the target BSSID for all of its links, as
+     * wpa_supplicant_connect_ml_missing() does before an MLO connection.
+     * The other links then come from the ML probe response even when they
+     * were not heard in this scan.
+     */
+    if (ic->ic_wcl_join_requested && ic->ic_wcl_peer_is_mlo &&
+        ic->ic_state != IEEE80211_S_RUN &&
+        !IEEE80211_IS_MULTICAST(ic->ic_des_bssid)) {
+        struct ieee80211_node *target =
+            ieee80211_find_node(ic, ic->ic_des_bssid);
+
+        if (remain < (size_t)(frm - pos) + 5)
+            return ENOBUFS;
+        IEEE80211_ADDR_COPY(wh->i_addr3, ic->ic_des_bssid);
+        frm = ieee80211_add_ml_probe_req(frm,
+            target != NULL && target->ni_mbssid_index != 0 ? -1 : 0);
+    }
+#endif
 
     preq->common_data.len = htole16(frm - pos);
+
     
     return 0;
 }

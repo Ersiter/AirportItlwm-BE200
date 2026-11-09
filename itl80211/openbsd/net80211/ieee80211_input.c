@@ -166,7 +166,7 @@ static int
 ieee80211_parse_mld_basic(const uint8_t *data, size_t data_len,
     uint8_t *mld_addr, uint8_t *link_id,
     uint16_t *med_sync_delay, uint16_t *eml_capa,
-    uint16_t *mld_capa_ops)
+    uint16_t *mld_capa_ops, uint8_t *mld_id)
 {
     const uint8_t *mle;
     size_t mle_len;
@@ -192,6 +192,8 @@ ieee80211_parse_mld_basic(const uint8_t *data, size_t data_len,
     *med_sync_delay = 0;
     *eml_capa = 0;
     *mld_capa_ops = 0;
+    if (mld_id != NULL)
+        *mld_id = 0;
     offset = 9;
     common_end = 2 + common_len;
 #define IEEE80211_MLE_SKIP(_bit, _len) do { \
@@ -225,7 +227,13 @@ ieee80211_parse_mld_basic(const uint8_t *data, size_t data_len,
         *mld_capa_ops = LE_READ_2(mle + offset);
         offset += 2;
     }
-    IEEE80211_MLE_SKIP(IEEE80211_MLC_BASIC_PRES_MLD_ID, 1);
+    if (control & IEEE80211_MLC_BASIC_PRES_MLD_ID) {
+        if (offset + 1 > common_end)
+            return 0;
+        if (mld_id != NULL)
+            *mld_id = mle[offset];
+        offset++;
+    }
     IEEE80211_MLE_SKIP(IEEE80211_MLC_BASIC_PRES_EXT_MLD_CAPA_OP, 2);
     IEEE80211_MLE_SKIP(IEEE80211_MLC_BASIC_PRES_ENH_CRIT_UPD, 1);
 #undef IEEE80211_MLE_SKIP
@@ -2575,7 +2583,7 @@ ieee80211_recv_probe_resp_bss(struct ieee80211com *ic, mbuf_t m,
     if (ieee80211_parse_mld_basic(mle_len != 0 ? mle_data : NULL, mle_len,
         ni->ni_mld_addr, &ni->ni_mld_link_id,
         &ni->ni_mld_med_sync_delay, &ni->ni_mld_eml_capa,
-        &ni->ni_mld_capa_ops))
+        &ni->ni_mld_capa_ops, NULL))
         ni->ni_mld_valid = 1;
     
     if (htcaps)
@@ -2905,6 +2913,218 @@ ieee80211_recv_probe_resp_bss(struct ieee80211com *ic, mbuf_t m,
 #endif
 }
 
+#ifdef AIRPORT_WCL
+/* Global operating classes, as in Linux ieee80211_operating_class_to_band(). */
+static u_int
+ieee80211_opclass_band(uint8_t op_class)
+{
+    if (op_class >= 81 && op_class <= 84)
+        return IEEE80211_CHAN_2GHZ;
+    if (op_class == 112 || (op_class >= 115 && op_class <= 130))
+        return IEEE80211_CHAN_5GHZ;
+    if ((op_class >= 131 && op_class <= 135) || op_class == 137)
+        return IEEE80211_CHAN_6GHZ;
+    return 0;
+}
+
+/*
+ * Find the channel of an AP affiliated with the same AP MLD in a Reduced
+ * Neighbor Report, after cfg80211_rnr_info_for_mld_ap(). A nontransmitted
+ * BSS is not usable: the RNR does not give its reference BSSID.
+ */
+static int
+ieee80211_rnr_mld_link(const uint8_t *ies, size_t length, uint8_t mld_id,
+    uint8_t link_id, uint8_t *op_class, uint8_t *channel,
+    uint8_t *change_count)
+{
+    const uint8_t *end = ies + length;
+    const uint8_t *ie;
+
+    for (ie = ies; end - ie >= 2 && ie[1] <= end - ie - 2; ie += 2 + ie[1]) {
+        const uint8_t *pos = ie + 2, *ie_end = ie + 2 + ie[1];
+
+        if (ie[0] != IEEE80211_ELEMID_RNR)
+            continue;
+        while (ie_end - pos >= 4) {
+            const uint8_t type = pos[0] & IEEE80211_AP_INFO_TBTT_HDR_TYPE;
+            const uint8_t count =
+                ((pos[0] & IEEE80211_AP_INFO_TBTT_HDR_COUNT) >> 4) + 1;
+            const uint8_t info_len = pos[1];
+            const uint8_t *info = pos + 4;
+            uint8_t i;
+
+            if (info_len == 0 || count > (size_t)(ie_end - info) / info_len)
+                break;
+            for (i = 0; i < count; i++, info += info_len) {
+                const bool tbtt = type == IEEE80211_TBTT_INFO_TYPE_TBTT;
+                const uint8_t *mld;
+                uint16_t params;
+
+                if (tbtt &&
+                    info_len >= IEEE80211_TBTT_INFO_MLD_PARAMS_OFFSET + 3)
+                    mld = info + IEEE80211_TBTT_INFO_MLD_PARAMS_OFFSET;
+                else if (type == IEEE80211_TBTT_INFO_TYPE_MLD && info_len >= 3)
+                    mld = info;
+                else
+                    continue;
+                params = LE_READ_2(mld + 1);
+                if (mld[0] != mld_id ||
+                    (params & IEEE80211_RNR_MLD_PARAMS_LINK_ID) != link_id)
+                    continue;
+                if (tbtt && (info[11] & (IEEE80211_RNR_TBTT_PARAMS_MULTI_BSSID |
+                    IEEE80211_RNR_TBTT_PARAMS_TRANSMITTED_BSSID)) ==
+                    IEEE80211_RNR_TBTT_PARAMS_MULTI_BSSID)
+                    return 0;
+                *op_class = pos[2];
+                *channel = pos[3];
+                *change_count =
+                    (params & IEEE80211_RNR_MLD_PARAMS_BSS_CHANGE_COUNT) >> 4;
+                return 1;
+            }
+            pos = info;
+        }
+    }
+    return 0;
+}
+
+/*
+ * Report every affiliated AP described by an ML probe response, after
+ * cfg80211_parse_ml_elem_sta_data(). Each complete Per-STA Profile becomes a
+ * BSS on the channel the RNR gives for its link: the reporting frame's
+ * elements are inherited, and a copy of its Basic Multi-Link element carries
+ * the profile's link ID and BSS parameter change count. A BSS already heard
+ * directly is left alone.
+ */
+static void
+ieee80211_recv_ml_probe_resp(struct ieee80211com *ic, mbuf_t m,
+    struct ieee80211_node *rni, struct ieee80211_rxinfo *rxi,
+    const uint8_t *ies, size_t length)
+{
+    const size_t fixed = sizeof(struct ieee80211_frame) + 12;
+    const uint8_t *frame = mtod(m, const uint8_t *);
+    const uint8_t *ie, *end = ies + length;
+    uint8_t *mle, *profile;
+    size_t mle_len, offset, profile_len;
+    uint8_t mld_addr[IEEE80211_ADDR_LEN], reporter_link, mld_id;
+    uint16_t control, unused;
+    uint16_t seen_links = 0;
+    mbuf_t child = NULL;
+
+    for (ie = ies; end - ie >= 2 && ie[1] <= end - ie - 2; ie += 2 + ie[1]) {
+        if (ie[0] == IEEE80211_ELEMID_EXTENSION && ie[1] >= 3 &&
+            ie[2] == IEEE80211_ELEMID_EXT_MULTI_LINK &&
+            (ie[3] & IEEE80211_ML_CONTROL_TYPE_MASK) ==
+            IEEE80211_ML_CONTROL_TYPE_BASIC)
+            break;
+    }
+    if (end - ie < 2)
+        return;
+    mle = (uint8_t *)malloc(2 * MCLBYTES, 0, 0);
+    if (mle == NULL)
+        return;
+    profile = mle + MCLBYTES;
+    mle_len = ieee80211_mle_copy(ie, end, mle, MCLBYTES);
+    if (!ieee80211_parse_mld_basic(mle, mle_len, mld_addr, &reporter_link,
+        &unused, &unused, &unused, &mld_id))
+        goto out;
+    control = LE_READ_2(mle + 1);
+    /* An AP always reports these in a probe response. */
+    if (!(control & IEEE80211_MLC_BASIC_PRES_LINK_ID) ||
+        !(control & IEEE80211_MLC_BASIC_PRES_BSS_PARAM_CH_CNT) ||
+        !(control & IEEE80211_MLC_BASIC_PRES_MLD_CAPA_OP))
+        goto out;
+
+    offset = 3 + mle[3];
+    while (ieee80211_mle_next_sta_profile(mle, mle_len, &offset, profile,
+        MCLBYTES, &profile_len) == 1) {
+        const uint8_t *bssid, *own;
+        size_t own_len, merged;
+        uint16_t sta_control, capinfo, bintval;
+        uint64_t tsf_offset, tsf;
+        uint8_t link_id, op_class, channel, change_count, *copy, *elem;
+        u_int band, chanidx;
+        struct ieee80211_rxinfo link_rxi;
+        struct ieee80211_frame *childwh;
+
+        /* Control, then STA Info: length, MAC, beacon interval, TSF offset. */
+        if (profile_len < 3)
+            continue;
+        sta_control = LE_READ_2(profile);
+        if (!(sta_control & IEEE80211_MLE_STA_CONTROL_COMPLETE_PROFILE))
+            continue;
+        link_id = sta_control & IEEE80211_MLE_STA_CONTROL_LINK_ID;
+        if (seen_links & (1U << link_id))
+            break;
+        seen_links |= 1U << link_id;
+        if (!(sta_control & IEEE80211_MLE_STA_CONTROL_STA_MAC_ADDR_PRESENT) ||
+            !(sta_control & IEEE80211_MLE_STA_CONTROL_BEACON_INT_PRESENT) ||
+            !(sta_control & IEEE80211_MLE_STA_CONTROL_TSF_OFFS_PRESENT) ||
+            profile[2] < 1 + IEEE80211_ADDR_LEN + 2 + 8 ||
+            2 + profile[2] + 2 > profile_len)
+            continue;
+        bssid = profile + 3;
+        bintval = LE_READ_2(profile + 9);
+        memcpy(&tsf_offset, profile + 11, sizeof(tsf_offset));
+        own = profile + 2 + profile[2];
+        capinfo = LE_READ_2(own);
+        own += 2;
+        own_len = profile + profile_len - own;
+
+        if (!ieee80211_rnr_mld_link(ies, length, mld_id, link_id,
+            &op_class, &channel, &change_count))
+            continue;
+        band = ieee80211_opclass_band(op_class);
+        chanidx = band ? ieee80211_ieee2chanidx(ic, channel, band) : 0;
+        if (chanidx == 0 || ic->ic_channels[chanidx].ic_freq == 0)
+            continue;
+        if (ieee80211_find_node(ic, bssid) != NULL)
+            continue;
+
+        if (child == NULL &&
+            mbuf_getcluster(MBUF_DONTWAIT, MT_DATA, MCLBYTES, &child) != 0)
+            break;
+        copy = mtod(child, uint8_t *);
+        if (!IEEE80211Mbssid::mergeElements(ies, length, own, own_len, NULL,
+            copy + fixed, MCLBYTES - fixed, merged) ||
+            merged + 2 + 3 + mle[3] > MCLBYTES - fixed)
+            continue;
+        /* ext ID, control, then common info: length, MLD address, link, count */
+        elem = copy + fixed + merged;
+        elem[0] = IEEE80211_ELEMID_EXTENSION;
+        elem[1] = 3 + mle[3];
+        memcpy(elem + 2, mle, 3 + mle[3]);
+        elem[2 + 4 + IEEE80211_ADDR_LEN] = link_id;
+        elem[2 + 5 + IEEE80211_ADDR_LEN] = change_count;
+        merged += 2 + 3 + mle[3];
+
+        memcpy(copy, frame, fixed);
+        childwh = (struct ieee80211_frame *)copy;
+        IEEE80211_ADDR_COPY(childwh->i_addr2, bssid);
+        IEEE80211_ADDR_COPY(childwh->i_addr3, bssid);
+        memcpy(&tsf, frame + sizeof(*childwh), sizeof(tsf));
+        tsf = htole64(le64toh(tsf) + le64toh(tsf_offset));
+        memcpy(copy + sizeof(*childwh), &tsf, sizeof(tsf));
+        copy[fixed - 4] = uint8_t(bintval);
+        copy[fixed - 3] = uint8_t(bintval >> 8);
+        copy[fixed - 2] = uint8_t(capinfo);
+        copy[fixed - 1] = uint8_t(capinfo >> 8);
+        mbuf_setlen(child, fixed + merged);
+        mbuf_pkthdr_setlen(child, fixed + merged);
+
+        link_rxi = *rxi;
+        link_rxi.rxi_chan = channel;
+        link_rxi.rxi_band = band;
+        XYLog("%s: link %u of %s on channel %u\n", __func__, link_id,
+            ether_sprintf((u_int8_t *)bssid), channel);
+        ieee80211_recv_probe_resp_bss(ic, child, rni, &link_rxi, 1, NULL);
+    }
+out:
+    if (child != NULL)
+        mbuf_freem(child);
+    free(mle);
+}
+#endif
+
 /* Expand profiles before publishing the transmitting BSS, including hidden sets. */
 void
 ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
@@ -2944,8 +3164,13 @@ ieee80211_recv_probe_resp(struct ieee80211com *ic, mbuf_t m,
         }
         if (child != NULL)
             mbuf_freem(child);
+#ifdef AIRPORT_WCL
+        if (isprobe)
+            ieee80211_recv_ml_probe_resp(ic, m, rni, rxi, ies, length);
+#endif
     }
     ieee80211_recv_probe_resp_bss(ic, m, rni, rxi, isprobe, NULL);
+
 }
 
 #ifndef IEEE80211_STA_ONLY
@@ -3615,7 +3840,7 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
         mle_len != 0 ? mle_data : NULL, mle_len,
         ni->ni_mld_addr, &ni->ni_mld_link_id,
         &ni->ni_mld_med_sync_delay, &ni->ni_mld_eml_capa,
-        &ni->ni_mld_capa_ops);
+        &ni->ni_mld_capa_ops, NULL);
 #ifdef AIRPORT_WCL
     if (ic->ic_wcl_peer_is_mlo) {
         uint8_t expected_link_id = ic->ic_mld_link_count != 0 ?

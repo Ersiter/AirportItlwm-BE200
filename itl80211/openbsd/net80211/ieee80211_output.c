@@ -1635,10 +1635,36 @@ ieee80211_mld_assoc_req_size(struct ieee80211com *ic)
     return size;
 }
 
+/*
+ * Multi-Link probe request element asking for the complete profiles of every
+ * link, as wpa_supplicant_ml_probe_ie() builds it. A negative mld_id leaves
+ * the AP MLD ID out, which targets the receiving (nontransmitted) BSS.
+ */
+u_int8_t *
+ieee80211_add_ml_probe_req(u_int8_t *frm, int mld_id)
+{
+    uint16_t control = IEEE80211_ML_CONTROL_TYPE_PREQ;
+
+    if (mld_id >= 0)
+        control |= IEEE80211_MLC_PREQ_PRES_MLD_ID;
+    *frm++ = IEEE80211_ELEMID_EXTENSION;
+    *frm++ = mld_id >= 0 ? 5 : 4;
+    *frm++ = IEEE80211_ELEMID_EXT_MULTI_LINK;
+    LE_WRITE_2(frm, control);
+    frm += 2;
+    if (mld_id >= 0) {
+        *frm++ = 2;
+        *frm++ = (uint8_t)mld_id;
+    } else
+        *frm++ = 1;
+    return frm;
+}
+
 static uint8_t *
 ieee80211_add_mld_assoc_req(uint8_t *frm, struct ieee80211com *ic,
     uint16_t capinfo)
 {
+
     uint8_t *elem_len;
     uint8_t i;
     uint16_t outer[16], inner[16];
