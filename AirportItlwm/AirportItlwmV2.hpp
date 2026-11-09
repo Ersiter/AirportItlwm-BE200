@@ -244,7 +244,6 @@ public:
     //IO80211
     uint8_t power_state;
     struct ieee80211_node *fNextNodeToSend;
-    uint32_t wclAppleIoctlCalls = 0;
     bool fScanResultWrapping;
     IOTimerEventSource *scanSource;
     

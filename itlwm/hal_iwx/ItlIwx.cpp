@@ -256,136 +256,16 @@ iwx_record_diagnostic(struct iwx_softc *sc, const char *event,
 }
 
 static bool
-iwx_is_dhcp_tx_payload(mbuf_t m)
+iwx_is_eapol_frame(mbuf_t m)
 {
-    uint8_t bytes[76]; // SNAP + maximum IPv4 header + UDP header.
-    const size_t length = m ? mbuf_pkthdr_len(m) : 0;
-    if (length < 36 || mbuf_copydata(m, 0, MIN(length, sizeof(bytes)), bytes))
-        return false;
-    static const uint8_t snap[] = { 0xaa, 0xaa, 0x03, 0, 0, 0, 0x08, 0 };
-    if (memcmp(bytes, snap, sizeof(snap)) || (bytes[8] >> 4) != 4 || bytes[17] != 17)
-        return false;
-    const size_t ip_header = (bytes[8] & 15) * 4;
-    const size_t ip_length = (bytes[10] << 8) | bytes[11];
-    if (ip_header < 20 || length < 8 + ip_header + 8 ||
-        ip_length < ip_header + 8 || ip_length > length - 8 ||
-        (bytes[14] & 0x3f) || bytes[15])
-        return false;
-    const uint8_t *udp = bytes + 8 + ip_header;
-    const size_t udp_length = (udp[4] << 8) | udp[5];
-    return udp[0] == 0 && udp[1] == 68 && udp[2] == 0 && udp[3] == 67 &&
-        udp_length >= 8 && udp_length <= ip_length - ip_header;
-}
-
-struct iwx_eapol_tx_info {
-    uint32_t length;
-    uint8_t type, code, identifier;
-    int8_t protected_frame;
-    uint8_t source[ETHER_ADDR_LEN], destination[ETHER_ADDR_LEN], bssid[ETHER_ADDR_LEN];
-};
-
-static bool
-iwx_eapol_tx_info(mbuf_t m, bool ethernet_frame, struct iwx_eapol_tx_info *info)
-{
-    if (!m || mbuf_type(m) == MBUF_TYPE_FREE)
-        return false;
     uint8_t bytes[64];
     size_t length = mbuf_pkthdr_len(m);
-    if (mbuf_copydata(m, 0, MIN(length, sizeof(bytes)), bytes))
+    if (length < sizeof(struct ieee80211_frame) ||
+        mbuf_copydata(m, 0, MIN(length, sizeof(bytes)), bytes))
         return false;
-    info->protected_frame = -1;
-    size_t offset;
-
-    if (ethernet_frame) {
-        if (length < sizeof(struct ether_header) + 4)
-            return false;
-        const struct ether_header *eh = (const struct ether_header *)bytes;
-        if (eh->ether_type != htons(ETHERTYPE_PAE))
-            return false;
-        offset = sizeof(*eh);
-        memcpy(info->source, eh->ether_shost, ETHER_ADDR_LEN);
-        memcpy(info->destination, eh->ether_dhost, ETHER_ADDR_LEN);
-        memcpy(info->bssid, eh->ether_dhost, ETHER_ADDR_LEN);
-    } else {
-        if (!m || length < sizeof(struct ieee80211_frame))
-            return false;
-        const struct ieee80211_frame *wh = (const struct ieee80211_frame *)bytes;
-        const size_t hdrlen = ieee80211_get_hdrlen(wh);
-        if (length < hdrlen + 12 ||
-            bytes[hdrlen + 6] != 0x88 || bytes[hdrlen + 7] != 0x8e)
-            return false;
-        info->protected_frame = (wh->i_fc[1] & IEEE80211_FC1_PROTECTED) != 0;
-        offset = hdrlen + 8;
-        memcpy(info->bssid, wh->i_addr1, ETHER_ADDR_LEN);
-        memcpy(info->source, wh->i_addr2, ETHER_ADDR_LEN);
-        memcpy(info->destination, wh->i_addr3, ETHER_ADDR_LEN);
-    }
-
-    info->length = (uint32_t)length;
-    info->type = bytes[offset + 1];
-    info->code = 0;
-    info->identifier = 0xff;
-    if (info->type == 0 && length >= offset + 9) {
-        info->code = bytes[offset + 4];
-        info->identifier = bytes[offset + 5];
-    }
-    return true;
-}
-
-static bool
-iwx_eapol_tx_payload_info(mbuf_t m, const uint8_t *bssid,
-    const uint8_t *source, struct iwx_eapol_tx_info *info)
-{
-    if (!m || mbuf_type(m) == MBUF_TYPE_FREE || mbuf_pkthdr_len(m) < 12)
-        return false;
-    uint8_t bytes[17];
-    const size_t length = mbuf_pkthdr_len(m);
-    if (mbuf_copydata(m, 0, MIN(length, sizeof(bytes)), bytes))
-        return false;
-    if (bytes[6] != 0x88 || bytes[7] != 0x8e)
-        return false;
-    memset(info, 0, sizeof(*info));
-    info->protected_frame = -1;
-    info->length = (uint32_t)length;
-    info->type = bytes[9];
-    info->identifier = 0xff;
-    memcpy(info->bssid, bssid, ETHER_ADDR_LEN);
-    memcpy(info->source, source, ETHER_ADDR_LEN);
-    memcpy(info->destination, bssid, ETHER_ADDR_LEN);
-    if (info->type == 0 && length >= 17) {
-        info->code = bytes[12];
-        info->identifier = bytes[13];
-    }
-    return true;
-}
-
-static void
-iwx_record_eapol_tx(struct iwx_softc *sc, const char *event, int error,
-    uint32_t qid, uint32_t index, const struct iwx_eapol_tx_info *info,
-    bool publish = true, uint16_t rawStatus = 0)
-{
-    /*
-     * EAPOL TX is recorded with its own counter and never in the shared
-     * ring: three entries per frame crowded out the state and recovery
-     * records that the ring exists to keep.
-     */
-    uint32_t sequence = __sync_add_and_fetch(&sc->sc_eapol_tx_sequence, 1);
-    if (!publish)
-        return;
-    char value[320];
-    snprintf(value, sizeof(value),
-        "seq=%u gen=%d event=%s error=%d raw_status=0x%x len=%u type=%u eap_code=%u eap_id=%u protected=%s qid=%u idx=%u src=%02x:%02x:%02x:%02x:%02x:%02x dst=%02x:%02x:%02x:%02x:%02x:%02x bssid=%02x:%02x:%02x:%02x:%02x:%02x",
-        sequence, sc->sc_generation, event, error, rawStatus, info->length, info->type,
-        info->code, info->identifier,
-        info->protected_frame < 0 ? "unknown" :
-            (info->protected_frame ? "1" : "0"), qid, index,
-        info->source[0], info->source[1], info->source[2], info->source[3],
-        info->source[4], info->source[5], info->destination[0],
-        info->destination[1], info->destination[2], info->destination[3],
-        info->destination[4], info->destination[5], info->bssid[0],
-        info->bssid[1], info->bssid[2], info->bssid[3], info->bssid[4],
-        info->bssid[5]);
-    sc->sc_pcitag->setProperty("AirportItlwm-EAPOLTxDriver", value);
+    size_t hdrlen = ieee80211_get_hdrlen((const struct ieee80211_frame *)bytes);
+    return length >= hdrlen + LLC_SNAPFRAMELEN &&
+        bytes[hdrlen + 6] == 0x88 && bytes[hdrlen + 7] == 0x8e;
 }
 
 static void
@@ -442,7 +322,6 @@ int iwx_debug = 1;
 
 bool ItlIwx::attach(IOPCIDevice *device)
 {
-    device->setProperty("AirportItlwm-HALStage", "attach-entry");
 #ifdef AIRPORT_WCL
     com.sc_diagnostic_sequence = 0;
     bzero(com.sc_diagnostics, sizeof(com.sc_diagnostics));
@@ -454,7 +333,6 @@ bool ItlIwx::attach(IOPCIDevice *device)
     pci.pa_tag = device;
     pci.workloop = getMainWorkLoop();
 #ifdef AIRPORT_VTD
-    device->setProperty("AirportItlwm-HALStage", "prepare-dma");
     if (!prepareDma(device, 36))
         return false;
     pci.pa_dmat = dmaArena;
@@ -1818,8 +1696,6 @@ iwx_read_firmware(struct iwx_softc *sc)
         if (step > 3)
             return ENOTSUP;
         sc->sc_hw_rev = (sc->sc_hw_rev & ~0xc) | (step << 2);
-        sc->sc_pcitag->setProperty("AirportItlwm-CNVIRevision", cnvi, 32);
-        sc->sc_pcitag->setProperty("AirportItlwm-RFID", sc->sc_hw_rf_id, 32);
     }
     if (!IwxBE::makePrefix(sc->sc_be, mac, step, sc->sc_hw_rf_id)) {
         XYLog("BE unsupported MAC/RF: rev=0x%x rfid=0x%x\n", sc->sc_hw_rev, sc->sc_hw_rf_id);
@@ -2307,18 +2183,10 @@ iwx_read_firmware_file(struct iwx_softc *sc)
     
     KASSERT(err == 0, "err == 0");
     
-    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareName", sc->sc_fwname);
-    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareVersion", sc->sc_fwver);
-    sc->sc_pcitag->setProperty("AirportItlwm-PHYContextCommandVersion",
-        iwx_lookup_cmd_ver(sc, IWX_LONG_GROUP, IWX_PHY_CONTEXT_CMD), 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-MLDLinkCommandVersion",
-        iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD), 32);
     XYLog("firmware parse done: %s %s\n", sc->sc_fwname, sc->sc_fwver);
     
 parse_out:
     if (err) {
-        sc->sc_pcitag->setProperty("AirportItlwm-FirmwareParseTLV", tlv_type, 32);
-        sc->sc_pcitag->setProperty("AirportItlwm-FirmwareParseError", (uint64_t)err, 32);
         XYLog("%s: firmware parse error %d, "
               "section type %d\n", DEVNAME(sc), err, tlv_type);
     }
@@ -2484,9 +2352,6 @@ done:
     }
     
     XYLog("loaded PNVM version %08x\n", sha1);
-    sc->sc_pcitag->setProperty("AirportItlwm-PNVMVersion", sha1, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-PNVMSizeBytes", size, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-PNVMSegmentCount", segment_count, 32);
     
     prph_sc_ctrl = &((struct iwx_prph_scratch *)sc->prph_scratch_dma.vaddr)->ctrl_cfg;
     
@@ -2636,16 +2501,6 @@ iwx_load_pnvm(struct iwx_softc *sc)
     int err;
     sc->sc_pnvm_status = UINT32_MAX;
     sc->sc_pnvm_payload_len = UINT32_MAX;
-    sc->sc_pcitag->setProperty("AirportItlwm-PNVMStatus", sc->sc_pnvm_status, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-PNVMPayloadLength", sc->sc_pnvm_payload_len, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-PNVMVersion", UINT32_MAX, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-PNVMSizeBytes", UINT32_MAX, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-PNVMSegmentCount", UINT32_MAX, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-PNVMSkuId0", sc->sku_id[0], 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-PNVMSkuId1", sc->sku_id[1], 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-PNVMSkuId2", sc->sku_id[2], 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-PNVMFragmented",
-                               isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_FRAGMENTED_PNVM_IMG), 32);
     
     /* if the SKU_ID is empty, there's nothing to do */
     if (!sc->sku_id[0] && !sc->sku_id[1] && !sc->sku_id[2])
@@ -2667,8 +2522,6 @@ iwx_load_pnvm(struct iwx_softc *sc)
     err = iwx_wait_notification(sc, &sc->sc_init_complete, IWX_PNVM_COMPLETE, 2000);
     if (err == ENXIO)
         return err;
-    sc->sc_pcitag->setProperty("AirportItlwm-PNVMStatus", sc->sc_pnvm_status, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-PNVMPayloadLength", sc->sc_pnvm_payload_len, 32);
     
     iwx_pnvm_free(&sc->sc_fw);
     // Match the reference wait contract and keep the firmware status diagnostic.
@@ -4020,11 +3873,6 @@ iwx_enable_txq(struct iwx_softc *sc, int sta_id, int qid, int tid,
     iwx_reset_tx_ring(sc, ring);
     if (sc->sc_use_mld_api) {
         uint16_t assigned, pointer;
-        char host[160];
-        snprintf(host, sizeof(host), "qid=%d tid=%d slots=%d cur=%d desc_bytes=%llu bc_bytes=%llu",
-            qid, tid, ring->ring_count, ring->cur,
-            (uint64_t)ring->desc_dma.size, (uint64_t)ring->bc_tbl.size);
-        sc->sc_pcitag->setProperty("AirportItlwm-MLDManagementQueueHost", host);
         err = iwx_mld_queue_cmd(sc, 1U << sta_id, tid, 0, num_slots,
             ring->desc_dma.paddr, ring->bc_tbl.paddr, &assigned, &pointer);
         if (err)
@@ -4674,44 +4522,6 @@ uint32_t *channel_profile_v4, int nchan_profile, const char *source)
               (!IEEE80211_IS_CHAN_2GHZ(channel)) ? "5.2" : "2.4"));
     }
 
-#ifdef AIRPORT_WCL
-    {
-        int built2 = 0, built5 = 0, built6 = 0;
-        for (int i = 0; i <= IEEE80211_CHAN_MAX; i++) {
-            const struct ieee80211_channel *c = &ic->ic_channels[i];
-            if (!c->ic_freq)
-                continue;
-            if (IEEE80211_IS_CHAN_6GHZ(c))
-                built6++;
-            else if (IEEE80211_IS_CHAN_5GHZ(c))
-                built5++;
-            else if (IEEE80211_IS_CHAN_2GHZ(c))
-                built2++;
-        }
-        int p6nonzero = 0, p6valid = 0;
-        if (channel_profile_v4) {
-            for (int i = IWX_NUM_2GHZ_CHANNELS + 37; i < nchan_profile &&
-                 i < IWX_NUM_CHANNELS; i++) {
-                const uint32_t word = le32toh(channel_profile_v4[i]);
-                if (word)
-                    p6nonzero++;
-                if (word & IWX_NVM_CHANNEL_VALID)
-                    p6valid++;
-            }
-        }
-        char summary[160];
-        snprintf(summary, sizeof(summary),
-            "2g=%d 5g=%d 6g=%d nchan=%d profile=%d uhb=%d v4=%d p6nz=%d p6v=%d w51=0x%x w53=0x%x",
-            built2, built5, built6, nchan, nchan_profile, sc->sc_uhb_supported,
-            channel_profile_v4 != NULL ? 1 : 0, p6nonzero, p6valid,
-            channel_profile_v4 && nchan_profile > 51 ? le32toh(channel_profile_v4[51]) : 0,
-            channel_profile_v4 && nchan_profile > 53 ? le32toh(channel_profile_v4[53]) : 0);
-        char key[64];
-        snprintf(key, sizeof(key), "AirportItlwm-ChannelTableBuilt-%s",
-            source ? source : "unknown");
-        sc->sc_pcitag->setProperty(key, summary);
-    }
-#endif
 }
 
 int ItlIwx::
@@ -4965,10 +4775,6 @@ iwx_setup_he_rates(struct iwx_softc *sc)
     memset(ic->ic_ppe_thres, 0, sizeof(ic->ic_ppe_thres));
     uint8_t version = 0;
     bool mld_he_api = false;
-    sc->sc_pcitag->setProperty("AirportItlwm-MLDStationCommandVersion",
-        iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP, IWX_MLD_STA_CONFIG_CMD), 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-TLCCommandVersion",
-        iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP, IWX_TLC_MNG_CONFIG_CMD), 32);
     ic->ic_mld_emlsr_supported = false;
     if (sc->sc_use_mld_api) {
         uint8_t mac_version = iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP,
@@ -5289,8 +5095,6 @@ iwx_mac_ctxt_task(void *arg)
         memset(&cmd, 0, sizeof(cmd));
         that->iwx_mld_modify_link_fill(sc, in, &cmd, changes,
             !!(sc->sc_mld_active_links & 1));
-        sc->sc_pcitag->setProperty("AirportItlwm-MLDLinkModifyRequest",
-            &cmd, sizeof(cmd));
         err = that->iwx_send_cmd_pdu(sc,
             IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD),
             0, sizeof(cmd), &cmd);
@@ -5625,8 +5429,6 @@ iwx_set_mac_addr_from_csr(struct iwx_softc *sc, struct iwx_nvm_data *data)
 {
     uint32_t mac_addr0, mac_addr1;
     
-    sc->sc_pcitag->setProperty("AirportItlwm-NVMCSRBase",
-        sc->sc_device_family >= IWX_DEVICE_FAMILY_BZ ? 0x30 : 0x380, 32);
 
     if (!iwx_nic_lock(sc))
         return EBUSY;
@@ -5688,10 +5490,6 @@ iwx_nvm_get(struct iwx_softc *sc)
     int valid_mac_addr;
     size_t resp_len = v4 ? sizeof(*rsp) : sizeof(*rsp_v3);
 
-    sc->sc_pcitag->setProperty("AirportItlwm-NVMInfoAPIVersion", v4 ? 4 : 3, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-NVMInfoExpectedLength", resp_len, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-NVMInfoResponseLength", UINT32_MAX, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-NVMCSRAddressValid", UINT32_MAX, 32);
     
     hcmd.resp_pkt_len = sizeof(struct iwx_rx_packet) + resp_len;
     err = iwx_send_cmd(sc, &hcmd);
@@ -5699,7 +5497,6 @@ iwx_nvm_get(struct iwx_softc *sc)
         return err;
 
     size_t actual_resp_len = iwx_rx_packet_payload_len(hcmd.resp_pkt);
-    sc->sc_pcitag->setProperty("AirportItlwm-NVMInfoResponseLength", actual_resp_len, 32);
     
     if (actual_resp_len != resp_len) {
         err = EIO;
@@ -5712,7 +5509,6 @@ iwx_nvm_get(struct iwx_softc *sc)
     if (err)
         goto out;
     valid_mac_addr = iwx_is_valid_mac_addr(nvm->hw_addr);
-    sc->sc_pcitag->setProperty("AirportItlwm-NVMCSRAddressValid", valid_mac_addr, 32);
     if (!valid_mac_addr) {
         XYLog("%s: no valid mac address was found\n", DEVNAME(sc));
         err = EINVAL;
@@ -5923,22 +5719,18 @@ iwx_load_ucode_wait_alive(struct iwx_softc *sc)
     XYLog("%s\n", __FUNCTION__);
     int err;
     
-    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareStage", "read-firmware");
     err = iwx_read_firmware(sc);
     if (err)
         return err;
     
-    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareStage", "start-firmware");
     err = iwx_start_fw(sc);
     if (err)
         return err;
     
-    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareStage", "load-pnvm");
     err = iwx_load_pnvm(sc);
     if (err)
         return err;
     
-    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareStage", "post-alive");
     iwx_post_alive(sc);
     
     return 0;
@@ -5994,16 +5786,12 @@ iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
             ic->ic_caps |= IEEE80211_C_MFP;
         else
             ic->ic_caps &= ~IEEE80211_C_MFP;
-        sc->sc_pcitag->setProperty("AirportItlwm-MLDKeyCommandVersion", sec_key_ver, 32);
-        sc->sc_pcitag->setProperty("AirportItlwm-MFPCapable",
-            (ic->ic_caps & IEEE80211_C_MFP) != 0, 32);
     }
 
     /*
      * Send init config command to mark that we are sending NVM
      * access commands
      */
-    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareStage", "init-commands");
     err = iwx_send_cmd_pdu(sc, IWX_WIDE_ID(IWX_SYSTEM_GROUP,
                                            IWX_INIT_EXTENDED_CFG_CMD), IWX_CMD_SEND_IN_RFKILL, sizeof(init_cfg), &init_cfg);
     if (err)
@@ -6020,7 +5808,6 @@ iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
         return err;
 
     if (readnvm) {
-        sc->sc_pcitag->setProperty("AirportItlwm-FirmwareStage", "read-nvm");
         err = iwx_nvm_get(sc);
         if (err) {
             XYLog("%s: failed to read nvm\n", DEVNAME(sc));
@@ -6031,7 +5818,6 @@ iwx_run_init_mvm_ucode(struct iwx_softc *sc, int readnvm)
                 sc->sc_nvm.hw_addr);
         
     }
-    sc->sc_pcitag->setProperty("AirportItlwm-FirmwareStage", "init-ready");
     return 0;
 }
 
@@ -7169,11 +6955,6 @@ iwx_ampdu_txq_advance(struct iwx_softc *sc, struct iwx_tx_ring *ring, int idx)
     while (ring->tail != idx) {
         txd = &ring->data[ring->tail];
         if (txd->m != NULL) {
-#ifdef AIRPORT_WCL
-            if (iwx_is_dhcp_tx_payload(txd->m))
-                iwx_record_diagnostic(sc, "dhcp-tx-reclaimed", __FUNCTION__, __LINE__,
-                    0, (uint32_t(ring->qid) << 16) | uint32_t(ring->tail));
-#endif
             iwx_txd_done(sc, txd);
             iwx_clear_tx_desc(sc, ring, ring->tail);
             ring->queued--;
@@ -7252,23 +7033,6 @@ iwx_rx_tx_cmd(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
         if (idx == ring->tail)
             return;
         txd = &ring->data[(idx + ring->ring_count - 1) % ring->ring_count];
-#ifdef AIRPORT_WCL
-        struct iwx_eapol_tx_info eapolInfo;
-        const int txIndex = (int)(txd - ring->data);
-        if (iwx_is_dhcp_tx_payload(txd->m)) {
-            const uint16_t status = le16toh(tx_resp->status.status);
-            iwx_record_diagnostic(sc, "dhcp-tx-complete", __FUNCTION__, __LINE__,
-                iwx_tx_status_is_acked(status) ? 0 : EIO,
-                (uint32_t(qid) << 16) | uint32_t(txIndex), -1, -1, pkt, status);
-        }
-        if (txd->in && iwx_eapol_tx_payload_info(txd->m,
-            txd->in->in_ni.ni_bssid, sc->sc_ic.ic_myaddr, &eapolInfo)) {
-            const uint16_t rawStatus = le16toh(tx_resp->status.status);
-            const int txError = iwx_tx_status_is_acked(rawStatus) ? 0 : EIO;
-            iwx_record_eapol_tx(sc, "firmware-complete", txError, qid,
-                txIndex, &eapolInfo, false, rawStatus);
-        }
-#endif
         iwx_rx_tx_cmd_single(sc, pkt, txd);
         DPRINTFN(3, ("%s tid=%d ssn=%d idx=%d\n", __FUNCTION__, tid, ssn, idx));
         iwx_ampdu_txq_advance(sc, ring, idx);
@@ -8363,8 +8127,7 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     if (sc->sc_use_mld_api && ic->ic_wcl_peer_is_mlo &&
         (sc->sc_mld_active_links & (sc->sc_mld_active_links - 1)) &&
         type == IEEE80211_FC0_TYPE_DATA) {
-        struct iwx_eapol_tx_info eapol_info;
-        is_eapol = iwx_eapol_tx_info(m, false, &eapol_info);
+        is_eapol = iwx_is_eapol_frame(m);
     }
     if (sc->sc_use_mld_api && ic->ic_wcl_peer_is_mlo &&
         ic->ic_mld_link_count > 1 &&
@@ -8631,11 +8394,6 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     }
     
 #ifdef AIRPORT_WCL
-    if (type == IEEE80211_FC0_TYPE_DATA && iwx_is_dhcp_tx_payload(m)) {
-        iwx_record_diagnostic(sc, "dhcp-tx-submitted", __FUNCTION__, __LINE__, 0,
-            (uint32_t(qid) << 16) | uint32_t(idx));
-        iwx_publish_diagnostics(sc);
-    }
     if (type == IEEE80211_FC0_TYPE_DATA && !(subtype & IEEE80211_FC0_SUBTYPE_NODATA))
         ++ic->ic_wcl_tx_packets[trafficAC];
 #endif
@@ -9588,27 +9346,6 @@ iwx_umac_scan(struct iwx_softc *sc, int bgscan)
         }
         int err = iwx_umac_scan_v17(sc, bgscan);
         if (err || (start && !sc->sc_scan_batch_sent)) {
-            if (!err) {
-                /*
-                 * Nothing was programmed into firmware because no channel
-                 * survived the selection. iwx_newstate_task() answers this
-                 * with iwx_schedule_recovery(), so record what the selection
-                 * was made from before the firmware goes down.
-                 */
-                int active = 0;
-                for (int i = 1; i <= IEEE80211_CHAN_MAX; i++)
-                    if (isset(sc->sc_ic.ic_chan_active, i))
-                        active++;
-                char detail[128];
-                snprintf(detail, sizeof(detail),
-                    "state=%d if=0x%x active=%d restricted=%d scan=%d join=%d fallback=%u",
-                    sc->sc_ic.ic_state, (unsigned)sc->sc_ic.ic_if.if_flags,
-                    active, sc->sc_ic.ic_wcl_scan_restricted,
-                    sc->sc_ic.ic_wcl_scan_requested,
-                    sc->sc_ic.ic_wcl_join_requested,
-                    sc->sc_scan_unrestricted_fallback);
-                sc->sc_pcitag->setProperty("AirportItlwm-HWScanEmpty", detail);
-            }
             iwx_scan_state_reset(sc);
             return err ? err : ENOENT;
         }
@@ -10071,11 +9808,6 @@ iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
     cp->count = iwx_umac_scan_fill_channels(sc,
                                             (struct iwx_scan_channel_cfg_umac *)cp->channel_config,
                                             scanActive, bgscan);
-    sc->sc_pcitag->setProperty("AirportItlwm-HWScanChannels", (uint32_t)cp->count, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-HWScanPassive", scanActive ? 0 : 1, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-HWScanRestricted",
-        ic->ic_wcl_scan_restricted && (ic->ic_wcl_scan_requested ||
-            (ic->ic_wcl_join_requested && !bgscan)) ? 1 : 0, 32);
     {
         bool extended = isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_SCAN_EXT_CHAN_VER);
         const struct iwx_scan_channel_cfg_umac *cfg =
@@ -10092,7 +9824,6 @@ iwx_umac_scan_v14(struct iwx_softc *sc, int bgscan)
                 break;
             offset += (size_t)written;
         }
-        sc->sc_pcitag->setProperty("AirportItlwm-HWScanChannelList", channels);
     }
     cp->n_aps_override[0] = IWX_SCAN_ADWELL_N_APS_GO_FRIENDLY;
     cp->n_aps_override[1] = IWX_SCAN_ADWELL_N_APS_SOCIAL_CHS;
@@ -11261,14 +10992,10 @@ iwx_rs_init(struct iwx_softc *sc, struct iwx_node *in, bool update)
         }
         if (cfg_cmd_v6.phy_id == htole32(IWX_FW_CTXT_INVALID))
             return ENXIO;
-        sc->sc_pcitag->setProperty("AirportItlwm-TLCConfigRequest",
-            &cfg_cmd_v6, sizeof(cfg_cmd_v6));
         return iwx_send_cmd_pdu(sc, cmd_id, IWX_CMD_ASYNC,
             sizeof(cfg_cmd_v6), &cfg_cmd_v6);
     }
     if (cmdver == 4) {
-        sc->sc_pcitag->setProperty("AirportItlwm-TLCConfigRequest",
-            &cfg_cmd, sizeof(cfg_cmd));
         return iwx_send_cmd_pdu(sc, cmd_id, IWX_CMD_ASYNC,
                                 sizeof(cfg_cmd), &cfg_cmd);
     } else if (cmdver < 4 || cmdver == IWX_FW_CMD_VER_UNKNOWN) {
@@ -11294,8 +11021,6 @@ iwx_rs_init(struct iwx_softc *sc, struct iwx_node *in, bool update)
         if (cmdver == IWX_FW_CMD_VER_UNKNOWN || cmdver < 3)
             cmd_size -= 4;
         
-        sc->sc_pcitag->setProperty("AirportItlwm-TLCConfigRequest",
-            &cfg_cmd_v3, cmd_size);
         return iwx_send_cmd_pdu(sc, cmd_id, IWX_CMD_ASYNC, cmd_size,
                                 &cfg_cmd_v3);
     } else {
@@ -11443,7 +11168,6 @@ iwx_eht_rate_kbps(uint32_t rate, uint16_t puncture)
 void ItlIwx::
 iwx_rs_update(struct iwx_softc *sc, struct iwx_tlc_update_notif *notif)
 {
-    struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_node *ni;
     struct ieee80211_rateset *rs;
     uint32_t rate_n_flags;
@@ -11471,10 +11195,6 @@ iwx_rs_update(struct iwx_softc *sc, struct iwx_tlc_update_notif *notif)
             in->in_amsdu_tids = uint8_t(enabled & ((1U << IWX_MAX_TID_COUNT) - 1));
             in->in_amsdu_generation = sc->sc_generation;
             splx(s);
-            char key[64];
-            snprintf(key, sizeof(key), "AirportItlwm-AMSDUSta%u", notif->sta_id);
-            uint32_t state[] = {size, in->in_amsdu_tids};
-            sc->sc_pcitag->setProperty(key, state, sizeof(state));
         } else {
             XYLog("%s: rejected A-MSDU size %u beyond configured MPDU %u\n",
                 __FUNCTION__, size, in->in_max_mpdu_len);
@@ -12231,7 +11951,6 @@ iwx_newstate_task(void *psc)
     int generation = sc->sc_generation;
     int arg = sc->ns_arg;
     int err = 0, s = splnet();
-    bool initial_scan = ostate <= IEEE80211_S_INIT;
 #ifdef AIRPORT_WCL
     iwx_publish_diagnostics(sc);
 #endif
@@ -12311,19 +12030,7 @@ iwx_newstate_task(void *psc)
             break;
             
         case IEEE80211_S_SCAN:
-            if (initial_scan) {
-                sc->sc_pcitag->setProperty("AirportItlwm-InitInitialScanFunction", "iwx_scan");
-                sc->sc_pcitag->setProperty("AirportItlwm-InitInitialScanError", UINT32_MAX, 32);
-                sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "initial-scan-command");
-            }
             err = that->iwx_scan(sc);
-            if (initial_scan) {
-                sc->sc_pcitag->setProperty("AirportItlwm-InitInitialScanError", err, 32);
-                sc->sc_pcitag->setProperty("AirportItlwm-InitStage",
-                                           err ? "initial-scan-command-failed" : "initial-scan-command-accepted");
-                if (err)
-                    sc->sc_pcitag->setProperty("AirportItlwm-InitFailureFunction", "iwx_scan");
-            }
             if (err)
                 break;
             //        refcnt_rele_wake(&sc->task_refs);
@@ -12672,11 +12379,6 @@ iwx_endscan(struct iwx_softc *sc, uint8_t status, bool allowContinuation)
     if ((sc->sc_flags & (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)) == 0)
         return;
 
-#ifdef AIRPORT_WCL
-    if (sc->sc_scan_active)
-        sc->sc_pcitag->setProperty("AirportItlwm-HWScanCompletionStatus",
-                                   status, 32);
-#endif
     
     if (sc->sc_scan_active && sc->sc_scan_batch_pending) {
         sc->sc_scan_batch_pending = 0;
@@ -13063,22 +12765,13 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
     bool profileChanged = false;
     bool countryChanged = false;
     bool applyProfile = false;
-    bool overrideRequest = false;
     char effectiveMcc[3] = {};
     const bool profileWasSynced = sc->sc_mcc_profile_synced;
     int err;
 
-    sc->sc_pcitag->setProperty("AirportItlwm-MCCResponseVersion", UINT32_MAX, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-MCCResponseLength", UINT32_MAX, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-MCCStatus", UINT32_MAX, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-MCCChannelCount", UINT32_MAX, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-MCCFailureStage", "pending");
-
     response_version = iwx_lookup_notif_ver(sc, IWX_LONG_GROUP,
                                              IWX_MCC_UPDATE_CMD);
     parse_version = iwx_mcc_response_version_for_parse(response_version);
-    sc->sc_pcitag->setProperty("AirportItlwm-MCCResponseVersion",
-                               response_version, 32);
     
     memset(&mcc_cmd, 0, sizeof(mcc_cmd));
     mcc_cmd.mcc = htole16(alpha2[0] << 8 | alpha2[1]);
@@ -13086,58 +12779,33 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
         (isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_WIFI_MCC_UPDATE) ||
          isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_LAR_MULTI_MCC)) ?
             sourceId : IWX_MCC_SOURCE_OLD_FW;
-    overrideRequest = sc->sc_mcc_override[0] != 0 &&
-        alpha2[0] == sc->sc_mcc_override[0] &&
-        alpha2[1] == sc->sc_mcc_override[1];
-    if (overrideRequest)
-        sc->sc_pcitag->setProperty("AirportItlwm-MCCOverrideApplied",
-            static_cast<uint64_t>(0), 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-MCCRequestedCountry", alpha2);
-    sc->sc_pcitag->setProperty("AirportItlwm-MCCRequestSource",
-                               mcc_cmd.source_id, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-MCCEffectiveCountry", "pending");
-    sc->sc_pcitag->setProperty("AirportItlwm-MCCResponseSource", UINT32_MAX, 32);
     
     hcmd.len[0] = sizeof(struct iwx_mcc_update_cmd);
     hcmd.resp_pkt_len = IWX_CMD_RESP_MAX;
     
     err = iwx_send_cmd(sc, &hcmd);
     if (err) {
-        sc->sc_pcitag->setProperty("AirportItlwm-MCCFailureStage", "send-command");
         return err;
     }
     
     pkt = hcmd.resp_pkt;
     if (!pkt || (pkt->hdr.group_id & IWX_CMD_FAILED_MSK)) {
         err = EIO;
-        sc->sc_pcitag->setProperty("AirportItlwm-MCCFailureStage", "response-packet");
         goto out;
     }
     
     resp_len = iwx_rx_packet_payload_len(pkt);
-    sc->sc_pcitag->setProperty("AirportItlwm-MCCResponseLength",
-                               static_cast<uint32_t>(resp_len), 32);
     err = iwx_apply_mcc_update_response(
         pkt, parse_version,
         isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_MCC_UPDATE_11AX_SUPPORT),
         &response);
-    if (err) {
-        if (response.header_valid) {
-            sc->sc_pcitag->setProperty("AirportItlwm-MCCStatus", response.status, 32);
-            sc->sc_pcitag->setProperty("AirportItlwm-MCCChannelCount",
-                                       response.n_channels, 32);
-        }
-        sc->sc_pcitag->setProperty("AirportItlwm-MCCFailureStage", "response-layout");
+    if (err)
         goto out;
-    }
 
     if (response.mcc == 0)
         response.mcc = 0x3030;
     effectiveMcc[0] = static_cast<char>((response.mcc >> 8) & 0xff);
     effectiveMcc[1] = static_cast<char>(response.mcc & 0xff);
-    sc->sc_pcitag->setProperty("AirportItlwm-MCCEffectiveCountry", effectiveMcc);
-    sc->sc_pcitag->setProperty("AirportItlwm-MCCResponseSource",
-                               response.source_id, 32);
 
     DPRINTF(("MCC status=0x%x mcc=0x%x cap=0x%x time=0x%x geo_info=0x%x source_id=0x%d n_channels=%u\n",
              response.status, response.mcc, response.cap, response.time,
@@ -13146,22 +12814,8 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
     if (response.status != IWX_MCC_RESP_NEW_CHAN_PROFILE &&
         response.status != IWX_MCC_RESP_SAME_CHAN_PROFILE &&
         response.status != IWX_MCC_RESP_ILLEGAL) {
-        sc->sc_pcitag->setProperty("AirportItlwm-MCCStatus", response.status, 32);
-        sc->sc_pcitag->setProperty("AirportItlwm-MCCChannelCount",
-                                   response.n_channels, 32);
-        sc->sc_pcitag->setProperty("AirportItlwm-MCCFailureStage", "firmware-status");
         err = EIO;
         goto out;
-    }
-
-    if (overrideRequest) {
-        const uint16_t requestedOverride =
-            (static_cast<uint8_t>(sc->sc_mcc_override[0]) << 8) |
-            static_cast<uint8_t>(sc->sc_mcc_override[1]);
-        sc->sc_pcitag->setProperty("AirportItlwm-MCCOverrideApplied",
-            (response.status == IWX_MCC_RESP_NEW_CHAN_PROFILE ||
-             response.status == IWX_MCC_RESP_SAME_CHAN_PROFILE) &&
-            response.mcc == requestedOverride, 32);
     }
 
     profileChanged = iwx_mcc_profile_changed(response.status);
@@ -13193,8 +12847,6 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
          * so record the mismatch and leave the link alone.
          */
         const bool channelUsable = iwx_mld_associated_channel_usable(sc);
-        sc->sc_pcitag->setProperty("AirportItlwm-MCCWidthMismatch",
-            channelUsable && !iwx_mld_associated_channels_valid(sc), 32);
         bool disconnect = ic->ic_state == IEEE80211_S_RUN && !channelUsable;
         sc->sc_mcc_profile_synced = 1;
         /*
@@ -13248,11 +12900,7 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
             sc->sc_mcc_notify_pending = 1;
     }
 
-    sc->sc_pcitag->setProperty("AirportItlwm-MCCStatus", response.status, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-MCCChannelCount",
-                               response.n_channels, 32);
 
-    sc->sc_pcitag->setProperty("AirportItlwm-MCCFailureStage", "none");
     
 out:
     iwx_free_resp(sc, &hcmd);
@@ -13339,46 +12987,31 @@ iwx_init_hw(struct iwx_softc *sc)
     const char *stage = "iwx_preinit";
     sc->sc_mcc_profile_synced = 0;
 
-    sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
-    sc->sc_pcitag->setProperty("AirportItlwm-InitHWFailureFunction", "pending");
-    sc->sc_pcitag->setProperty("AirportItlwm-InitHWError", UINT32_MAX, 32);
     
     err = iwx_preinit(sc);
     if (err) {
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWFailureFunction", stage);
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWError", err, 32);
         return err;
     }
     
     stage = "iwx_start_hw";
-    sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
     err = iwx_start_hw(sc);
     if (err) {
         XYLog("%s: could not initialize hardware\n", DEVNAME(sc));
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWFailureFunction", stage);
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWError", err, 32);
         return err;
     }
     
     stage = "iwx_run_init_mvm_ucode";
-    sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
     err = iwx_run_init_mvm_ucode(sc, 0);
     if (err) {
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWFailureFunction", stage);
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWError", err, 32);
         return err;
     }
     
     stage = "iwx_nic_lock";
-    sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
     if (!iwx_nic_lock(sc)) {
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWFailureFunction", stage);
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWError", EBUSY, 32);
         return EBUSY;
     }
     
     stage = "iwx_send_tx_ant_cfg";
-    sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
     err = iwx_send_tx_ant_cfg(sc, iwx_fw_valid_tx_ant(sc));
     if (err) {
         XYLog("%s: could not init tx ant config (error %d)\n",
@@ -13390,7 +13023,6 @@ iwx_init_hw(struct iwx_softc *sc)
     
     if (sc->sc_tx_with_siso_diversity) {
         stage = "iwx_send_phy_cfg_cmd";
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
         err = iwx_send_phy_cfg_cmd(sc);
         if (err) {
             XYLog("%s: could not send phy config (error %d)\n",
@@ -13400,7 +13032,6 @@ iwx_init_hw(struct iwx_softc *sc)
     }
     
     stage = "iwx_send_bt_init_conf";
-    sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
     err = iwx_send_bt_init_conf(sc);
     if (err) {
         XYLog("%s: could not init bt coex (error %d)\n",
@@ -13409,14 +13040,12 @@ iwx_init_hw(struct iwx_softc *sc)
     }
     
     stage = "iwx_send_soc_conf";
-    sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
     err = iwx_send_soc_conf(sc);
     if (err)
         goto err;
     
     if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_DQA_SUPPORT)){
         stage = "iwx_send_dqa_cmd";
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
         err = iwx_send_dqa_cmd(sc);
         if (err)
             goto err;
@@ -13424,7 +13053,6 @@ iwx_init_hw(struct iwx_softc *sc)
     
     /* Add auxiliary station for scanning */
     stage = "iwx_add_aux_sta";
-    sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
     err = sc->sc_use_mld_api ? 0 : iwx_add_aux_sta(sc);
     if (err) {
         XYLog("%s: could not add aux station (error %d)\n",
@@ -13441,7 +13069,6 @@ iwx_init_hw(struct iwx_softc *sc)
         sc->sc_phyctxt[i].id = i;
         sc->sc_phyctxt[i].channel = &ic->ic_channels[1];
         stage = "iwx_phy_ctxt_cmd";
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
         err = iwx_phy_ctxt_cmd(sc, &sc->sc_phyctxt[i], 1, 1,
                                IWX_FW_CTXT_ACTION_ADD, 0);
         if (err) {
@@ -13453,7 +13080,6 @@ iwx_init_hw(struct iwx_softc *sc)
     
     if (!isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_SET_LTR_GEN2)) {
         stage = "iwx_config_ltr";
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
         err = iwx_config_ltr(sc);
         if (err) {
             XYLog("%s: PCIe LTR configuration failed (error %d)\n",
@@ -13464,14 +13090,12 @@ iwx_init_hw(struct iwx_softc *sc)
     
     if (isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_CT_KILL_BY_FW)) {
         stage = "iwx_send_temp_report_ths_cmd";
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
         err = iwx_send_temp_report_ths_cmd(sc);
         if (err)
             goto err;
     }
     
     stage = "iwx_power_update_device";
-    sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
     err = iwx_power_update_device(sc);
     if (err) {
         XYLog("%s: could not send power command (error %d)\n",
@@ -13481,7 +13105,6 @@ iwx_init_hw(struct iwx_softc *sc)
     
     if (sc->sc_nvm.lar_enabled) {
         stage = "iwx_send_update_mcc_cmd";
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
         char lastMcc[3] = {};
         uint8_t lastSource = IWX_MCC_SOURCE_OLD_FW;
         bool restoreLastMcc = sc->sc_mcc_last_valid != 0;
@@ -13496,9 +13119,6 @@ iwx_init_hw(struct iwx_softc *sc)
         if (hasOverride) {
             memcpy(sc->sc_mcc_override, overrideMcc,
                 sizeof(sc->sc_mcc_override));
-            sc->sc_pcitag->setProperty("AirportItlwm-MCCOverride", overrideMcc);
-            sc->sc_pcitag->setProperty("AirportItlwm-MCCOverrideApplied",
-                static_cast<uint64_t>(0), 32);
         }
 
         /*
@@ -13540,7 +13160,6 @@ iwx_init_hw(struct iwx_softc *sc)
     }
     
     stage = "iwx_config_umac_scan";
-    sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
     err = iwx_config_umac_scan(sc);
     if (err) {
         XYLog("%s: could not configure scan (error %d)\n",
@@ -13549,7 +13168,6 @@ iwx_init_hw(struct iwx_softc *sc)
     }
     
     stage = "iwx_disable_beacon_filter";
-    sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", stage);
     err = iwx_disable_beacon_filter(sc);
     if (err) {
         XYLog("%s: could not disable beacon filter (error %d)\n",
@@ -13558,15 +13176,6 @@ iwx_init_hw(struct iwx_softc *sc)
     }
     
 err:
-    if (err) {
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWFailureFunction", stage);
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWError", err, 32);
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", "failed");
-    } else {
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWFailureFunction", "none");
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWError", static_cast<uint64_t>(0), 32);
-        sc->sc_pcitag->setProperty("AirportItlwm-InitHWStage", "complete");
-    }
     if (generation == sc->sc_generation)
         iwx_nic_unlock(sc);
     return err;
@@ -13629,18 +13238,6 @@ iwx_init(struct _ifnet *ifp)
     generation = ++sc->sc_generation;
     sc->sc_driver_ready = 0;
     sc->sc_mcc_notify_pending = 0;
-    sc->sc_pcitag->setProperty("AirportItlwm-InitGeneration", generation, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "init-hw");
-    sc->sc_pcitag->setProperty("AirportItlwm-InitFailureFunction", "pending");
-    sc->sc_pcitag->setProperty("AirportItlwm-InitFinalError", UINT32_MAX, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-InitIfFlagsAtEntry", ifp->if_flags, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-InitIfFlagsAfterHW", UINT32_MAX, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-Init80211StateAtEntry", ic->ic_state, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-InitInitialScanFunction", "pending");
-    sc->sc_pcitag->setProperty("AirportItlwm-InitInitialScanError", UINT32_MAX, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-InitReadyEventAttempted", static_cast<uint64_t>(0), 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-InitHWFailureFunction", "pending");
-    sc->sc_pcitag->setProperty("AirportItlwm-InitHWError", UINT32_MAX, 32);
     
     //    KASSERT(sc->task_refs.refs == 0);
     //    refcnt_init(&sc->task_refs);
@@ -13650,27 +13247,18 @@ iwx_init(struct _ifnet *ifp)
         ic->ic_event_handler(ic, IEEE80211_EVT_DRIVER_RESET_BEGIN, NULL);
 #endif
     for (int attempt = 0; ; attempt++) {
-        sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "init-hw");
         err = iwx_init_hw(sc);
         if (generation != sc->sc_generation) {
-            sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "generation-changed-after-init-hw");
-            sc->sc_pcitag->setProperty("AirportItlwm-InitFailureFunction", "init-generation-check");
-            sc->sc_pcitag->setProperty("AirportItlwm-InitFinalError", ENXIO, 32);
             return ENXIO;
         }
         if (!err)
             break;
         generation = ++sc->sc_generation;
-        sc->sc_pcitag->setProperty("AirportItlwm-InitGeneration", generation, 32);
         iwx_stop_device(sc);
         if (attempt != 0 || err == ENXIO || !(ifp->if_flags & IFF_UP) ||
             (sc->sc_flags & (IWX_FLAG_RFKILL | IWX_FLAG_HW_ERR))) {
-            sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "init-hw-failed");
-            sc->sc_pcitag->setProperty("AirportItlwm-InitFailureFunction", "iwx_init_hw");
-            sc->sc_pcitag->setProperty("AirportItlwm-InitFinalError", err, 32);
             return err;
         }
-        sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "retry-init-hw");
         XYLog("%s: retrying firmware initialization after error %d\n", DEVNAME(sc), err);
     }
     
@@ -13686,20 +13274,15 @@ iwx_init(struct _ifnet *ifp)
     ifq_clr_oactive(&ifp->if_snd);
     ifq_flush(&ifp->if_snd);
     ifp->if_flags |= IFF_RUNNING;
-    sc->sc_pcitag->setProperty("AirportItlwm-InitIfFlagsAfterHW", ifp->if_flags, 32);
     
     if (ic->ic_opmode == IEEE80211_M_MONITOR) {
         ic->ic_bss->ni_chan = ic->ic_ibss_chan;
-        sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "monitor-run");
         ieee80211_new_state(ic, IEEE80211_S_RUN, -1);
         if (sc->sc_mcc_request_pending)
             iwx_add_task(sc, systq, &sc->mcc_task);
-        sc->sc_pcitag->setProperty("AirportItlwm-InitFailureFunction", "none");
-        sc->sc_pcitag->setProperty("AirportItlwm-InitFinalError", static_cast<uint64_t>(0), 32);
         return 0;
     }
     
-    sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "initial-scan-request");
     ieee80211_begin_scan(ifp);
     
     /*
@@ -13709,41 +13292,28 @@ iwx_init(struct _ifnet *ifp)
     AbsoluteTime deadline;
     clock_interval_to_deadline(1, kSecondScale,
         reinterpret_cast<uint64_t *>(&deadline));
-    sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "initial-scan-state-wait");
     while (ic->ic_state != IEEE80211_S_SCAN) {
         int result = getMainCommandGate()->commandSleep(&ic->ic_state, deadline, THREAD_UNINT);
         if (generation != sc->sc_generation) {
-            sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "generation-changed-during-scan-wait");
-            sc->sc_pcitag->setProperty("AirportItlwm-InitFailureFunction", "initial-scan-generation-check");
-            sc->sc_pcitag->setProperty("AirportItlwm-InitFinalError", ENXIO, 32);
             return ENXIO;
         }
         if (result != THREAD_AWAKENED && ic->ic_state != IEEE80211_S_SCAN) {
             iwx_stop(ifp);
             int wait_error = (result == THREAD_TIMED_OUT) ? EWOULDBLOCK : EINTR;
-            sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "initial-scan-state-wait-failed");
-            sc->sc_pcitag->setProperty("AirportItlwm-InitFailureFunction", "commandSleep");
-            sc->sc_pcitag->setProperty("AirportItlwm-InitFinalError", wait_error, 32);
             return wait_error;
         }
     }
     if (generation != sc->sc_generation) {
-        sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "generation-changed-after-scan-wait");
-        sc->sc_pcitag->setProperty("AirportItlwm-InitFailureFunction", "initial-scan-generation-check");
-        sc->sc_pcitag->setProperty("AirportItlwm-InitFinalError", ENXIO, 32);
         return ENXIO;
     }
 
 #ifdef AIRPORT_WCL
     if (ic->ic_event_handler) {
-        sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "driver-ready-event");
-        sc->sc_pcitag->setProperty("AirportItlwm-InitReadyEventAttempted", 1, 32);
         ic->ic_event_handler(ic, IEEE80211_EVT_DRIVER_READY, NULL);
         sc->sc_driver_ready = 1;
         /* A profile applied before this point could not be handed over yet. */
         if (sc->sc_mcc_notify_pending) {
             sc->sc_mcc_notify_pending = 0;
-            sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "country-code-deferred");
             /*
              * The profile was applied inside iwx_init_hw(), before the mode for
              * this interface was settled, so the active-channel mask was built
@@ -13755,14 +13325,10 @@ iwx_init(struct _ifnet *ifp)
             ieee80211_setmode(ic, static_cast<enum ieee80211_phymode>(ic->ic_curmode));
             ic->ic_event_handler(ic, IEEE80211_EVT_COUNTRY_CODE_UPDATE, NULL);
         }
-    } else {
-        sc->sc_pcitag->setProperty("AirportItlwm-InitStage", "driver-ready-event-handler-absent");
     }
 #endif
     if (sc->sc_mcc_request_pending)
         iwx_add_task(sc, systq, &sc->mcc_task);
-    sc->sc_pcitag->setProperty("AirportItlwm-InitFailureFunction", "none");
-    sc->sc_pcitag->setProperty("AirportItlwm-InitFinalError", static_cast<uint64_t>(0), 32);
     return 0;
 }
 
@@ -13782,40 +13348,13 @@ _iwx_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3
         (sc->sc_flags & (IWX_FLAG_SHUTDOWN | IWX_FLAG_TXFLUSH |
                          IWX_FLAG_HW_ERR | IWX_FLAG_RFKILL)) ||
         (ic->ic_state == IEEE80211_S_RUN && sc->ns_nstate != IEEE80211_S_RUN)) {
-#ifdef AIRPORT_WCL
-        if (ifp->if_snd.queue && ifq_len(&ifp->if_snd)) {
-            char value[160];
-            snprintf(value, sizeof(value),
-                "gen=%d ifflags=0x%x state=%d next=%d flags=0x%x qlen=%u oactive=%u",
-                sc->sc_generation, ifp->if_flags, ic->ic_state, sc->ns_nstate,
-                sc->sc_flags, ifq_len(&ifp->if_snd), ifq_is_oactive(&ifp->if_snd));
-            sc->sc_pcitag->setProperty("AirportItlwm-EAPOLTxStartBlocked", value);
-            iwx_record_diagnostic(sc, "tx-start-blocked", __FUNCTION__, __LINE__,
-                0, ifq_len(&ifp->if_snd));
-        }
-#endif
         return kIOReturnError;
     }
     
     for (;;) {
-#ifdef AIRPORT_WCL
-        struct iwx_eapol_tx_info eapolInfo;
-        bool isEapol = false;
-#endif
         /* why isn't this done per-queue? */
         if (!sc->qfullmsk.empty()) {
             ifq_set_oactive(&ifp->if_snd);
-#ifdef AIRPORT_WCL
-            if (ifq_len(&ifp->if_snd)) {
-                char value[128];
-                snprintf(value, sizeof(value), "gen=%d qlen=%u state=%d ifflags=0x%x",
-                    sc->sc_generation, ifq_len(&ifp->if_snd), ic->ic_state,
-                    ifp->if_flags);
-                sc->sc_pcitag->setProperty("AirportItlwm-EAPOLTxQueueBlocked", value);
-                iwx_record_diagnostic(sc, "tx-queue-full-blocked", __FUNCTION__,
-                    __LINE__, 0, ifq_len(&ifp->if_snd));
-            }
-#endif
             break;
         }
 
@@ -13851,27 +13390,10 @@ _iwx_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3
         if (ifp->if_bpf != NULL)
             bpf_mtap(ifp->if_bpf, m, BPF_DIRECTION_OUT);
 #endif
-#ifdef AIRPORT_WCL
-        isEapol = iwx_eapol_tx_info(m, true, &eapolInfo);
-#endif
         if ((m = ieee80211_encap(ifp, m, &ni)) == NULL) {
-#ifdef AIRPORT_WCL
-            if (isEapol)
-                iwx_record_eapol_tx(sc, "encap-drop", 0, UINT32_MAX,
-                    UINT32_MAX, &eapolInfo);
-#endif
             ifp->netStat->outputErrors++;
             continue;
         }
-#ifdef AIRPORT_WCL
-        if (isEapol) {
-            struct iwx_eapol_tx_info encapsulatedInfo;
-            if (iwx_eapol_tx_info(m, false, &encapsulatedInfo))
-                eapolInfo = encapsulatedInfo;
-            iwx_record_eapol_tx(sc, "encapsulated", 0, UINT32_MAX,
-                UINT32_MAX, &eapolInfo);
-        }
-#endif
         
     sendit:
         ;
@@ -13881,31 +13403,10 @@ _iwx_start_task(OSObject *target, void *arg0, void *arg1, void *arg2, void *arg3
 #endif
         int txError = that->iwx_tx(sc, m, ni, ac);
         if (txError != 0) {
-#ifdef AIRPORT_WCL
-            if (isEapol) {
-                const uint32_t qid = sc->sc_use_mld_api ?
-                    sc->sc_tid_data[0].qid : sc->first_data_qid;
-                const uint32_t index = qid < nitems(sc->txq) ?
-                    sc->txq[qid].cur : UINT32_MAX;
-                iwx_record_eapol_tx(sc, "dma-submit-failed", txError, qid,
-                    index, &eapolInfo);
-            }
-#endif
             ieee80211_release_node(ic, ni);
             ifp->netStat->outputErrors++;
             continue;
         }
-#ifdef AIRPORT_WCL
-        if (isEapol) {
-            const uint32_t qid = sc->sc_use_mld_api ?
-                    sc->sc_tid_data[0].qid : sc->first_data_qid;
-            const uint32_t index = qid < nitems(sc->txq) ?
-                (sc->txq[qid].cur + sc->txq[qid].ring_count - 1) %
-                    sc->txq[qid].ring_count : UINT32_MAX;
-            iwx_record_eapol_tx(sc, "dma-submitted", 0, qid, index,
-                &eapolInfo);
-        }
-#endif
         ifp->netStat->outputPackets++;
         
         if (ifp->if_flags & IFF_UP) {
@@ -14064,21 +13565,6 @@ iwx_watchdog(struct _ifnet *ifp)
     ItlIwx *that = container_of(sc, ItlIwx, com);
     
     ifp->if_timer = 0;
-#ifdef AIRPORT_WCL
-    const struct ieee80211com *ic = &sc->sc_ic;
-    const struct ieee80211_stats *stats = &ic->ic_stats;
-    char rxstats[384];
-    snprintf(rxstats, sizeof(rxstats),
-        "gen=%d state=%d node_width=%u rx=%llu errors=%llu ccmp_dec=%u ccmp_replay=%u dup=%u badchan=%u reorder_old=%u reorder_nobuf=%u unencrypted=%u nowep=%u",
-        sc->sc_generation, ic->ic_state, unsigned(ic->ic_bss->ni_chw),
-        (unsigned long long)(ic->ic_wcl_rx_packets[0] + ic->ic_wcl_rx_packets[1] +
-            ic->ic_wcl_rx_packets[2] + ic->ic_wcl_rx_packets[3]),
-        (unsigned long long)ifp->netStat->inputErrors,
-        stats->is_ccmp_dec_errs, stats->is_ccmp_replays, stats->is_rx_dup,
-        stats->is_rx_badchan, stats->is_ht_rx_frame_below_ba_winstart,
-        stats->is_ht_rx_ba_no_buf, stats->is_rx_unencrypted, stats->is_rx_nowep);
-    sc->sc_pcitag->setProperty("AirportItlwm-RxStats", rxstats);
-#endif
     if (sc->sc_tx_timer > 0) {
         if (--sc->sc_tx_timer == 0) {
             XYLog("%s: device timeout\n", DEVNAME(sc));
@@ -16822,7 +16308,6 @@ intrFilter(OSObject *object, IOFilterInterruptEventSource *src)
 bool ItlIwx::
 iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
 {
-    pa->pa_tag->setProperty("AirportItlwm-HALStage", "pcie-capability");
     pcireg_t reg, memtype;
     struct ieee80211com *ic = &sc->sc_ic;
     struct _ifnet *ifp = &ic->ic_if;
@@ -16857,7 +16342,6 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     }
     pci_conf_write(sc->sc_pct, sc->sc_pcitag, PCI_COMMAND_STATUS_REG, reg);
     
-    pa->pa_tag->setProperty("AirportItlwm-HALStage", "map-bar");
     memtype = pci_mapreg_type(pa->pa_pc, pa->pa_tag, PCI_MAPREG_START);
     err = pci_mapreg_map(pa, PCI_MAPREG_START, memtype, 0,
                          &sc->sc_st, &sc->sc_sh, NULL, &sc->sc_sz, 0);
@@ -16886,7 +16370,6 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
             PCI_COMMAND_STATUS_REG, reg);
     }
     
-    pa->pa_tag->setProperty("AirportItlwm-HALStage", "interrupt-source");
     int msiIntrIndex = -1;
     for (int index = 0; ; index++)
     {
@@ -16932,9 +16415,7 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     IWX_WRITE(sc, IWX_CSR_INT, ~0);
     IWX_WRITE(sc, IWX_CSR_FH_INT_STATUS, ~0);
     
-    pa->pa_tag->setProperty("AirportItlwm-HALStage", "hardware-config");
     sc->sc_hw_rev = IWX_READ(sc, IWX_CSR_HW_REV);
-    pa->pa_tag->setProperty("AirportItlwm-HWRevisionRaw", sc->sc_hw_rev, 32);
 #ifdef AIRPORT_WCL
     if (sc->sc_msix)
         XYLog("BE200 raw HW_REV=0x%x HW_RF_ID=0x%x\n",
@@ -16949,7 +16430,6 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     sc->sc_hw_rev = (sc->sc_hw_rev & 0xfff0) |
     (IWX_CSR_HW_REV_STEP(sc->sc_hw_rev << 2) << 2);
     sc->sc_hw_rf_id = IWX_READ(sc, IWX_CSR_HW_RF_ID);
-    pa->pa_tag->setProperty("AirportItlwm-RFID", sc->sc_hw_rf_id, 32);
     uint16_t device = sc->sc_pcitag->configRead16(kIOPCIConfigDeviceID);
     uint16_t subsystem_device = sc->sc_pcitag->configRead16(kIOPCIConfigSubSystemID);
     uint16_t subsystem_vendor = sc->sc_pcitag->configRead16(kIOPCIConfigSubSystemVendorID);
@@ -17067,7 +16547,6 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     sc->sc_tx_with_siso_diversity = sc->sc_cfg->tx_with_siso_diversity;
     sc->sc_uhb_supported = sc->sc_cfg->uhb_supported;
     
-    pa->pa_tag->setProperty("AirportItlwm-HALStage", "allocate-dma-rings");
     /* Allocate DMA memory for loading firmware. */
     if (sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210)
         err = iwx_dma_contig_alloc(sc->sc_dmat, &sc->ctxt_info_dma,
@@ -17225,13 +16704,10 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
      * firmware from disk. Postpone until mountroot is done.
      */
     //    config_mountroot(self, iwx_attach_hook);
-    pa->pa_tag->setProperty("AirportItlwm-HALStage", "firmware-preinit");
     err = iwx_preinit(sc);
-    pa->pa_tag->setProperty("AirportItlwm-PreinitError", (uint64_t)err, 32);
     if (err) {
         goto fail5;
     }
-    pa->pa_tag->setProperty("AirportItlwm-HALStage", "attach-ready");
     return true;
     
 fail5:

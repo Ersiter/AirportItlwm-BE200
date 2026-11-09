@@ -109,38 +109,21 @@ iwx_mld_he_ppe_value(const uint8_t *ppe, unsigned bit)
 }
 
 static void
-iwx_mld_record_state_failure(struct iwx_softc *sc, const char *operation,
+iwx_mld_log_failure(struct iwx_softc *sc, const char *operation,
     const char *stage, int error, uint32_t command, int detail)
 {
     if (sc->sc_flags & IWX_FLAG_SHUTDOWN)
         return;
-    OSNumber *failure_generation = OSDynamicCast(OSNumber,
-        sc->sc_pcitag->getProperty("AirportItlwm-MLDStateFailureGeneration"));
-    if (failure_generation &&
-        failure_generation->unsigned32BitValue() == (uint32_t)sc->sc_generation)
-        return;
-
-    char value[192];
-    snprintf(value, sizeof(value),
-        "operation=%s stage=%s error=%d cmd=0x%08x detail=%d gen=%d flags=0x%x init=0x%x",
-        operation, stage, error, command, detail, sc->sc_generation,
-        (unsigned)sc->sc_flags, (unsigned)sc->sc_init_complete);
-    sc->sc_pcitag->setProperty("AirportItlwm-MLDStateFailure", value);
-    sc->sc_pcitag->setProperty("AirportItlwm-MLDStateFailureGeneration",
-        sc->sc_generation, 32);
+    XYLog("%s: %s failed at %s: error=%d cmd=0x%08x detail=%d\n",
+        __FUNCTION__, operation, stage, error, command, detail);
 }
 
 static void
-iwx_mld_record_key_reject(struct iwx_softc *sc, struct ieee80211_node *ni,
-    struct ieee80211_key *key, int remove, const char *reason)
+iwx_mld_log_key_reject(struct ieee80211_key *key, int remove, const char *reason)
 {
-    char detail[160];
-    snprintf(detail, sizeof(detail),
-        "reason=%s remove=%d cipher=%d len=%d key_id=%d flags=0x%x node=%d",
-        reason, remove, key->k_cipher, key->k_len, key->k_id,
-        key->k_flags, ni != NULL);
-    sc->sc_pcitag->setProperty("AirportItlwm-MLDKeyReject", reason);
-    sc->sc_pcitag->setProperty("AirportItlwm-MLDKeyRejectDetail", detail);
+    XYLog("%s: rejected key %s (%s): cipher=%d len=%d id=%d flags=0x%x\n",
+        __FUNCTION__, remove ? "removal" : "install", reason, key->k_cipher,
+        key->k_len, key->k_id, key->k_flags);
 }
 
 static int
@@ -354,7 +337,7 @@ iwx_mld_update_active_links(struct iwx_softc *sc, uint8_t link_mask,
     }
     err = iwx_mld_modify_rx_baid_sta_mask(sc, new_sta_mask);
     if (err) {
-        iwx_mld_record_state_failure(sc, "mld-link-update", "rx-baid-mask",
+        iwx_mld_log_failure(sc, "mld-link-update", "rx-baid-mask",
             err, IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
                 IWX_MLD_RX_BAID_CONFIG_CMD), -1);
         goto rollback_added;
@@ -364,7 +347,7 @@ iwx_mld_update_active_links(struct iwx_softc *sc, uint8_t link_mask,
         err = iwx_mld_update_queue_sta_mask(this, sc,
             old_sta_mask, new_sta_mask);
         if (err) {
-            iwx_mld_record_state_failure(sc, "mld-link-update", "tx-queue-mask",
+            iwx_mld_log_failure(sc, "mld-link-update", "tx-queue-mask",
                 err, IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
                     IWX_MLD_SCD_QUEUE_CONFIG_CMD), -1);
             goto rollback_added;
@@ -379,7 +362,7 @@ iwx_mld_update_active_links(struct iwx_softc *sc, uint8_t link_mask,
             for (int undo = 0; undo < IWX_MLD_MAX_LINKS; undo++)
                 if (removed_done & (1U << undo))
                     iwx_mld_set_fw_link_active(this, sc, undo, 1);
-            iwx_mld_record_state_failure(sc, "mld-link-update", "link-deactivate",
+            iwx_mld_log_failure(sc, "mld-link-update", "link-deactivate",
                 err, IWX_WIDE_ID(IWX_MAC_CONF_GROUP,
                     IWX_MLD_LINK_CONFIG_CMD), i);
             goto rollback_added;
@@ -630,10 +613,6 @@ iwx_ttlm_apply(struct ieee80211com *ic, uint16_t ap_links)
         primary = __builtin_ctz((unsigned)links);
     int err = that->iwx_mld_update_active_links(sc, links, primary,
         sc->sc_mld_emlsr_active && __builtin_popcount((unsigned)links) == 2);
-    if (!err) {
-        sc->sc_pcitag->setProperty("AirportItlwm-TTLMAllowedAPLinks", ap_links, 32);
-        sc->sc_pcitag->setProperty("AirportItlwm-TTLMActiveLinks", links, 32);
-    }
     return err;
 }
 
@@ -713,7 +692,7 @@ iwx_mld_active_link_task(void *arg)
     err = that->iwx_mld_update_active_links(sc, links, primary_link,
         emlsr_active);
     if (err && err != ENXIO) {
-        iwx_mld_record_state_failure(sc, "mld-link-update", "apply-active-set",
+        iwx_mld_log_failure(sc, "mld-link-update", "apply-active-set",
             err, IWX_WIDE_ID(IWX_MAC_CONF_GROUP,
                 IWX_MLD_LINK_CONFIG_CMD), links);
         disconnect = 1;
@@ -904,7 +883,6 @@ iwx_mld_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
         link_cmd.listen_lmac = 0;
         link_cmd.action = IWX_FW_CTXT_ACTION_ADD;
 
-        sc->sc_pcitag->setProperty("AirportItlwm-MLDLinkAddRequest", &link_cmd, sizeof(link_cmd));
         err = iwx_send_cmd_pdu(sc,
             IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD),
             0, sizeof(link_cmd), &link_cmd);
@@ -928,7 +906,6 @@ iwx_mld_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
     memset(&link_cmd, 0, sizeof(link_cmd));
     iwx_mld_modify_link_fill(sc, in, &link_cmd, changes,
         !!(sc->sc_mld_active_links & (1U << link_slot)));
-    sc->sc_pcitag->setProperty("AirportItlwm-MLDLinkModifyRequest", &link_cmd, sizeof(link_cmd));
     err = iwx_send_cmd_pdu(sc,
         IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD),
         0, sizeof(link_cmd), &link_cmd);
@@ -1038,8 +1015,6 @@ iwx_mld_add_sta_cmd(struct iwx_softc *sc, struct iwx_node *in, int update)
         }
     }
 
-    sc->sc_pcitag->setProperty("AirportItlwm-MLDStationRequestGeneration", sc->sc_generation, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-MLDStationRequest", &sta_cmd, cmd_size);
     err = iwx_send_cmd_pdu(sc,
         IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_STA_CONFIG_CMD),
         0, cmd_size, &sta_cmd);
@@ -1165,8 +1140,6 @@ iwx_mld_queue_cmd(struct iwx_softc *sc, uint32_t sta_mask, int tid, int remove,
         hcmd.flags = 0;
         hcmd.resp_pkt_len = 0;
     }
-    sc->sc_pcitag->setProperty("AirportItlwm-MLDQueueRequestGeneration", sc->sc_generation, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-MLDQueueRequest", &cmd, sizeof(cmd));
     err = iwx_send_cmd(sc, &hcmd);
     if (err)
         return err;
@@ -1184,18 +1157,6 @@ iwx_mld_queue_cmd(struct iwx_softc *sc, uint32_t sta_mask, int tid, int remove,
         *qid = le16toh(resp->queue_number);
         *write_pointer = le16toh(resp->write_pointer);
         sc->sc_mld_txq_tidmask |= (1U << tid);
-    }
-    if (err) {
-        sc->sc_pcitag->setProperty("AirportItlwm-MLDQueueFailureRequest", &cmd, sizeof(cmd));
-        sc->sc_pcitag->setProperty("AirportItlwm-MLDQueueFailureCommand", hcmd.id, 32);
-        sc->sc_pcitag->setProperty("AirportItlwm-MLDQueueFailureGeneration", sc->sc_generation, 32);
-        sc->sc_pcitag->setProperty("AirportItlwm-MLDQueueFailurePayloadLength",
-            pkt ? iwx_rx_packet_payload_len(pkt) : UINT32_MAX, 32);
-        sc->sc_pcitag->setProperty("AirportItlwm-MLDQueueFailureStatus",
-            pkt && iwx_rx_packet_payload_len(pkt) == sizeof(struct iwx_tx_queue_cfg_rsp) ?
-                le16toh(((struct iwx_tx_queue_cfg_rsp *)pkt->data)->flags) : UINT32_MAX, 32);
-        if (pkt && iwx_rx_packet_payload_len(pkt) == sizeof(struct iwx_tx_queue_cfg_rsp))
-            sc->sc_pcitag->setProperty("AirportItlwm-MLDQueueFailureResponse", pkt->data, sizeof(struct iwx_tx_queue_cfg_rsp));
     }
     iwx_free_resp(sc, &hcmd);
     return err;
@@ -1221,7 +1182,7 @@ iwx_mld_set_key(struct iwx_softc *sc, struct ieee80211_node *ni,
     }
 
     if (iwx_lookup_cmd_ver(sc, IWX_DATA_PATH_GROUP, IWX_MLD_SEC_KEY_CMD) != 1) {
-        iwx_mld_record_key_reject(sc, ni, k, remove, "cmd-version");
+        iwx_mld_log_key_reject(k, remove, "cmd-version");
         return ENOTSUP;
     }
     if (mgmt_key) {
@@ -1229,7 +1190,7 @@ iwx_mld_set_key(struct iwx_softc *sc, struct ieee80211_node *ni,
             (is_igtk && (k->k_id < 4 || k->k_id > 5)) ||
             (is_bigtk && ((!remove && !sc->sc_ic.ic_beacon_prot) ||
                 k->k_id < 6 || k->k_id > 7))) {
-            iwx_mld_record_key_reject(sc, ni, k, remove, "mgmt-key-id");
+            iwx_mld_log_key_reject(k, remove, "mgmt-key-id");
             return ENOTSUP;
         }
         switch (k->k_cipher) {
@@ -1250,17 +1211,17 @@ iwx_mld_set_key(struct iwx_softc *sc, struct ieee80211_node *ni,
                 IWX_MLD_SEC_KEY_FLAG_KEY_SIZE;
             break;
         default:
-            iwx_mld_record_key_reject(sc, ni, k, remove, "mgmt-cipher");
+            iwx_mld_log_key_reject(k, remove, "mgmt-cipher");
             return ENOTSUP;
         }
         if (!(flags & IWX_MLD_SEC_KEY_FLAG_CIPHER_MASK)) {
-            iwx_mld_record_key_reject(sc, ni, k, remove, "mgmt-key-size");
+            iwx_mld_log_key_reject(k, remove, "mgmt-key-size");
             return ENOTSUP;
         }
     } else if (k->k_cipher == IEEE80211_CIPHER_CCMP && k->k_len == 16) {
         flags |= IWX_MLD_SEC_KEY_FLAG_CIPHER_CCMP;
     } else {
-        iwx_mld_record_key_reject(sc, ni, k, remove, "cipher");
+        iwx_mld_log_key_reject(k, remove, "cipher");
         return ENOTSUP;
     }
     if (!(sc->sc_flags & IWX_FLAG_STA_ACTIVE))
@@ -1296,10 +1257,6 @@ iwx_mld_set_key(struct iwx_softc *sc, struct ieee80211_node *ni,
         0, sizeof(cmd), &cmd);
     if (err)
         return err;
-    if (!remove) {
-        sc->sc_pcitag->setProperty("AirportItlwm-MLDKeyInstalled",
-            ((uint32_t)(k->k_flags & IEEE80211_KEY_GROUP) << 16) | k->k_id, 32);
-    }
     if (!remove && (k->k_flags & IEEE80211_KEY_GROUP))
         sc->sc_ic.ic_def_txkey = k->k_id;
     return 0;
@@ -1378,20 +1335,15 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
     if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) ||
         !(sc->sc_init_complete & IWX_INIT_COMPLETE)) {
         if (generation != sc->sc_generation) {
-            sc->sc_pcitag->setProperty("AirportItlwm-MLDRemoveSkipped", "generation");
             return ENXIO;
         }
-        sc->sc_pcitag->setProperty("AirportItlwm-MLDLocalTeardown",
-            ++sc->sc_mld_local_teardown, 32);
-        sc->sc_pcitag->setProperty("AirportItlwm-MLDLocalTeardownReason",
-            (sc->sc_flags & IWX_FLAG_SHUTDOWN) ? "shutdown" : "fw-not-running");
         iwx_mld_rm_sta_local(sc, in);
         return 0;
     }
 
     int version = iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP, IWX_MLD_STA_REMOVE_CMD);
     if (version != 1 && version != IWX_FW_CMD_VER_UNKNOWN) {
-        iwx_mld_record_state_failure(sc, "deauth", "station-remove-version",
+        iwx_mld_log_failure(sc, "deauth", "station-remove-version",
             ENOTSUP, IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_STA_REMOVE_CMD), -1);
         return ENOTSUP;
     }
@@ -1399,7 +1351,7 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
     if (sc->sc_flags & IWX_FLAG_STA_ACTIVE) {
         err = iwx_flush_sta(sc, in);
         if (err) {
-            iwx_mld_record_state_failure(sc, "deauth", "station-tx-flush",
+            iwx_mld_log_failure(sc, "deauth", "station-tx-flush",
                 err, IWX_TXPATH_FLUSH, -1);
             return err;
         }
@@ -1409,7 +1361,7 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
                 continue;
             err = iwx_flush_sta_tids(sc, sta_id, 0xffff);
             if (err) {
-                iwx_mld_record_state_failure(sc, "deauth", "link-tx-flush",
+                iwx_mld_log_failure(sc, "deauth", "link-tx-flush",
                     err, IWX_TXPATH_FLUSH, i);
                 return err;
             }
@@ -1448,7 +1400,7 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
         for (int tid = 0; !err && tid < IWX_MAX_TID_COUNT; tid++)
             err = wait_txq(sc->sc_tid_data[tid].qid);
         if (err) {
-            iwx_mld_record_state_failure(sc, "deauth", "station-tx-drain",
+            iwx_mld_log_failure(sc, "deauth", "station-tx-drain",
                 err, IWX_TXPATH_FLUSH, -1);
             return err;
         }
@@ -1457,7 +1409,7 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
                 continue;
             err = iwx_mld_queue_cmd(sc, sc->sc_mld_active_sta_mask, tid, 1, 0, 0, 0, NULL, NULL);
             if (err) {
-                iwx_mld_record_state_failure(sc, "deauth", "station-queue-remove",
+                iwx_mld_log_failure(sc, "deauth", "station-queue-remove",
                     err, IWX_WIDE_ID(IWX_DATA_PATH_GROUP,
                         IWX_MLD_SCD_QUEUE_CONFIG_CMD), tid);
                 return err;
@@ -1477,7 +1429,7 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
                 continue;
             err = iwx_mld_set_key(sc, &in->in_ni, key, 1);
             if (err) {
-                iwx_mld_record_state_failure(sc, "deauth", "group-key-remove",
+                iwx_mld_log_failure(sc, "deauth", "group-key-remove",
                     err, IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_MLD_SEC_KEY_CMD), i);
                 return err;
             }
@@ -1493,7 +1445,7 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
                     continue;
                 err = iwx_mld_set_key(sc, link->ni, key, 1);
                 if (err) {
-                    iwx_mld_record_state_failure(sc, "deauth", "link-key-remove",
+                    iwx_mld_log_failure(sc, "deauth", "link-key-remove",
                         err, IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_MLD_SEC_KEY_CMD), slot);
                     return err;
                 }
@@ -1505,7 +1457,7 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
         if (key->k_cipher == IEEE80211_CIPHER_CCMP) {
             err = iwx_mld_set_key(sc, &in->in_ni, key, 1);
             if (err) {
-                iwx_mld_record_state_failure(sc, "deauth", "pairwise-key-remove",
+                iwx_mld_log_failure(sc, "deauth", "pairwise-key-remove",
                     err, IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_MLD_SEC_KEY_CMD), -1);
                 return err;
             }
@@ -1521,7 +1473,7 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
                 IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_STA_REMOVE_CMD),
                 0, sizeof(sta_cmd), &sta_cmd);
             if (err) {
-                iwx_mld_record_state_failure(sc, "deauth", "station-remove",
+                iwx_mld_log_failure(sc, "deauth", "station-remove",
                     err, IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_STA_REMOVE_CMD), i);
                 return err;
             }
@@ -1584,9 +1536,6 @@ iwx_mld_auth(struct iwx_softc *sc)
     uint32_t duration;
     const char *stage = "preconditions";
     auto record_error = [&](int error) {
-        sc->sc_pcitag->setProperty("AirportItlwm-MLDAuthFailureStage", stage);
-        sc->sc_pcitag->setProperty("AirportItlwm-MLDAuthFailureError", error, 32);
-        sc->sc_pcitag->setProperty("AirportItlwm-MLDAuthFailureGeneration", generation, 32);
     };
     int link_version = iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD);
 
@@ -1759,7 +1708,7 @@ iwx_mld_run(struct iwx_softc *sc)
     for (int tid = 0; tid < tid_count; tid++) {
         int qid = iwx_tvqm_alloc_txq(sc, tid, 0);
         if (qid < 0) {
-            iwx_mld_record_state_failure(sc, "run", "data-tx-queue", -qid,
+            iwx_mld_log_failure(sc, "run", "data-tx-queue", -qid,
                 IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_MLD_SCD_QUEUE_CONFIG_CMD), tid);
             return -qid;
         }
@@ -1777,7 +1726,7 @@ iwx_mld_run_stop(struct iwx_softc *sc)
     struct iwx_node *in = (struct iwx_node *)sc->sc_ic.ic_bss;
     int err = iwx_flush_sta(sc, in);
     if (err) {
-        iwx_mld_record_state_failure(sc, "run-stop", "tx-flush", err,
+        iwx_mld_log_failure(sc, "run-stop", "tx-flush", err,
             IWX_TXPATH_FLUSH, -1);
         return err;
     }
@@ -1787,7 +1736,7 @@ iwx_mld_run_stop(struct iwx_softc *sc)
             continue;
         err = iwx_sta_rx_agg(sc, &in->in_ni, rxba->tid, 0, 0, 0, 0);
         if (err) {
-            iwx_mld_record_state_failure(sc, "run-stop", "rx-ba-stop", err,
+            iwx_mld_log_failure(sc, "run-stop", "rx-ba-stop", err,
                 IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_MLD_RX_BAID_CONFIG_CMD),
                 rxba->tid);
             return err;
@@ -1799,14 +1748,14 @@ iwx_mld_run_stop(struct iwx_softc *sc)
             continue;
         err = iwx_flush_sta_tids(sc, sc->sc_mld_sta_ids[i], 0xffff);
         if (err) {
-            iwx_mld_record_state_failure(sc, "run-stop", "link-tx-flush", err,
+            iwx_mld_log_failure(sc, "run-stop", "link-tx-flush", err,
                 IWX_TXPATH_FLUSH, i);
             return err;
         }
     }
     err = iwx_mld_mac_ctxt_cmd(sc, in, IWX_FW_CTXT_ACTION_MODIFY, 0);
     if (err)
-        iwx_mld_record_state_failure(sc, "run-stop", "mac-deactivate", err,
+        iwx_mld_log_failure(sc, "run-stop", "mac-deactivate", err,
             IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_MAC_CONFIG_CMD), -1);
     return err;
 }
@@ -1820,7 +1769,7 @@ iwx_mld_deauth(struct iwx_softc *sc)
     if (sc->sc_flags & IWX_FLAG_TE_ACTIVE) {
         err = iwx_cancel_session_protection(sc, in);
         if (err) {
-            iwx_mld_record_state_failure(sc, "deauth", "protection-cancel",
+            iwx_mld_log_failure(sc, "deauth", "protection-cancel",
                 err, IWX_TIME_EVENT_CMD, -1);
             return err;
         }
@@ -1834,7 +1783,7 @@ iwx_mld_deauth(struct iwx_softc *sc)
     if (sc->sc_flags & IWX_FLAG_MAC_ACTIVE) {
         err = iwx_mld_mac_ctxt_cmd(sc, in, IWX_FW_CTXT_ACTION_REMOVE, 0);
         if (err) {
-            iwx_mld_record_state_failure(sc, "deauth", "mac-remove", err,
+            iwx_mld_log_failure(sc, "deauth", "mac-remove", err,
                 IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_MAC_CONFIG_CMD), -1);
             return err;
         }
@@ -1846,7 +1795,7 @@ iwx_mld_deauth(struct iwx_softc *sc)
         err = iwx_phy_ctxt_cmd(sc, &sc->sc_phyctxt[i], 1, 1,
             IWX_FW_CTXT_ACTION_REMOVE, 0);
         if (err) {
-            iwx_mld_record_state_failure(sc, "deauth", "phy-remove", err,
+            iwx_mld_log_failure(sc, "deauth", "phy-remove", err,
                 IWX_PHY_CONTEXT_CMD, i);
             return err;
         }

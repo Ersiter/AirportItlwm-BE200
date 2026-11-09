@@ -1614,10 +1614,6 @@ ieee80211_auth_sae_failure(struct ieee80211com *ic,
 	explicit_bzero(ni->ni_pmkid, sizeof(ni->ni_pmkid));
 	explicit_bzero(&ni->ni_ptk, sizeof(ni->ni_ptk));
 	ic->ic_mgt_timer = 0;
-#ifdef AIRPORT_WCL
-	if (ic->ic_wcl_join_requested)
-		ic->ic_wcl_sae_failures++;
-#endif
 	if (ni != ic->ic_bss)
 		ni->ni_fails++;
 	else
@@ -1636,10 +1632,6 @@ ieee80211_auth_sae_timeout(struct ieee80211com *ic, struct ieee80211_node *ni,
 	 * A changed address or authentication mode requires a fresh exchange. */
 	if (ni->ni_sae.sae_state != SAE_STATE_NOTHING &&
 	    !ieee80211_sae_auth_current(ic, ni)) {
-#ifdef AIRPORT_WCL
-		if (ic->ic_wcl_join_requested)
-			ic->ic_wcl_sae_addr_restarts++;
-#endif
 		ieee80211_auth_sae_failure(ic, ni);
 		return 1;
 	}
@@ -1698,10 +1690,6 @@ ieee80211_auth_sae(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 		    ni->ni_sae.sae_peer_scalar,
 		    ni->ni_sae.sae_peer_element_x,
 		    ni->ni_sae.sae_peer_element_y) == 0) {
-#ifdef AIRPORT_WCL
-			if (ic->ic_wcl_join_requested)
-				ic->ic_wcl_sae_confirm_replays++;
-#endif
 			return;
 		}
 	}
@@ -1728,10 +1716,6 @@ ieee80211_auth_sae(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 		explicit_bzero(ni->ni_sae.sae_peer_element_y,
 		    sizeof(ni->ni_sae.sae_peer_element_y));
 		ic->ic_mgt_timer = 0;
-#ifdef AIRPORT_WCL
-		if (ic->ic_wcl_join_requested)
-			ic->ic_wcl_sae_commit_retries++;
-#endif
 		if (ieee80211_send_mgmt(ic, ni, IEEE80211_FC0_SUBTYPE_AUTH,
 		    IEEE80211_AUTH_OPEN_REQUEST, 0) != 0)
 			ieee80211_auth_sae_failure(ic, ni);
@@ -1760,10 +1744,6 @@ ieee80211_auth_sae(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 				ieee80211_auth_sae_failure(ic, ni);
 				return;
 			}
-#ifdef AIRPORT_WCL
-			if (ic->ic_wcl_join_requested)
-				ic->ic_wcl_sae_commit_retries++;
-#endif
 			return;
 		}
 		goto discard;
@@ -1804,10 +1784,6 @@ ieee80211_auth_sae(struct ieee80211com *ic, const struct ieee80211_frame *wh,
 			ieee80211_auth_sae_failure(ic, ni);
 			return;
 		}
-#ifdef AIRPORT_WCL
-		if (ic->ic_wcl_join_requested)
-			ic->ic_wcl_sae_token_retries++;
-#endif
 		return;
 	token_failure:
 		ieee80211_auth_sae_failure(ic, ni);

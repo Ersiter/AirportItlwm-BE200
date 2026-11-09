@@ -739,7 +739,6 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         (rsnxe == NULL ||
          !ieee80211_rsnxe_matches(ni->ni_rsnxe, ni->ni_rsnxe_len,
              rsnxe, (size_t)rsnxe[1] + 2))) {
-        ic->ic_wcl_rsnxe_mismatch++;
         reason = IEEE80211_REASON_AUTH_LEAVE;
         goto deauth;
     }

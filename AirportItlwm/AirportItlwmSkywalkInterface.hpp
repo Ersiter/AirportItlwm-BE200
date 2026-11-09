@@ -441,7 +441,6 @@ private:
     void setWCLNativeLinkReady(bool);
     void releaseWCLUserEapol();
     void purgeWCLUserEapol();
-    void publishWCLAuthDiagnostic(const char *, mbuf_t = nullptr);
     void deferWCLCountryUpdate();
     void updateWCLLinkQuality(bool = false);
     static void wclJoinTimeout(OSObject *, IOTimerEventSource *);
@@ -487,23 +486,6 @@ private:
     uint32_t wclAssociatedBeacons = 0;
     uint32_t wclLqmBeacons = 0;
     uint32_t wclLqmReportedBeacons = 0;
-    uint32_t wclScanRequests = 0;
-    uint32_t wclScanResults = 0;
-    uint32_t wclScanDoneCount = 0;
-    uint32_t wclScanDoneStatus = UINT32_MAX;
-    uint32_t wclBeaconEvents = 0;
-    uint32_t wclBeaconDrops = 0;
-    uint32_t wclSsidFromFrame = 0;
-    uint32_t wclSsidRemembered = 0;
-    uint32_t wclCountryRefreshes = 0;
-    uint32_t wcl6GHzReceived = 0;
-    uint32_t wcl6GHzPublished = 0;
-    uint32_t wclMbssidProfiles = 0;
-    uint32_t wclJoinRequests = 0;
-    uint32_t wclChipReadyCalls = 0;
-    uint32_t wclLinkStateCalls = 0;
-    uint32_t wclSetScanningCalls = 0;
-    uint32_t wclBSDCommandCalls = 0;
     uint8_t wclResultRingNext = 0;
     struct WCLResultDiagnostic {
         uint8_t ssid[32];
@@ -527,17 +509,6 @@ private:
     uint32_t wclUserEapolCount = 0;
     bool wclNativeLinkReady = false;
     bool wclUserEapolReady = false;
-    uint32_t wclAuthDiagnosticSequence = 0;
-    uint32_t wclAssociationEvents = 0;
-    uint32_t wclFirstBeaconEvents = 0;
-    uint32_t wclLinkEvents = 0;
-    uint32_t wclJoinTimeoutEvents = 0;
-    uint32_t wclJoinTimeoutMS = 0;
-    uint32_t wclEapolRxDeferred = 0;
-    uint32_t wclEapolRxDelivered = 0;
-    uint32_t wclEapolRxDropped = 0;
-    uint32_t wclEapolRxDirect = 0;
-    uint32_t wclEapolRxGateDrops = 0;
     uint8_t wclPermanentMAC[6] = {};
     bool wclStopping;
 #endif

@@ -167,8 +167,6 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
         }
         if (!selected) {
             explicitWclChannels = false;
-            sc->sc_pcitag->setProperty("AirportItlwm-HWScanUnrestrictedFallback",
-                ++sc->sc_scan_unrestricted_fallback, 32);
         }
     }
     /*
@@ -347,23 +345,11 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
     cp->n_aps_override[0] = IWX_SCAN_ADWELL_N_APS_GO_FRIENDLY;
     cp->n_aps_override[1] = IWX_SCAN_ADWELL_N_APS_SOCIAL_CHS;
 
-#ifdef AIRPORT_WCL
-    sc->sc_pcitag->setProperty("AirportItlwm-HWScanBatch", ++sc->sc_scan_batch, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-WCLScanLastBatchBand", batchBandValue, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-HWScan6GHzCount", sixGHzCount, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-HWScanChannelCount", cp->count, 32);
-    sc->sc_pcitag->setProperty("AirportItlwm-HWScanChannelMap",
-        cp->channel_config, cp->count * sizeof(cp->channel_config[0]));
-    sc->sc_pcitag->setProperty("AirportItlwm-HWScanSendStatus", UINT32_MAX, 32);
-#endif
     sc->sc_scan_batch_sent = 1;
     sc->sc_scan_batch_pending = 1;
     err = iwx_send_cmd(sc, &hcmd);
     if (err)
         sc->sc_scan_batch_pending = 0;
-#ifdef AIRPORT_WCL
-    sc->sc_pcitag->setProperty("AirportItlwm-HWScanSendStatus", err, 32);
-#endif
     ::free(req);
     return err;
 }
