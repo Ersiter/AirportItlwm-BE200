@@ -1094,18 +1094,27 @@ iwx_mld_mac_ctxt_cmd(struct iwx_softc *sc, struct iwx_node *in,
             0, sizeof(cmd), &cmd);
     }
 
+    /*
+     * As in iwlmld, the MAC is added before anything about the peer is
+     * known: HE/EHT support follows in a MODIFY once the BSS is chosen, and
+     * the EML client data (iwl_mld_fill_mac_cmd_sta()) only with the
+     * association. An ADD carrying them for an AP MLD made the firmware
+     * assert (UMAC ADVANCED_SYSASSERT 0x20103131).
+     */
     cmd.mac_type = htole32(IWX_FW_MAC_TYPE_BSS_STA);
     IEEE80211_ADDR_COPY(cmd.local_mld_addr, ic->ic_myaddr);
     if (ic->ic_flags & IEEE80211_F_HEON) {
-        cmd.he_support = htole16(1);
         cmd.nic_not_ack_enabled = htole32(
             (ic->ic_he_cap_elem.mac_cap_info[2] &
                 IEEE80211_HE_MAC_CAP2_ACK_EN) ? 0 : 1);
-        if (ic->ic_wcl_peer_is_mlo || (ni->ni_flags & IEEE80211_NODE_EHT))
-            cmd.eht_support = htole32(1);
+        if (action != IWX_FW_CTXT_ACTION_ADD) {
+            cmd.he_support = htole16(1);
+            if (ic->ic_wcl_peer_is_mlo || (ni->ni_flags & IEEE80211_NODE_EHT))
+                cmd.eht_support = htole32(1);
+        }
     }
     cmd.client.assoc_id = htole16(IEEE80211_AID(ni->ni_associd));
-    if (ni->ni_mld_valid) {
+    if (assoc && ni->ni_mld_valid) {
         uint16_t timeout = (ni->ni_mld_eml_capa &
             IEEE80211_EML_CAP_TRANSITION_TIMEOUT) >>
             IEEE80211_EML_CAP_TRANSITION_TIMEOUT_SHIFT;
@@ -1657,10 +1666,15 @@ iwx_mld_auth(struct iwx_softc *sc)
     if (err)
         goto fail;
     sc->sc_flags |= IWX_FLAG_MAC_ACTIVE;
+    /* The BSS is known now, as when iwlmld handles BSS_CHANGED_BSSID. */
+    err = iwx_mld_mac_ctxt_cmd(sc, in, IWX_FW_CTXT_ACTION_MODIFY, 0);
+    if (err)
+        goto fail;
     err = iwx_mld_add_sta_cmd(sc, in, 0);
     if (err)
         goto fail;
     err = iwx_enable_mgmt_queue(sc);
+
     if (err)
         goto fail;
     duration = in->in_ni.ni_intval ? in->in_ni.ni_intval * 9 : 900;
