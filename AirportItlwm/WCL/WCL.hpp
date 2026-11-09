@@ -602,7 +602,23 @@ inline bool matchesDerivedCredential(const DerivedCredentialCache &cache,
         memcmp(cache.credential, credential, credentialLength) == 0;
 }
 
+inline void rememberDerivedCredential(DerivedCredentialCache &cache,
+                                      DerivedCredentialKind kind,
+                                      const uint8_t *ssid, size_t ssidLength,
+                                      const uint8_t *credential, size_t credentialLength,
+                                      const uint8_t *result, size_t resultLength) {
+    cache.valid = 1;
+    cache.kind = kind;
+    cache.ssidLength = uint8_t(ssidLength);
+    cache.credentialLength = uint8_t(credentialLength);
+    cache.resultLength = uint8_t(resultLength);
+    memcpy(cache.ssid, ssid, ssidLength);
+    memcpy(cache.credential, credential, credentialLength);
+    memcpy(cache.result, result, resultLength);
+}
+
 inline bool rsnIsOWE(const uint8_t *ie, size_t length) {
+
     if (!validRSNOverride(ie, length) || length < 20 || ie[0] != 48)
         return false;
     const uint8_t ccmp[] = {0, 0x0f, 0xac, 4};

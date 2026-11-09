@@ -897,6 +897,53 @@ IOReturn AirportItlwmSkywalkInterface::beginWCLJoin(apple80211AssocCandidates *r
     return startWCLJoin(join);
 }
 
+// WPA/RSN parameters for net80211 from the authentication types WCL requested.
+static ieee80211_wpaparams wclJoinWpaParams(const AirportWCL::JoinRequest &join,
+                                            bool sae, bool owe)
+{
+    ieee80211_wpaparams wpa = {};
+    wpa.i_enabled = 1;
+    if (join.upperAuth & (APPLE80211_AUTHTYPE_WPA | APPLE80211_AUTHTYPE_WPA_PSK))
+        wpa.i_protos |= IEEE80211_WPA_PROTO_WPA1;
+    if ((join.upperAuth & (APPLE80211_AUTHTYPE_WPA2 | APPLE80211_AUTHTYPE_WPA2_PSK |
+                           APPLE80211_AUTHTYPE_SHA256_PSK | APPLE80211_AUTHTYPE_SHA256_8021X)) ||
+        sae || owe)
+        wpa.i_protos |= IEEE80211_WPA_PROTO_WPA2;
+    if (join.upperAuth & (APPLE80211_AUTHTYPE_WPA_PSK | APPLE80211_AUTHTYPE_WPA2_PSK))
+        wpa.i_akms |= IEEE80211_WPA_AKM_PSK;
+    if (join.upperAuth & (APPLE80211_AUTHTYPE_WPA | APPLE80211_AUTHTYPE_WPA2))
+        wpa.i_akms |= IEEE80211_WPA_AKM_8021X;
+    if (join.upperAuth & APPLE80211_AUTHTYPE_SHA256_PSK)
+        wpa.i_akms |= IEEE80211_WPA_AKM_SHA256_PSK | IEEE80211_WPA_AKM_PSK;
+    if (join.upperAuth & APPLE80211_AUTHTYPE_SHA256_8021X)
+        wpa.i_akms |= IEEE80211_WPA_AKM_SHA256_8021X;
+    if (sae)
+        wpa.i_akms |= IEEE80211_WPA_AKM_SAE;
+    if (owe)
+        wpa.i_akms |= IEEE80211_WPA_AKM_OWE;
+    wpa.i_ciphers = sae || owe ? IEEE80211_WPA_CIPHER_CCMP :
+        IEEE80211_WPA_CIPHER_CCMP | IEEE80211_WPA_CIPHER_TKIP;
+    if (join.rsnLength >= 8 && join.rsn[0] == IEEE80211_ELEMID_RSN &&
+        join.rsn[4] == 0 && join.rsn[5] == 0x0f && join.rsn[6] == 0xac) {
+        if (join.rsn[7] == 2)
+            wpa.i_groupcipher = IEEE80211_WPA_CIPHER_TKIP;
+        if (join.rsn[7] == 4)
+            wpa.i_groupcipher = IEEE80211_WPA_CIPHER_CCMP;
+    }
+    return wpa;
+}
+
+// Keep the request until the HAL reports READY; the join timer still bounds it.
+IOReturn AirportItlwmSkywalkInterface::deferWCLJoin(AirportWCL::JoinRequest &join)
+{
+    deferredJoin = join;
+    memcpy(joinBSSID, join.bssid, sizeof(joinBSSID));
+    explicit_bzero(&join, sizeof(join));
+    joinDeferred = joinPending = true;
+    joinTimer->setTimeoutMS(30000);
+    return kIOReturnSuccess;
+}
+
 IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &join)
 {
     ieee80211com *ic = fHalService->get80211Controller();
@@ -933,33 +980,15 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
      */
     if (scanPending && (ic->ic_if.if_flags & IFF_RUNNING))
         finishWCLScan(kIOReturnAborted);
-    // Applying a private MAC restarts firmware asynchronously. WCL can issue
-    // the association before that restart has completed; keep one request
-    // until the HAL reports READY rather than making the user retry it.
-    if (supported && !joinPending && ic->ic_wcl_mac_reconfig &&
-        (ic->ic_if.if_flags & IFF_UP)) {
-        deferredJoin = join;
-        memcpy(joinBSSID, join.bssid, sizeof(joinBSSID));
-        explicit_bzero(&join, sizeof(join));
-        joinDeferred = joinPending = true;
-        joinTimer->setTimeoutMS(30000);
-        return kIOReturnSuccess;
-    }
     /*
-     * Taking the current link down for this very request clears IFF_RUNNING
-     * for a moment. Answering kIOReturnBusy then drops the request, so the
-     * user has to choose the network a second time. Keep the request while
-     * the interface is still up and let the READY path issue it.
+     * Applying a private MAC restarts firmware asynchronously, and taking the
+     * current link down for this very request clears IFF_RUNNING for a moment.
+     * WCL can issue the association in either window; answering kIOReturnBusy
+     * would drop it and make the user choose the network again.
      */
-    if (supported && !joinPending && !(ic->ic_if.if_flags & IFF_RUNNING) &&
-        (ic->ic_if.if_flags & IFF_UP)) {
-        deferredJoin = join;
-        memcpy(joinBSSID, join.bssid, sizeof(joinBSSID));
-        explicit_bzero(&join, sizeof(join));
-        joinDeferred = joinPending = true;
-        joinTimer->setTimeoutMS(30000);
-        return kIOReturnSuccess;
-    }
+    if (supported && !joinPending && (ic->ic_if.if_flags & IFF_UP) &&
+        (ic->ic_wcl_mac_reconfig || !(ic->ic_if.if_flags & IFF_RUNNING)))
+        return deferWCLJoin(join);
     if (!supported || !(ic->ic_if.if_flags & IFF_RUNNING) || joinPending || scanPending) {
         explicit_bzero(&join, sizeof(join));
         return !supported ? kIOReturnUnsupported : kIOReturnBusy;
@@ -971,31 +1000,20 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
         explicit_bzero(&join, sizeof(join));
         return kIOReturnBadArgument;
     }
-    uint8_t joinChannels[sizeof(ic->ic_wcl_scan_channels)] = {};
-    uint8_t joinChannels6GHz[sizeof(ic->ic_wcl_scan_channels6GHz)] = {};
-    unsigned mappedJoinChannels = 0;
-    for (unsigned index = 1; index <= IEEE80211_CHAN_MAX; ++index) {
-        const auto channel = &ic->ic_channels[index];
-        if (!channel->ic_freq || !isset(ic->ic_chan_active, index))
-            continue;
-        if (!IEEE80211_IS_CHAN_6GHZ(channel) && !IEEE80211_IS_CHAN_5GHZ(channel) &&
-            !IEEE80211_IS_CHAN_2GHZ(channel))
-            continue;
-        auto band = IEEE80211_IS_CHAN_6GHZ(channel) ? AirportWCL::ChannelBand::GHz6 :
-            IEEE80211_IS_CHAN_5GHZ(channel) ? AirportWCL::ChannelBand::GHz5 :
-            AirportWCL::ChannelBand::GHz2;
-        if (band != joinBand || ieee80211_chan2number(ic, channel) != joinChannel)
-            continue;
-        auto mapped = band == AirportWCL::ChannelBand::GHz6 ?
-            joinChannels6GHz : joinChannels;
-        setbit(mapped, joinChannel);
-        ++mappedJoinChannels;
-    }
-    if (!mappedJoinChannels) {
+    // The join scan covers only the channel WCL selected the network on.
+    const u_int joinBandFlag = joinBand == AirportWCL::ChannelBand::GHz6 ? IEEE80211_CHAN_6GHZ :
+        joinBand == AirportWCL::ChannelBand::GHz5 ? IEEE80211_CHAN_5GHZ : IEEE80211_CHAN_2GHZ;
+    const u_int joinIndex = ieee80211_ieee2chanidx(ic, joinChannel, joinBandFlag);
+    if (!joinIndex || !ic->ic_channels[joinIndex].ic_freq ||
+        !isset(ic->ic_chan_active, joinIndex)) {
         clearWCLDerivedCredential();
         explicit_bzero(&join, sizeof(join));
         return kIOReturnUnsupported;
     }
+    uint8_t joinChannels[sizeof(ic->ic_wcl_scan_channels)] = {};
+    uint8_t joinChannels6GHz[sizeof(ic->ic_wcl_scan_channels6GHz)] = {};
+    setbit(joinBand == AirportWCL::ChannelBand::GHz6 ? joinChannels6GHz : joinChannels,
+           joinChannel);
     if (ic->ic_state == IEEE80211_S_RUN || ic->ic_state == IEEE80211_S_AUTH || ic->ic_state == IEEE80211_S_ASSOC)
         leaveWCLNetwork();
     ieee80211_disable_rsn(ic);
@@ -1007,37 +1025,7 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
     ic->ic_wcl_enterprise = enterprise;
 
     if (personal || sae || enterprise || owe) {
-        ieee80211_wpaparams wpa = {};
-        wpa.i_enabled = 1;
-        if (join.upperAuth & (APPLE80211_AUTHTYPE_WPA | APPLE80211_AUTHTYPE_WPA_PSK))
-            wpa.i_protos |= IEEE80211_WPA_PROTO_WPA1;
-        if (join.upperAuth & (APPLE80211_AUTHTYPE_WPA2 | APPLE80211_AUTHTYPE_WPA2_PSK |
-                              APPLE80211_AUTHTYPE_SHA256_PSK | APPLE80211_AUTHTYPE_SHA256_8021X))
-            wpa.i_protos |= IEEE80211_WPA_PROTO_WPA2;
-        if (sae || owe)
-            wpa.i_protos |= IEEE80211_WPA_PROTO_WPA2;
-        if (join.upperAuth & (APPLE80211_AUTHTYPE_WPA_PSK | APPLE80211_AUTHTYPE_WPA2_PSK))
-            wpa.i_akms |= IEEE80211_WPA_AKM_PSK;
-        if (join.upperAuth & (APPLE80211_AUTHTYPE_WPA | APPLE80211_AUTHTYPE_WPA2))
-            wpa.i_akms |= IEEE80211_WPA_AKM_8021X;
-        if (join.upperAuth & APPLE80211_AUTHTYPE_SHA256_PSK) {
-            wpa.i_akms |= IEEE80211_WPA_AKM_SHA256_PSK;
-            wpa.i_akms |= IEEE80211_WPA_AKM_PSK;
-        }
-        if (join.upperAuth & APPLE80211_AUTHTYPE_SHA256_8021X)
-            wpa.i_akms |= IEEE80211_WPA_AKM_SHA256_8021X;
-        if (sae)
-            wpa.i_akms |= IEEE80211_WPA_AKM_SAE;
-        if (owe)
-            wpa.i_akms |= IEEE80211_WPA_AKM_OWE;
-        wpa.i_ciphers = IEEE80211_WPA_CIPHER_CCMP | IEEE80211_WPA_CIPHER_TKIP;
-        if (sae || owe)
-            wpa.i_ciphers = IEEE80211_WPA_CIPHER_CCMP;
-        if (join.rsnLength >= 8 && join.rsn[0] == IEEE80211_ELEMID_RSN &&
-            join.rsn[4] == 0 && join.rsn[5] == 0x0f && join.rsn[6] == 0xac) {
-            if (join.rsn[7] == 2) wpa.i_groupcipher = IEEE80211_WPA_CIPHER_TKIP;
-            if (join.rsn[7] == 4) wpa.i_groupcipher = IEEE80211_WPA_CIPHER_CCMP;
-        }
+        ieee80211_wpaparams wpa = wclJoinWpaParams(join, sae, owe);
         int error = ieee80211_ioctl_setwpaparms(ic, &wpa);
         if (error && error != ENETRESET) {
             clearWCLSAE(ic);
@@ -1055,14 +1043,9 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
                 explicit_bzero(&join, sizeof(join));
                 return kIOReturnBadArgument;
             } else {
-                wclDerivedCredential.valid = 1;
-                wclDerivedCredential.kind = credentialKind;
-                wclDerivedCredential.ssidLength = join.ssidLength;
-                wclDerivedCredential.credentialLength = join.keyLength;
-                wclDerivedCredential.resultLength = sizeof(ic->ic_sae_pt);
-                memcpy(wclDerivedCredential.ssid, join.ssid, join.ssidLength);
-                memcpy(wclDerivedCredential.credential, join.key, join.keyLength);
-                memcpy(wclDerivedCredential.result, ic->ic_sae_pt, sizeof(ic->ic_sae_pt));
+                AirportWCL::rememberDerivedCredential(wclDerivedCredential, credentialKind,
+                    join.ssid, join.ssidLength, join.key, join.keyLength,
+                    ic->ic_sae_pt, sizeof(ic->ic_sae_pt));
             }
 #ifdef IEEE80211_SAE_HNP_COMPAT
             memcpy(ic->ic_sae_password, join.key, join.keyLength);
@@ -1086,14 +1069,10 @@ IOReturn AirportItlwmSkywalkInterface::startWCLJoin(AirportWCL::JoinRequest &joi
                         explicit_bzero(&join, sizeof(join));
                         return kIOReturnBadArgument;
                     }
-                    wclDerivedCredential.valid = 1;
-                    wclDerivedCredential.kind = credentialKind;
-                    wclDerivedCredential.ssidLength = join.ssidLength;
-                    wclDerivedCredential.credentialLength = join.keyLength;
-                    wclDerivedCredential.resultLength = sizeof(ic->ic_psk);
-                    memcpy(wclDerivedCredential.ssid, join.ssid, join.ssidLength);
-                    memcpy(wclDerivedCredential.credential, join.key, join.keyLength);
-                    memcpy(wclDerivedCredential.result, ic->ic_psk, sizeof(ic->ic_psk));
+                    AirportWCL::rememberDerivedCredential(wclDerivedCredential, credentialKind,
+                        join.ssid, join.ssidLength, join.key, join.keyLength,
+                        ic->ic_psk, sizeof(ic->ic_psk));
+
                 }
             } else {
                 memcpy(ic->ic_psk, join.key, sizeof(ic->ic_psk));

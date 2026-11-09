@@ -450,6 +450,7 @@ private:
     IOReturn installWCLKey(apple80211_key *);
     IOReturn accessWCLRSN(apple80211_rsn_ie_data *, bool);
     IOReturn beginWCLJoin(apple80211AssocCandidates *);
+    IOReturn deferWCLJoin(AirportWCL::JoinRequest &);
     IOReturn startWCLJoin(AirportWCL::JoinRequest &);
     void resumeWCLJoin();
     IOReturn abortWCLJoin();
