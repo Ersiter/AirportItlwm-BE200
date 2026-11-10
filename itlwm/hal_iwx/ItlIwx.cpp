@@ -10612,12 +10612,20 @@ iwx_awdl_tx_frame(struct iwx_softc *sc, const uint8_t *frame, size_t len)
     cmd->hdr.qid = ring->qid;
     cmd->hdr.idx = idx;
     
+    /*
+     * Management frames (PSF, MIF) go at the 6 Mbps basic rate. Data frames
+     * carry the transfer: with no station there is no rate scaling to pick a
+     * rate, and 6 Mbps would cap AirDrop below 5 Mbit/s, so they use 54 Mbps,
+     * which every peer decodes.
+     */
+    const bool dataFrame = (frame[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_DATA;
     uint32_t rate_n_flags = (1 << sc->sc_mgmt_last_antenna_idx) << IWX_RATE_MCS_ANT_POS;
     uint8_t cmdver = iwx_lookup_cmd_ver(sc, IWX_LONG_GROUP, IWX_TX_CMD);
     if (cmdver > 8 && cmdver != IWX_FW_CMD_VER_UNKNOWN)
-        rate_n_flags |= IWX_RATE_MCS_LEGACY_OFDM_MSK | 0;  /* legacy index 0 = 6 Mbps */
+        rate_n_flags |= IWX_RATE_MCS_LEGACY_OFDM_MSK | (dataFrame ? iwx_rate2idx(108) : 0);
     else
-        rate_n_flags |= IWX_RATE_6M_PLCP;
+        rate_n_flags |= dataFrame ? IWX_RATE_54M_PLCP : IWX_RATE_6M_PLCP;
+
 
 
     uint32_t flags = IWX_TX_FLAGS_CMD_RATE | IWX_TX_FLAGS_ENCRYPT_DIS;
