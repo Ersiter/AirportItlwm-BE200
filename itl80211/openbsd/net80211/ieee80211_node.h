@@ -763,7 +763,6 @@ void ieee80211_iterate_nodes(struct ieee80211com *,
 		ieee80211_iter_func *, void *);
 #ifdef AIRPORT_WCL
 int ieee80211_mld_discover_links(struct ieee80211com *, struct ieee80211_node *);
-int ieee80211_mld_set_active_link_by_bssid(struct ieee80211com *, const uint8_t *);
 struct ieee80211_node *ieee80211_mld_primary_node(struct ieee80211com *, struct ieee80211_node *);
 struct ieee80211_node *ieee80211_mld_active_node(struct ieee80211com *);
 void ieee80211_mld_clear_links(struct ieee80211com *);

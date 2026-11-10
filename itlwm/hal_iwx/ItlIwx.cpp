@@ -16636,7 +16636,6 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     ic->ic_node_alloc = iwx_node_alloc;
     ic->ic_sae_defer_join = iwx_defer_sae_join;
 #ifdef AIRPORT_WCL
-    ic->ic_wcl_update_mld_active_link = iwx_wcl_update_mld_active_link;
     if (sc->sc_use_mld_api) {
         ic->ic_ttlm_schedule = iwx_ttlm_schedule;
         ic->ic_ttlm_apply = iwx_ttlm_apply;

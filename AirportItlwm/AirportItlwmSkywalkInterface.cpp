@@ -671,7 +671,7 @@ getBSSID(struct apple80211_bssid_data *bd)
     if (ic->ic_state == IEEE80211_S_RUN) {
         memset(bd, 0, sizeof(*bd));
         bd->version = APPLE80211_VERSION;
-        memcpy(bd->bssid.octet, ieee80211_mld_active_node(ic)->ni_bssid, APPLE80211_ADDR_LEN);
+        memcpy(bd->bssid.octet, ic->ic_bss->ni_bssid, APPLE80211_ADDR_LEN);
         return kIOReturnSuccess;
     }
     return 6;

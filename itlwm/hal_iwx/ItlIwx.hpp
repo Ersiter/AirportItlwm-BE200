@@ -494,7 +494,6 @@ public:
 
     static void iwx_ttlm_schedule(ieee80211com *);
     static int iwx_ttlm_apply(ieee80211com *, uint16_t);
-    static void iwx_wcl_update_mld_active_link(ieee80211com *, uint8_t);
 #endif
     static void iwx_mld_schedule_active_links(iwx_softc *, uint8_t, uint8_t, bool, bool);
     static void    iwx_mld_active_link_task(void *);

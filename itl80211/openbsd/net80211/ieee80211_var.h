@@ -492,7 +492,6 @@ struct ieee80211com {
     uint8_t ic_wcl_peer_mld_addr[IEEE80211_ADDR_LEN];
     uint8_t ic_wcl_local_mlo_addrs[4][IEEE80211_ADDR_LEN];
     bool ic_wcl_local_mlo_addrs_valid;
-    void (*ic_wcl_update_mld_active_link)(struct ieee80211com *, uint8_t);
     struct ieee80211_mld_link_info ic_mld_links[IEEE80211_MLD_MAX_LINKS];
     uint8_t ic_mld_link_count;
     struct ieee80211_ttlm_state ic_ttlm;

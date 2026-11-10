@@ -1546,17 +1546,6 @@ IOReturn AirportItlwmSkywalkInterface::setWCL_LINK_STATE_UPDATE(apple80211_wcl_u
 #endif
     if (status == kIOReturnSuccess)
         updateWCLLinkQuality(true);
-    if (status == kIOReturnSuccess && linkState() == kIO80211NetworkLinkUp) {
-        auto ic = fHalService->get80211Controller();
-        apple80211_bssid_data bssid = {};
-        if (ic->ic_wcl_peer_is_mlo &&
-            getBSSID(&bssid) == kIOReturnSuccess &&
-            ieee80211_mld_set_active_link_by_bssid(ic,
-                bssid.bssid.octet) == 0 &&
-            ic->ic_wcl_update_mld_active_link)
-            ic->ic_wcl_update_mld_active_link(ic,
-                ic->ic_wcl_active_mld_link);
-    }
     return status;
 }
 

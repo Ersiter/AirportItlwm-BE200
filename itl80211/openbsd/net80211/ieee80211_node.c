@@ -2633,26 +2633,6 @@ ieee80211_mld_clear_links(struct ieee80211com *ic)
 	ic->ic_mld_emlsr_peer_supported = false;
 }
 
-int
-ieee80211_mld_set_active_link_by_bssid(struct ieee80211com *ic,
-	const uint8_t *bssid)
-{
-	uint8_t i;
-
-	if (bssid == NULL)
-		return EINVAL;
-	for (i = 0; i < ic->ic_mld_link_count; i++) {
-		struct ieee80211_mld_link_info *link = &ic->ic_mld_links[i];
-		if (!link->assoc_accepted || link->ni == NULL)
-			continue;
-		if (IEEE80211_ADDR_EQ(link->ni->ni_bssid, bssid)) {
-			ic->ic_wcl_active_mld_link = i;
-			return 0;
-		}
-	}
-	return ENOENT;
-}
-
 struct ieee80211_node *
 ieee80211_mld_primary_node(struct ieee80211com *ic, struct ieee80211_node *ni)
 {

@@ -1225,27 +1225,6 @@ iwx_ttlm_apply(struct ieee80211com *ic, uint16_t ap_links)
     return err;
 }
 
-void ItlIwx::
-iwx_wcl_update_mld_active_link(struct ieee80211com *ic, uint8_t link_slot)
-{
-    struct iwx_softc *sc = (struct iwx_softc *)ic->ic_softc;
-    uint8_t emlsr_active, links;
-    int s;
-
-    if (!sc->sc_use_mld_api || link_slot >= IWX_MLD_MAX_LINKS)
-        return;
-    s = splnet();
-    emlsr_active = sc->sc_mld_emlsr_active;
-    links = sc->sc_mld_active_links;
-    if (!links)
-        links = 1U << link_slot;
-    if (emlsr_active && !(links & (1U << link_slot))) {
-        links = 1U << link_slot;
-        emlsr_active = false;
-    }
-    splx(s);
-    iwx_mld_schedule_active_links(sc, links, link_slot, emlsr_active, false);
-}
 #endif
 
 void ItlIwx::
