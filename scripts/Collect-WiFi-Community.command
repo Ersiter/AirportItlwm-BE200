@@ -276,6 +276,9 @@ for phase in before after; do
 done
 /usr/bin/comm -13 "$out/keys-before.txt" "$out/keys-after.txt" > "$out/keys-new-after-attempt.txt"
 
+# The links and widths the association negotiated, and every active-link change.
+/usr/bin/grep -h -E 'iwx_mld_log_links|active links 0x|EMLSR|selected links'     "$out/live-log.txt" "$out/recent-log.txt" 2>/dev/null | /usr/bin/sort -u > "$out/negotiated-links.txt"
+
 archive="$out.tar.gz"
 if /usr/bin/tar -czf "$archive" -C "$base" "$(basename "$out")"; then
     /bin/rm -r -- "$out" || exit 1

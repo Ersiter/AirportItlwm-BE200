@@ -389,6 +389,20 @@ rollback_added:
     return err;
 }
 
+static int
+iwx_mld_width_mhz(const struct ieee80211_node *ni)
+{
+    switch (ni->ni_chw) {
+    case IEEE80211_CHAN_WIDTH_20_NOHT:
+    case IEEE80211_CHAN_WIDTH_20: return 20;
+    case IEEE80211_CHAN_WIDTH_40: return 40;
+    case IEEE80211_CHAN_WIDTH_80: return 80;
+    case IEEE80211_CHAN_WIDTH_160: return 160;
+    case IEEE80211_CHAN_WIDTH_320: return 320;
+    }
+    return -1;
+}
+
 #ifdef AIRPORT_WCL
 static bool
 iwx_mld_emlsr_link_usable(struct ieee80211_node *ni)
@@ -548,20 +562,6 @@ iwx_mld_link_node(struct iwx_softc *sc, int slot)
     if (slot >= ic->ic_mld_link_count || !ic->ic_mld_links[slot].assoc_accepted)
         return NULL;
     return ic->ic_mld_links[slot].ni;
-}
-
-static int
-iwx_mld_width_mhz(const struct ieee80211_node *ni)
-{
-    switch (ni->ni_chw) {
-    case IEEE80211_CHAN_WIDTH_20_NOHT:
-    case IEEE80211_CHAN_WIDTH_20: return 20;
-    case IEEE80211_CHAN_WIDTH_40: return 40;
-    case IEEE80211_CHAN_WIDTH_80: return 80;
-    case IEEE80211_CHAN_WIDTH_160: return 160;
-    case IEEE80211_CHAN_WIDTH_320: return 320;
-    }
-    return -1;
 }
 
 /* Channel load caused by others, 0..256, as iwl_mld_get_chan_load(). */
@@ -2307,37 +2307,40 @@ fail:
 }
 
 /*
- * One line per link after association, like the IWL_DEBUG_EHT output of
- * iwlmld: what the AP MLD accepted, what the AP says about EMLSR, and which
- * links are active. Without it a report cannot tell a single-link association
- * from one the AP never offered EMLSR for.
+ * What the association negotiated, one line per link, after the IWL_DEBUG_EHT
+ * output of iwlmld: band, channel, the width in MHz the AP operates it at and
+ * the PHY generation, and for an AP MLD what it accepted and whether it offers
+ * EMLSR. Without it a report cannot tell a single-link association from one the
+ * AP never offered EMLSR for, or say what width a link really runs at.
  */
 static void
 iwx_mld_log_links(struct iwx_softc *sc)
 {
     struct ieee80211com *ic = &sc->sc_ic;
+    const bool mlo = ic->ic_wcl_peer_is_mlo;
 
-    if (!ic->ic_wcl_peer_is_mlo)
-        return;
-    XYLog("%s: %d link(s), AP EML capabilities 0x%04x (EMLSR %s), driver EMLSR %s, "
-        "active links 0x%x\n", __FUNCTION__, ic->ic_mld_link_count,
-        ic->ic_bss->ni_mld_eml_capa,
-        ic->ic_mld_emlsr_peer_supported ? "offered" : "not offered",
-        ic->ic_mld_emlsr_supported ? "available" : "unavailable",
-        sc->sc_mld_active_links);
-    for (int i = 0; i < ic->ic_mld_link_count; i++) {
+    if (mlo)
+        XYLog("%s: %d link(s), AP EML capabilities 0x%04x (EMLSR %s), driver EMLSR %s, "
+            "active links 0x%x\n", __FUNCTION__, ic->ic_mld_link_count,
+            ic->ic_bss->ni_mld_eml_capa,
+            ic->ic_mld_emlsr_peer_supported ? "offered" : "not offered",
+            ic->ic_mld_emlsr_supported ? "available" : "unavailable",
+            sc->sc_mld_active_links);
+    for (int i = 0; i < (mlo ? ic->ic_mld_link_count : 1); i++) {
         const struct ieee80211_mld_link_info *link = &ic->ic_mld_links[i];
-        const struct ieee80211_node *ni = link->ni;
+        const struct ieee80211_node *ni = mlo ? link->ni : ic->ic_bss;
 
         if (ni == NULL || ni->ni_chan == NULL)
             continue;
-        XYLog("%s: slot %d link id %u %s ch %d width %d rssi %d %s\n",
-            __FUNCTION__, i, link->ap_link_id,
+        XYLog("%s: slot %d link id %u %s ch %d width %d MHz %s rssi %d %s\n",
+            __FUNCTION__, i, mlo ? link->ap_link_id : 0,
             IEEE80211_IS_CHAN_6GHZ(ni->ni_chan) ? "6GHz" :
             IEEE80211_IS_CHAN_5GHZ(ni->ni_chan) ? "5GHz" : "2.4GHz",
-            ieee80211_chan2ieee(ic, ni->ni_chan), ni->ni_chw,
+            ieee80211_chan2ieee(ic, ni->ni_chan), iwx_mld_width_mhz(ni),
+            (ni->ni_flags & IEEE80211_NODE_EHT) ? "EHT" :
+            (ni->ni_flags & IEEE80211_NODE_HE) ? "HE" : "legacy",
             (int)ni->ni_rssi + IWX_MIN_DBM,
-            i == 0 || link->assoc_accepted ? "accepted" : "rejected");
+            !mlo || i == 0 || link->assoc_accepted ? "accepted" : "rejected");
     }
 }
 
