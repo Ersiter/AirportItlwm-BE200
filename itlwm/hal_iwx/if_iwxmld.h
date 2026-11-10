@@ -100,6 +100,42 @@
 #define IWX_UCODE_TLV_CAPA_MLD_API_SUPPORT 110
 #define IWX_EMLSR_MODE_NOTIF 0xf3
 #define IWX_EMLSR_TRANS_FAIL_NOTIF 0xf7
+
+/* Statistics (iwlmld fw/api/stats.h), configured through the system group. */
+#define IWX_SYSTEM_STATISTICS_CMD 0x0f
+#define IWX_STATISTICS_GROUP 0x10
+#define IWX_STATISTICS_OPER_NOTIF 0x00
+#define IWX_STATISTICS_OPER_PART1_NOTIF 0x01
+#define IWX_SYSTEM_STATISTICS_END_NOTIF 0xfd
+#define IWX_STATS_CFG_FLG_DISABLE_NTFY_MSK (1U << 0)
+#define IWX_STATS_NTFY_TYPE_ID_OPER (1U << 0)
+#define IWX_STATS_NTFY_TYPE_ID_OPER_PART1 (1U << 1)
+#define IWX_STATS_MAX_PHY_OPERATIONAL 3
+#define IWX_STATS_UNKNOWN_CHANNEL_LOAD 0xffffffffU
+#define IWX_FW_MAX_LINKS 4
+
+/* Why EMLSR was left; the reason decides how long it is kept off. */
+enum {
+    IWX_MLD_EMLSR_EXIT_BLOCK = 1,
+    IWX_MLD_EMLSR_EXIT_FAIL_ENTRY,
+    IWX_MLD_EMLSR_EXIT_LOW_RSSI,
+    IWX_MLD_EMLSR_EXIT_LINK_USAGE,
+    IWX_MLD_EMLSR_EXIT_CHAN_LOAD,
+    IWX_MLD_EMLSR_EXIT_FW_REQUEST,
+};
+
+/* Entry sizes in the operational notification, versions 3, 4 and 5. */
+#define IWX_STATS_PER_LINK_SIZE 28
+#define IWX_STATS_PER_PHY_SIZE_V1 88
+#define IWX_STATS_PER_PHY_SIZE_V2 104
+#define IWX_STATS_PER_PHY_SIZE_V3 112
+
+struct iwx_system_statistics_cmd {
+	uint32_t cfg_mask;
+	uint32_t config_time_sec;
+	uint32_t type_id_mask;
+} __packed; /* STATISTICS_FW_CMD_API_S_VER_1 */
+
 #define IWX_MLD_RX_BAID_CONFIG_CMD 0x16
 #define IWX_MLD_RX_BAID_ADD 0
 #define IWX_MLD_RX_BAID_MODIFY 1

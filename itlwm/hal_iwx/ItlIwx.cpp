@@ -255,19 +255,6 @@ iwx_record_diagnostic(struct iwx_softc *sc, const char *event,
     __atomic_store_n(&record->sequence, sequence, __ATOMIC_RELEASE);
 }
 
-static bool
-iwx_is_eapol_frame(mbuf_t m)
-{
-    uint8_t bytes[64];
-    size_t length = mbuf_pkthdr_len(m);
-    if (length < sizeof(struct ieee80211_frame) ||
-        mbuf_copydata(m, 0, MIN(length, sizeof(bytes)), bytes))
-        return false;
-    size_t hdrlen = ieee80211_get_hdrlen((const struct ieee80211_frame *)bytes);
-    return length >= hdrlen + LLC_SNAPFRAMELEN &&
-        bytes[hdrlen + 6] == 0x88 && bytes[hdrlen + 7] == 0x8e;
-}
-
 static void
 iwx_publish_diagnostics(struct iwx_softc *sc)
 {
@@ -375,6 +362,8 @@ detach(IOPCIDevice *device)
     sc->sc_generation++;
     task_del(systq, &sc->mcc_task);
     iwx_setkey_queue_reset(sc);
+    timeout_del(&sc->sc_mld_tpt_timer);
+    timeout_free(&sc->sc_mld_tpt_timer);
 #ifdef AIRPORT_VTD
     releaseAll();
     taskq_destroy(systq);
@@ -399,7 +388,6 @@ detach(IOPCIDevice *device)
     sc->sc_mld_primary_link = 0;
     sc->sc_mld_active_sta_mask = 0;
     sc->sc_mld_emlsr_active = 0;
-    sc->sc_mld_tx_link_seq = 0;
     sc->sc_mld_txq_tidmask = 0;
     iwx_dma_contig_free(&sc->fw_mon);
     if (sc->sc_dmat)
@@ -8111,11 +8099,8 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     int i, totlen;
     int qid = IWX_INVALID_QUEUE;
     int idx;
-#ifdef AIRPORT_WCL
-    bool is_eapol = false;
-#endif
-
     wh = mtod(m, struct ieee80211_frame *);
+
     type = wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK;
     subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
     if (type == IEEE80211_FC0_TYPE_DATA &&
@@ -8125,11 +8110,6 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
     }
 #ifdef AIRPORT_WCL
     if (sc->sc_use_mld_api && ic->ic_wcl_peer_is_mlo &&
-        (sc->sc_mld_active_links & (sc->sc_mld_active_links - 1)) &&
-        type == IEEE80211_FC0_TYPE_DATA) {
-        is_eapol = iwx_is_eapol_frame(m);
-    }
-    if (sc->sc_use_mld_api && ic->ic_wcl_peer_is_mlo &&
         ic->ic_mld_link_count > 1 &&
         (sc->sc_flags & IWX_FLAG_STA_ACTIVE) &&
         ic->ic_state == IEEE80211_S_RUN &&
@@ -8137,26 +8117,13 @@ iwx_tx(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni, int ac)
          (type == IEEE80211_FC0_TYPE_DATA &&
           (wh->i_fc[1] & IEEE80211_FC1_DIR_MASK) ==
             IEEE80211_FC1_DIR_TODS))) {
+        /*
+         * Frames go out on the primary link. With EMLSR both links are active
+         * but the radio serves one at a time, and alternating between them
+         * would pay the transition delay on every frame.
+         */
         uint8_t link_slot = sc->sc_mld_primary_link;
-        uint8_t active_links = sc->sc_mld_active_links;
 
-        if (type == IEEE80211_FC0_TYPE_DATA &&
-            !is_eapol && active_links &&
-            (active_links & (active_links - 1))) {
-            unsigned int active_count =
-                __builtin_popcount((unsigned)active_links);
-            unsigned int selected = __atomic_fetch_add(
-                &sc->sc_mld_tx_link_seq, 1, __ATOMIC_RELAXED) % active_count;
-
-            for (int i = 0; i < IWX_MLD_MAX_LINKS; i++) {
-                if (!(active_links & (1U << i)))
-                    continue;
-                if (selected-- == 0) {
-                    link_slot = i;
-                    break;
-                }
-            }
-        }
         if (link_slot < ic->ic_mld_link_count &&
             (sc->sc_mld_active_links & (1U << link_slot))) {
             struct ieee80211_mld_link_info *link =
@@ -12428,13 +12395,18 @@ iwx_endscan(struct iwx_softc *sc, uint8_t status, bool allowContinuation)
     }
     sc->sc_flags &= ~(IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN);
     getMainCommandGate()->commandWakeup(&sc->sc_flags);
+    const bool mlo_scan = sc->sc_scan_mlo;
+    sc->sc_scan_mlo = 0;
     if (scan_aborting) {
         ic->ic_flags &= ~(IEEE80211_F_BGSCAN |
                           IEEE80211_F_DISABLE_BG_AUTO_CONNECT);
         return;
     }
     ieee80211_end_scan(&ic->ic_if);
+    if (mlo_scan)
+        iwx_mld_mlo_scan_done(sc);
 }
+
 
 /*
  * Aging and idle timeouts for the different possible scenarios
@@ -13484,6 +13456,7 @@ iwx_stop(struct _ifnet *ifp)
     iwx_del_task(sc, sc->sc_nswq, &sc->newstate_task);
     iwx_del_task(sc, sc->sc_nswq, &sc->start_task);
     iwx_del_task(sc, sc->sc_nswq, &sc->mld_link_task);
+    iwx_mld_emlsr_stop(sc);
     iwx_del_task(sc, sc->sc_nswq, &sc->sc_scan_task);
     iwx_del_task(sc, sc->sc_nswq, &sc->sc_sae_join_task);
     sc->sc_sae_join_pending = 0;
@@ -14444,6 +14417,14 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                 /* Empty command ACK; complete the synchronous HE setup below. */
                 break;
 
+            case IWX_WIDE_ID(IWX_STATISTICS_GROUP, IWX_STATISTICS_OPER_NOTIF):
+                iwx_mld_handle_stats_oper_notif(sc, pkt);
+                break;
+
+            case IWX_WIDE_ID(IWX_STATISTICS_GROUP, IWX_STATISTICS_OPER_PART1_NOTIF):
+            case IWX_WIDE_ID(IWX_SYSTEM_GROUP, IWX_SYSTEM_STATISTICS_END_NOTIF):
+                break;
+
             case IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_EMLSR_MODE_NOTIF): {
                 uint8_t version = iwx_lookup_notif_ver(sc,
                     IWX_DATA_PATH_GROUP, IWX_EMLSR_MODE_NOTIF);
@@ -14478,25 +14459,17 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                     active_link = __builtin_ctz((unsigned)sc->sc_mld_active_links);
                 switch (action) {
                 case IWX_ESR_RECOMMEND_LEAVE:
-                    iwx_mld_schedule_active_links(sc, 1U << active_link,
-                        active_link, false, false);
+                    iwx_mld_exit_emlsr(sc, IWX_MLD_EMLSR_EXIT_FW_REQUEST);
                     break;
                 case IWX_ESR_FORCE_LEAVE:
                     XYLog("Unexpected EMLSR force-leave notification\n");
                     break;
                 case IWX_ESR_RECOMMEND_ENTER:
-                {
-#ifdef AIRPORT_WCL
-                    uint8_t primary_link = active_link;
-                    uint8_t links = iwx_mld_select_emlsr_links(sc,
-                        &primary_link);
-                    if (links && (links & (links - 1)))
-                        iwx_mld_schedule_active_links(sc, links,
-                            primary_link, true, false);
-#endif
+                    /* iwlmld enters EMLSR by its own decision, never on this. */
+                    XYLog("Unexpected EMLSR enter recommendation\n");
                     break;
-                }
                 default:
+
                     XYLog("Unknown EMLSR mode action %u\n", action);
                     break;
                 }
@@ -14528,6 +14501,8 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                 }
                 iwx_mld_schedule_active_links(sc, 1U << link_id, link_id,
                     false, activation == 0);
+                if (activation != 0)
+                    iwx_mld_note_emlsr_exit(sc, IWX_MLD_EMLSR_EXIT_FAIL_ENTRY);
                 break;
             }
                 
@@ -16668,6 +16643,8 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     task_set(&sc->start_task, iwx_start_deferred, sc, "iwx_start_task");
     task_set(&sc->mld_link_task, iwx_mld_active_link_task, sc,
         "iwx_mld_active_link_task");
+    task_set(&sc->mld_tpt_task, iwx_mld_tpt_task, sc, "iwx_mld_tpt_task");
+    timeout_set(&sc->sc_mld_tpt_timer, iwx_mld_tpt_timer, sc);
     task_set(&sc->sc_scan_task, iwx_scan_task, sc, "iwx_scan_task");
     task_set(&sc->sc_sae_join_task, iwx_sae_join_task, sc, "iwx_sae_join");
     task_set(&sc->ba_task, iwx_ba_task, sc, "iwx_ba_task");

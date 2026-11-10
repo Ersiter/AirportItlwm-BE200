@@ -478,7 +478,20 @@ public:
     bool iwx_mld_associated_channels_valid(iwx_softc *);
     bool iwx_mld_associated_channel_usable(iwx_softc *);
 #ifdef AIRPORT_WCL
-    uint8_t iwx_mld_select_emlsr_links(iwx_softc *, uint8_t *);
+    uint8_t iwx_mld_select_links(iwx_softc *, uint8_t *, bool *);
+    void iwx_mld_apply_link_selection(iwx_softc *);
+    bool iwx_mld_mlo_scan(iwx_softc *);
+    void iwx_mld_mlo_scan_done(iwx_softc *);
+    int iwx_mld_request_periodic_stats(iwx_softc *, bool);
+    void iwx_mld_handle_stats_oper_notif(iwx_softc *, struct iwx_rx_packet *);
+    void iwx_mld_emlsr_start(iwx_softc *);
+    void iwx_mld_emlsr_stop(iwx_softc *);
+    static void iwx_mld_exit_emlsr(iwx_softc *, int);
+    static void iwx_mld_note_emlsr_exit(iwx_softc *, int);
+
+    static void iwx_mld_tpt_timer(void *);
+    static void iwx_mld_tpt_task(void *);
+
     static void iwx_ttlm_schedule(ieee80211com *);
     static int iwx_ttlm_apply(ieee80211com *, uint16_t);
     static void iwx_wcl_update_mld_active_link(ieee80211com *, uint8_t);

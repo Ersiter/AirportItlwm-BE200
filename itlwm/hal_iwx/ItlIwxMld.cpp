@@ -170,7 +170,6 @@ iwx_mld_limit_link_resources(struct iwx_softc *sc)
     sc->sc_mld_active_links = 1;
     sc->sc_mld_primary_link = 0;
     sc->sc_mld_emlsr_active = 0;
-    sc->sc_mld_tx_link_seq = 0;
     ic->ic_wcl_active_mld_link = 0;
 }
 
@@ -416,63 +415,630 @@ iwx_mld_emlsr_link_usable(struct ieee80211_node *ni)
     return (int)ni->ni_rssi + IWX_MIN_DBM >= rssi_threshold;
 }
 
-uint8_t ItlIwx::
-iwx_mld_select_emlsr_links(struct iwx_softc *sc, uint8_t *primary_link)
+/*
+ * EMLSR policy, after iwlmld (mld/mlo.c, mld/link.c, mld/stats.c). The firmware
+ * never recommends entering EMLSR; the driver decides, once the traffic is
+ * worth it, from scan data on every link that is at most five seconds old, and
+ * leaves again when the pair stops paying off.
+ *
+ * Differences from iwlmld, each forced by the macOS side: the link WCL joined
+ * (slot 0) stays active, so EMLSR is only formed with it and a single link is
+ * always slot 0; low RSSI uses the firmware's per-link beacon statistics; the
+ * channel load of an inactive link comes from its BSS Load element or the
+ * per-band default. The secondary-link usage exit is left out: received frames
+ * are not attributed to a link.
+ */
+#define IWX_MLD_TPT_WINDOW_SEC           5
+#define IWX_MLD_ENTER_EMLSR_TPT_THRESH   400
+#define IWX_MLD_EXIT_EMLSR_CHAN_LOAD     2   /* percent */
+#define IWX_MLD_LOW_RSSI_THRESH          (-72)
+#define IWX_MLD_TRIGGER_LINK_SEL_SEC     30
+#define IWX_MLD_PREVENT_EMLSR_TIMEOUT    400
+#define IWX_MLD_EMLSR_PREVENT_SHORT      300
+#define IWX_MLD_EMLSR_PREVENT_LONG       600
+#define IWX_MLD_MLO_SCAN_MAX_AGE_SEC     5
+#define IWX_MLD_SCALE_FACTOR             256
+#define IWX_MLD_PERCENT_TO_255(p)        ((p) * 256 / 100)
+
+enum {
+    IWX_MLD_EMLSR_BLOCKED_TPT        = (1U << 0),
+    IWX_MLD_EMLSR_BLOCKED_PREVENTION = (1U << 1),
+};
+
+enum {
+    IWX_MLD_TASK_TICK   = (1U << 0),
+    IWX_MLD_TASK_SELECT = (1U << 1),
+};
+
+static const char *
+iwx_mld_emlsr_exit_name(int reason)
+{
+    switch (reason) {
+    case IWX_MLD_EMLSR_EXIT_BLOCK: return "BLOCK";
+    case IWX_MLD_EMLSR_EXIT_FAIL_ENTRY: return "FAIL_ENTRY";
+    case IWX_MLD_EMLSR_EXIT_LOW_RSSI: return "LOW_RSSI";
+    case IWX_MLD_EMLSR_EXIT_LINK_USAGE: return "LINK_USAGE";
+    case IWX_MLD_EMLSR_EXIT_CHAN_LOAD: return "CHAN_LOAD";
+    case IWX_MLD_EMLSR_EXIT_FW_REQUEST: return "FW_REQUEST";
+    }
+    return "?";
+}
+
+static uint32_t
+iwx_mld_uptime(void)
+{
+    struct timeval tv;
+
+    getmicrouptime(&tv);
+    return (uint32_t)tv.tv_sec;
+}
+
+struct iwx_mld_rssi_to_grade {
+    int8_t rssi[2];     /* 2.4 GHz, 5/6 GHz */
+    uint16_t grade;
+};
+#define IWX_RSSI_GRADE_LB(_lb, _hb, _grade) { { _lb, _hb }, _grade }
+#define IWX_RSSI_GRADE(_rssi, _grade) IWX_RSSI_GRADE_LB(_rssi, _rssi, _grade)
+
+/* iwlmld rssi_to_grade_*mhz tables, sorted by increasing RSSI. */
+static const struct iwx_mld_rssi_to_grade iwx_rssi_to_grade_20[] = {
+    IWX_RSSI_GRADE_LB(-94, -95, 9), IWX_RSSI_GRADE_LB(-92, -93, 17),
+    IWX_RSSI_GRADE_LB(-90, -90, 34), IWX_RSSI_GRADE_LB(-87, -87, 52),
+    IWX_RSSI_GRADE_LB(-83, -84, 69), IWX_RSSI_GRADE_LB(-79, -80, 103),
+    IWX_RSSI_GRADE_LB(-75, -75, 137), IWX_RSSI_GRADE_LB(-72, -73, 155),
+    IWX_RSSI_GRADE_LB(-70, -71, 172), IWX_RSSI_GRADE_LB(-67, -68, 206),
+    IWX_RSSI_GRADE_LB(-64, -65, 230), IWX_RSSI_GRADE_LB(-59, -60, 258),
+    IWX_RSSI_GRADE_LB(-57, -58, 287), IWX_RSSI_GRADE_LB(-52, -53, 310),
+    IWX_RSSI_GRADE_LB(-50, -50, 345),
+};
+static const struct iwx_mld_rssi_to_grade iwx_rssi_to_grade_40[] = {
+    IWX_RSSI_GRADE_LB(-95, -95, 9), IWX_RSSI_GRADE_LB(-93, -93, 17),
+    IWX_RSSI_GRADE_LB(-91, -92, 18), IWX_RSSI_GRADE_LB(-89, -90, 34),
+    IWX_RSSI_GRADE_LB(-87, -87, 68), IWX_RSSI_GRADE_LB(-84, -84, 104),
+    IWX_RSSI_GRADE_LB(-80, -81, 138), IWX_RSSI_GRADE_LB(-77, -77, 206),
+    IWX_RSSI_GRADE_LB(-72, -72, 274), IWX_RSSI_GRADE_LB(-69, -70, 310),
+    IWX_RSSI_GRADE_LB(-67, -68, 344), IWX_RSSI_GRADE_LB(-64, -65, 412),
+    IWX_RSSI_GRADE_LB(-61, -62, 460), IWX_RSSI_GRADE_LB(-56, -57, 516),
+    IWX_RSSI_GRADE_LB(-54, -55, 574), IWX_RSSI_GRADE_LB(-49, -50, 620),
+    IWX_RSSI_GRADE_LB(-46, -47, 690),
+};
+static const struct iwx_mld_rssi_to_grade iwx_rssi_to_grade_80[] = {
+    IWX_RSSI_GRADE(-95, 9), IWX_RSSI_GRADE(-93, 17), IWX_RSSI_GRADE(-92, 18),
+    IWX_RSSI_GRADE(-90, 34), IWX_RSSI_GRADE(-89, 36), IWX_RSSI_GRADE(-87, 68),
+    IWX_RSSI_GRADE(-83, 136), IWX_RSSI_GRADE(-80, 208), IWX_RSSI_GRADE(-77, 276),
+    IWX_RSSI_GRADE(-74, 412), IWX_RSSI_GRADE(-69, 548), IWX_RSSI_GRADE(-67, 620),
+    IWX_RSSI_GRADE(-66, 688), IWX_RSSI_GRADE(-61, 824), IWX_RSSI_GRADE(-59, 920),
+    IWX_RSSI_GRADE(-54, 1032), IWX_RSSI_GRADE(-52, 1148),
+    IWX_RSSI_GRADE(-47, 1240), IWX_RSSI_GRADE(-44, 1380),
+};
+static const struct iwx_mld_rssi_to_grade iwx_rssi_to_grade_160[] = {
+    IWX_RSSI_GRADE(-95, 9), IWX_RSSI_GRADE(-93, 17), IWX_RSSI_GRADE(-92, 18),
+    IWX_RSSI_GRADE(-90, 34), IWX_RSSI_GRADE(-89, 36), IWX_RSSI_GRADE(-87, 68),
+    IWX_RSSI_GRADE(-86, 72), IWX_RSSI_GRADE(-84, 136), IWX_RSSI_GRADE(-81, 272),
+    IWX_RSSI_GRADE(-78, 416), IWX_RSSI_GRADE(-75, 552), IWX_RSSI_GRADE(-71, 824),
+    IWX_RSSI_GRADE(-67, 1096), IWX_RSSI_GRADE(-65, 1240),
+    IWX_RSSI_GRADE(-63, 1376), IWX_RSSI_GRADE(-59, 1648),
+    IWX_RSSI_GRADE(-57, 1840), IWX_RSSI_GRADE(-52, 2064),
+    IWX_RSSI_GRADE(-50, 2296), IWX_RSSI_GRADE(-46, 2480),
+    IWX_RSSI_GRADE(-42, 2760),
+};
+static const struct iwx_mld_rssi_to_grade iwx_rssi_to_grade_320[] = {
+    IWX_RSSI_GRADE(-95, 9), IWX_RSSI_GRADE(-93, 17), IWX_RSSI_GRADE(-92, 18),
+    IWX_RSSI_GRADE(-90, 34), IWX_RSSI_GRADE(-89, 36), IWX_RSSI_GRADE(-87, 68),
+    IWX_RSSI_GRADE(-86, 72), IWX_RSSI_GRADE(-84, 136), IWX_RSSI_GRADE(-83, 144),
+    IWX_RSSI_GRADE(-81, 272), IWX_RSSI_GRADE(-78, 544), IWX_RSSI_GRADE(-75, 832),
+    IWX_RSSI_GRADE(-72, 1104), IWX_RSSI_GRADE(-69, 1648),
+    IWX_RSSI_GRADE(-64, 2192), IWX_RSSI_GRADE(-62, 2480),
+    IWX_RSSI_GRADE(-61, 2752), IWX_RSSI_GRADE(-57, 3296),
+    IWX_RSSI_GRADE(-55, 3680), IWX_RSSI_GRADE(-50, 4128),
+    IWX_RSSI_GRADE(-47, 4592), IWX_RSSI_GRADE(-43, 4960),
+    IWX_RSSI_GRADE(-40, 5520),
+};
+
+static struct ieee80211_node *
+iwx_mld_link_node(struct iwx_softc *sc, int slot)
 {
     struct ieee80211com *ic = &sc->sc_ic;
-    uint8_t best_links = 0;
-    int best_min_rssi = -129, best_total_rssi = -258;
 
-    if (!ic->ic_mld_emlsr_supported || !ic->ic_mld_emlsr_peer_supported ||
-        ic->ic_mld_link_count < 2 || primary_link == NULL)
+    if (slot == 0)
+        return ic->ic_bss;
+    if (slot >= ic->ic_mld_link_count || !ic->ic_mld_links[slot].assoc_accepted)
+        return NULL;
+    return ic->ic_mld_links[slot].ni;
+}
+
+static int
+iwx_mld_width_mhz(const struct ieee80211_node *ni)
+{
+    switch (ni->ni_chw) {
+    case IEEE80211_CHAN_WIDTH_20_NOHT:
+    case IEEE80211_CHAN_WIDTH_20: return 20;
+    case IEEE80211_CHAN_WIDTH_40: return 40;
+    case IEEE80211_CHAN_WIDTH_80: return 80;
+    case IEEE80211_CHAN_WIDTH_160: return 160;
+    case IEEE80211_CHAN_WIDTH_320: return 320;
+    }
+    return -1;
+}
+
+/* Channel load caused by others, 0..256, as iwl_mld_get_chan_load(). */
+static unsigned int
+iwx_mld_get_chan_load(struct iwx_softc *sc, int slot,
+    const struct ieee80211_node *ni)
+{
+    unsigned int load;
+
+    if (ni->ni_chan_util >= 0) {
+        unsigned int by_us = 0;
+
+        load = (unsigned int)ni->ni_chan_util;
+        if (slot < IWX_NUM_PHY_CTX && (sc->sc_mld_active_links & (1U << slot)))
+            by_us = IWX_MLD_PERCENT_TO_255(sc->sc_mld_phy_load_by_us[slot]);
+        if (by_us <= load)
+            load -= by_us;
+        return load;
+    }
+    /* No BSS Load element: the defaults of iwl_mld_get_default_chan_load(). */
+    return IWX_MLD_PERCENT_TO_255(IEEE80211_IS_CHAN_2GHZ(ni->ni_chan) ? 30 :
+        IEEE80211_IS_CHAN_5GHZ(ni->ni_chan) ? 15 : 0);
+}
+
+/* iwl_mld_get_link_grade() without the puncturing penalty. */
+static unsigned int
+iwx_mld_get_link_grade(struct iwx_softc *sc, int slot)
+{
+    const struct ieee80211_node *ni = iwx_mld_link_node(sc, slot);
+    const struct iwx_mld_rssi_to_grade *table;
+    int width, size, idx, rssi;
+    unsigned int grade;
+
+    if (ni == NULL || ni->ni_chan == NULL || (width = iwx_mld_width_mhz(ni)) < 0)
         return 0;
-
-    for (int i = 0; i < ic->ic_mld_link_count; i++) {
-        struct ieee80211_mld_link_info *a = &ic->ic_mld_links[i];
-        struct ieee80211_node *ni_a = a->ni;
-        uint8_t sta_a = sc->sc_mld_sta_ids[i];
-        int band_a;
-
-        if (ni_a == NULL || ni_a->ni_chan == NULL || sta_a == 0xff ||
-            !(sc->sc_mld_sta_mask & (1U << sta_a)) ||
-            (i != 0 && !a->assoc_accepted))
+    switch (width) {
+    case 20: table = iwx_rssi_to_grade_20; size = nitems(iwx_rssi_to_grade_20); break;
+    case 40: table = iwx_rssi_to_grade_40; size = nitems(iwx_rssi_to_grade_40); break;
+    case 80: table = iwx_rssi_to_grade_80; size = nitems(iwx_rssi_to_grade_80); break;
+    case 160: table = iwx_rssi_to_grade_160; size = nitems(iwx_rssi_to_grade_160); break;
+    default: table = iwx_rssi_to_grade_320; size = nitems(iwx_rssi_to_grade_320); break;
+    }
+    rssi = ni->ni_rssi ? (int)ni->ni_rssi + IWX_MIN_DBM : 0;
+    /* Beacons on 6 GHz arrive weaker than data; iwlmld's default is +4 dB. */
+    if (rssi && IEEE80211_IS_CHAN_6GHZ(ni->ni_chan))
+        rssi += 4;
+    idx = IEEE80211_IS_CHAN_2GHZ(ni->ni_chan) ? 0 : 1;
+    if (!rssi)
+        rssi = table[0].rssi[idx];
+    grade = table[size - 1].grade;
+    for (int i = 0; i < size; i++) {
+        if (rssi > table[i].rssi[idx])
             continue;
-        band_a = IEEE80211_IS_CHAN_2GHZ(ni_a->ni_chan) ? 2 :
-            (IEEE80211_IS_CHAN_6GHZ(ni_a->ni_chan) ? 6 :
-            (IEEE80211_IS_CHAN_5GHZ(ni_a->ni_chan) ? 5 : 0));
-        if (!band_a || !iwx_mld_emlsr_link_usable(ni_a))
+        grade = table[i].grade;
+        break;
+    }
+    return grade * (IWX_MLD_SCALE_FACTOR -
+        iwx_mld_get_chan_load(sc, slot, ni)) / IWX_MLD_SCALE_FACTOR;
+}
+
+/* iwl_mld_get_min_chan_load_thresh() */
+static unsigned int
+iwx_mld_min_chan_load_thresh(const struct ieee80211_node *ni)
+{
+    switch (iwx_mld_width_mhz(ni)) {
+    case 320:
+    case 160: return 5;
+    case 80: return 7;
+    }
+    return 10;
+}
+
+/*
+ * iwl_mld_emlsr_pair_state() and iwl_mld_channel_load_allows_emlsr(): the two
+ * links must be on different bands (5 GHz low and high channels excepted),
+ * and the primary channel busy enough, or the secondary link wide enough
+ * relative to it, to be worth the switching.
+ */
+static bool
+iwx_mld_emlsr_pair_allowed(struct iwx_softc *sc, int a, int b)
+{
+    const struct ieee80211_node *na = iwx_mld_link_node(sc, a);
+    const struct ieee80211_node *nb = iwx_mld_link_node(sc, b);
+    int bw_a, bw_b;
+    unsigned int load_percent;
+
+    if (na == NULL || nb == NULL || na->ni_chan == NULL || nb->ni_chan == NULL)
+        return false;
+    bw_a = iwx_mld_width_mhz(na);
+    bw_b = iwx_mld_width_mhz(nb);
+    if (bw_a < 0 || bw_b < 0)
+        return false;
+    if ((na->ni_chan->ic_flags & (IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_5GHZ |
+        IEEE80211_CHAN_6GHZ)) == (nb->ni_chan->ic_flags &
+        (IEEE80211_CHAN_2GHZ | IEEE80211_CHAN_5GHZ | IEEE80211_CHAN_6GHZ))) {
+        const struct ieee80211_node *low = na, *high = nb;
+        int low_bw = bw_a, high_bw = bw_b;
+
+        if (low->ni_chan->ic_freq > high->ni_chan->ic_freq) {
+            low = nb; high = na; low_bw = bw_b; high_bw = bw_a;
+        }
+        if (!IEEE80211_IS_CHAN_5GHZ(na->ni_chan) ||
+            low->ni_chan->ic_center_freq1 + low_bw / 2 > 5330 ||
+            high->ni_chan->ic_center_freq1 - high_bw / 2 < 5490)
+            return false;
+    }
+    /* The measured share needs the primary link's own channel statistics. */
+    if (a < IWX_NUM_PHY_CTX && (sc->sc_mld_active_links & (1U << a)))
+        load_percent = sc->sc_mld_phy_load[a];
+    else
+        load_percent = iwx_mld_get_chan_load(sc, a, na) * 100 /
+            IWX_MLD_SCALE_FACTOR;
+    if (load_percent < iwx_mld_min_chan_load_thresh(na))
+        return false;
+    if (bw_a <= bw_b)
+        return true;
+    switch (bw_a / bw_b) {
+    case 2: return load_percent > 25;
+    case 4: return load_percent > 40;
+    case 8:
+    case 16: return load_percent > 50;
+    }
+    return false;
+}
+
+/*
+ * iwl_mld_select_links(): pick the links to keep active. Returns the mask and
+ * the primary link; *emlsr tells whether it is an EMLSR pair.
+ */
+uint8_t ItlIwx::
+iwx_mld_select_links(struct iwx_softc *sc, uint8_t *primary, bool *emlsr)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    unsigned int grade[IWX_MLD_MAX_LINKS] = {};
+    unsigned int max_grade = 0;
+    uint8_t links = 1;
+
+    *primary = 0;
+    *emlsr = false;
+    for (int i = 0; i < ic->ic_mld_link_count && i < IWX_MLD_MAX_LINKS; i++) {
+        uint8_t sta = sc->sc_mld_sta_ids[i];
+
+        if (sta == 0xff || !(sc->sc_mld_sta_mask & (1U << sta)))
             continue;
+        grade[i] = iwx_mld_get_link_grade(sc, i);
+        if (grade[i] > max_grade)
+            max_grade = grade[i];
+    }
+    if (!grade[0] || sc->sc_mld_emlsr_blocked)
+        return links;
 
-        for (int j = i + 1; j < ic->ic_mld_link_count; j++) {
-            struct ieee80211_mld_link_info *b = &ic->ic_mld_links[j];
-            struct ieee80211_node *ni_b = b->ni;
-            uint8_t sta_b = sc->sc_mld_sta_ids[j];
-            int band_b, min_rssi, total_rssi;
+    for (int i = 1; i < ic->ic_mld_link_count && i < IWX_MLD_MAX_LINKS; i++) {
+        unsigned int pair_grade;
+        int pri = grade[i] > grade[0] ? i : 0;
+        int sec = pri == 0 ? i : 0;
 
-            if (ni_b == NULL || ni_b->ni_chan == NULL || sta_b == 0xff ||
-                !(sc->sc_mld_sta_mask & (1U << sta_b)) ||
-                !b->assoc_accepted)
-                continue;
-            band_b = IEEE80211_IS_CHAN_2GHZ(ni_b->ni_chan) ? 2 :
-                (IEEE80211_IS_CHAN_6GHZ(ni_b->ni_chan) ? 6 :
-                (IEEE80211_IS_CHAN_5GHZ(ni_b->ni_chan) ? 5 : 0));
-            if (!band_b || band_a == band_b ||
-                ni_a->ni_chw != ni_b->ni_chw ||
-                !iwx_mld_emlsr_link_usable(ni_b))
-                continue;
+        if (!grade[i] || !iwx_mld_emlsr_link_usable(iwx_mld_link_node(sc, 0)) ||
+            !iwx_mld_emlsr_link_usable(iwx_mld_link_node(sc, i)) ||
+            !iwx_mld_emlsr_pair_allowed(sc, pri, sec))
+            continue;
+        /* The more the primary link is loaded, the more EMLSR is worth. */
+        pair_grade = grade[pri] + grade[sec] *
+            iwx_mld_get_chan_load(sc, pri, iwx_mld_link_node(sc, pri)) /
+            IWX_MLD_SCALE_FACTOR;
+        if (pair_grade < max_grade)
+            continue;
+        max_grade = pair_grade;
+        links = 1U | (1U << i);
+        *primary = pri;
+        *emlsr = true;
+    }
+    XYLog("%s: grades %u/%u/%u, selected links 0x%x primary %u%s\n", __FUNCTION__,
+        grade[0], grade[1], grade[2], links, *primary, *emlsr ? " (EMLSR)" : "");
+    return links;
+}
 
-            min_rssi = MIN(ni_a->ni_rssi, ni_b->ni_rssi);
-            total_rssi = ni_a->ni_rssi + ni_b->ni_rssi;
-            if (!best_links || min_rssi > best_min_rssi ||
-                (min_rssi == best_min_rssi && total_rssi > best_total_rssi)) {
-                best_links = (1U << i) | (1U << j);
-                *primary_link = ni_a->ni_rssi >= ni_b->ni_rssi ? i : j;
-                best_min_rssi = min_rssi;
-                best_total_rssi = total_rssi;
+/* iwl_mld_check_emlsr_prevention() */
+void ItlIwx::
+iwx_mld_note_emlsr_exit(struct iwx_softc *sc, int reason)
+{
+    uint32_t now = iwx_mld_uptime(), delay;
+
+    if (now > sc->sc_mld_emlsr_last_exit + IWX_MLD_PREVENT_EMLSR_TIMEOUT ||
+        sc->sc_mld_emlsr_exit_reason != reason)
+        sc->sc_mld_emlsr_exit_repeat = 0;
+    sc->sc_mld_emlsr_exit_reason = reason;
+    sc->sc_mld_emlsr_last_exit = now;
+    sc->sc_mld_emlsr_exit_repeat++;
+    if (reason == IWX_MLD_EMLSR_EXIT_BLOCK)
+        return;
+    delay = IWX_MLD_TRIGGER_LINK_SEL_SEC;
+    if (sc->sc_mld_emlsr_exit_repeat > 1 &&
+        (reason == IWX_MLD_EMLSR_EXIT_LINK_USAGE ||
+         reason == IWX_MLD_EMLSR_EXIT_FW_REQUEST))
+        delay = sc->sc_mld_emlsr_exit_repeat == 2 ?
+            IWX_MLD_EMLSR_PREVENT_SHORT : IWX_MLD_EMLSR_PREVENT_LONG;
+    sc->sc_mld_emlsr_blocked |= IWX_MLD_EMLSR_BLOCKED_PREVENTION;
+    sc->sc_mld_emlsr_prevent_until = now + delay;
+    XYLog("%s: preventing EMLSR for %u s after exit %s\n", __FUNCTION__, delay,
+        iwx_mld_emlsr_exit_name(reason));
+}
+
+/* iwl_mld_exit_emlsr(): back to the link WCL joined. */
+void ItlIwx::
+iwx_mld_exit_emlsr(struct iwx_softc *sc, int reason)
+{
+    if (!sc->sc_mld_emlsr_active)
+        return;
+    XYLog("%s: leaving EMLSR, reason %s\n", __FUNCTION__,
+        iwx_mld_emlsr_exit_name(reason));
+    iwx_mld_schedule_active_links(sc, 1, 0, false, false);
+    iwx_mld_note_emlsr_exit(sc, reason);
+    /* The channel statistics are not valid while in EMLSR. */
+    memset(sc->sc_mld_phy_load, 0, sizeof(sc->sc_mld_phy_load));
+}
+
+/*
+ * iwl_mld_int_mlo_scan(): hear every other link again. Selecting links is
+ * done from the scan completion.
+ */
+bool ItlIwx::
+iwx_mld_mlo_scan(struct iwx_softc *sc)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+
+    if (ic->ic_state != IEEE80211_S_RUN || (ic->ic_flags & IEEE80211_F_BGSCAN) ||
+        (sc->sc_flags & (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN | IWX_FLAG_SHUTDOWN)) ||
+        ic->ic_mgt_timer != 0 || ic->ic_bgscan_start == NULL)
+        return false;
+    memset(sc->sc_scan_mlo_chans, 0, sizeof(sc->sc_scan_mlo_chans));
+    for (int i = 1; i < ic->ic_mld_link_count; i++) {
+        const struct ieee80211_node *ni = iwx_mld_link_node(sc, i);
+
+        if (ni != NULL && ni->ni_chan != NULL)
+            setbit(sc->sc_scan_mlo_chans, ni->ni_chan - ic->ic_channels);
+    }
+    sc->sc_scan_mlo = 1;
+    ic->ic_flags |= IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
+    if (ic->ic_bgscan_start(ic) != 0) {
+        sc->sc_scan_mlo = 0;
+        ic->ic_flags &= ~IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
+        return false;
+    }
+    ic->ic_flags |= IEEE80211_F_BGSCAN | IEEE80211_F_DISABLE_BG_AUTO_CONNECT;
+    return true;
+}
+
+void ItlIwx::
+iwx_mld_mlo_scan_done(struct iwx_softc *sc)
+{
+    sc->sc_mld_mlo_scan_time = iwx_mld_uptime();
+    __atomic_fetch_or(&sc->sc_mld_task_flags, IWX_MLD_TASK_SELECT, __ATOMIC_RELAXED);
+    iwx_add_task(sc, sc->sc_nswq, &sc->mld_tpt_task);
+}
+
+/*
+ * _iwl_mld_select_links(): apply what iwx_mld_select_links() chose, from scan
+ * data that is at most five seconds old; start a scan first when it is not.
+ */
+void ItlIwx::
+iwx_mld_apply_link_selection(struct iwx_softc *sc)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    uint8_t links, primary;
+    bool emlsr;
+
+    if (!ic->ic_bss->ni_port_valid || ic->ic_mld_link_count < 2)
+        return;
+    if (iwx_mld_uptime() > sc->sc_mld_mlo_scan_time + IWX_MLD_MLO_SCAN_MAX_AGE_SEC ||
+        !sc->sc_mld_mlo_scan_time) {
+        iwx_mld_mlo_scan(sc);
+        return;
+    }
+    links = iwx_mld_select_links(sc, &primary, &emlsr);
+    if (!emlsr || sc->sc_mld_emlsr_active)
+        return;
+    iwx_mld_schedule_active_links(sc, links, primary, true, false);
+}
+
+int ItlIwx::
+iwx_mld_request_periodic_stats(struct iwx_softc *sc, bool enable)
+{
+    struct iwx_system_statistics_cmd cmd = {};
+
+    cmd.cfg_mask = htole32(enable ? 0 : IWX_STATS_CFG_FLG_DISABLE_NTFY_MSK);
+    cmd.config_time_sec = htole32(enable ? IWX_MLD_TPT_WINDOW_SEC : 0);
+    cmd.type_id_mask = htole32(enable ? IWX_STATS_NTFY_TYPE_ID_OPER |
+        IWX_STATS_NTFY_TYPE_ID_OPER_PART1 : 0);
+    return iwx_send_cmd_pdu(sc, IWX_WIDE_ID(IWX_SYSTEM_GROUP,
+        IWX_SYSTEM_STATISTICS_CMD), 0, sizeof(cmd), &cmd);
+}
+
+/*
+ * iwl_mld_handle_stats_oper_notif(): per-PHY channel load and per-link
+ * beacon energy. The per-PHY entry grew with each notification version.
+ */
+void ItlIwx::
+iwx_mld_handle_stats_oper_notif(struct iwx_softc *sc, struct iwx_rx_packet *pkt)
+{
+    uint8_t version = iwx_lookup_notif_ver(sc, IWX_STATISTICS_GROUP,
+        IWX_STATISTICS_OPER_NOTIF);
+    size_t phy_size, length = iwx_rx_packet_payload_len(pkt);
+    const uint8_t *data = pkt->data;
+    const size_t links_offset = 4;
+    const size_t phy_offset = links_offset + IWX_FW_MAX_LINKS * IWX_STATS_PER_LINK_SIZE;
+
+    if (version == IWX_FW_CMD_VER_UNKNOWN || version <= 3)
+        phy_size = IWX_STATS_PER_PHY_SIZE_V1;
+    else if (version == 4)
+        phy_size = IWX_STATS_PER_PHY_SIZE_V2;
+    else
+        phy_size = IWX_STATS_PER_PHY_SIZE_V3;
+    if (length != phy_offset + IWX_STATS_MAX_PHY_OPERATIONAL * phy_size +
+        IWX_STATION_COUNT * sizeof(uint32_t))
+        return;
+
+    for (int phy = 0; phy < IWX_STATS_MAX_PHY_OPERATIONAL; phy++) {
+        const uint8_t *entry = data + phy_offset + phy * phy_size;
+        uint32_t by_us = le32toh(*(const uint32_t *)(entry + 4));
+        uint32_t not_by_us = le32toh(*(const uint32_t *)(entry + 8));
+
+        if (not_by_us == IWX_STATS_UNKNOWN_CHANNEL_LOAD || not_by_us > 100 ||
+            sc->sc_mld_emlsr_active)
+            continue;
+        sc->sc_mld_phy_load_by_us[phy] = by_us;
+        /* Weight the old value by one half, as iwlmld does. */
+        sc->sc_mld_phy_load[phy] = (not_by_us >> 1) +
+            (sc->sc_mld_phy_load[phy] >> 1);
+    }
+    for (int link = 0; link < IWX_FW_MAX_LINKS; link++) {
+        const uint8_t *entry = data + links_offset + link * IWX_STATS_PER_LINK_SIZE;
+
+        sc->sc_mld_link_energy[link] = (uint8_t)MIN(le32toh(
+            *(const uint32_t *)(entry + 12)), 255);
+    }
+}
+
+/* Arm the traffic window and the statistics when the association is an MLO one. */
+void ItlIwx::
+iwx_mld_emlsr_start(struct iwx_softc *sc)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    int accepted = 0;
+
+    for (int i = 1; i < ic->ic_mld_link_count; i++)
+        accepted += ic->ic_mld_links[i].assoc_accepted;
+    if (!ic->ic_wcl_peer_is_mlo || !ic->ic_mld_emlsr_supported ||
+        !ic->ic_mld_emlsr_peer_supported || !accepted ||
+        CSR_HW_RFID_IS_CDB(sc->sc_hw_rf_id))
+        return;
+    sc->sc_mld_emlsr_blocked = IWX_MLD_EMLSR_BLOCKED_TPT;
+    sc->sc_mld_emlsr_exit_repeat = 0;
+    sc->sc_mld_emlsr_last_exit = 0;
+    sc->sc_mld_emlsr_prevent_until = 0;
+    sc->sc_mld_mlo_scan_time = 0;
+    sc->sc_mld_retry_ticks = 0;
+    sc->sc_mld_task_flags = 0;
+    sc->sc_mld_tpt_tx = sc->sc_mld_tpt_rx = 0;
+    for (int i = 0; i < 4; i++) {
+        sc->sc_mld_tpt_tx += ic->ic_wcl_tx_packets[i];
+        sc->sc_mld_tpt_rx += ic->ic_wcl_rx_packets[i];
+    }
+    memset(sc->sc_mld_phy_load, 0, sizeof(sc->sc_mld_phy_load));
+    memset(sc->sc_mld_phy_load_by_us, 0, sizeof(sc->sc_mld_phy_load_by_us));
+    memset(sc->sc_mld_link_energy, 0, sizeof(sc->sc_mld_link_energy));
+    if (iwx_mld_request_periodic_stats(sc, true) != 0)
+        XYLog("%s: could not request statistics\n", __FUNCTION__);
+    sc->sc_mld_emlsr_enabled = 1;
+    timeout_add_sec(&sc->sc_mld_tpt_timer, IWX_MLD_TPT_WINDOW_SEC);
+}
+
+void ItlIwx::
+iwx_mld_emlsr_stop(struct iwx_softc *sc)
+{
+    sc->sc_mld_emlsr_enabled = 0;
+    timeout_del(&sc->sc_mld_tpt_timer);
+    iwx_del_task(sc, sc->sc_nswq, &sc->mld_tpt_task);
+    sc->sc_mld_task_flags = 0;
+    sc->sc_scan_mlo = 0;
+}
+
+void ItlIwx::
+iwx_mld_tpt_timer(void *arg)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)arg;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+
+    if (!sc->sc_mld_emlsr_enabled)
+        return;
+    __atomic_fetch_or(&sc->sc_mld_task_flags, IWX_MLD_TASK_TICK, __ATOMIC_RELAXED);
+    that->iwx_add_task(sc, sc->sc_nswq, &sc->mld_tpt_task);
+}
+
+/*
+ * iwl_mld_emlsr_check_tpt() and the checks iwlmld makes on its statistics: the
+ * traffic window gates EMLSR, an unblock starts the scan that selects links,
+ * and an active pair leaves when it stops paying off.
+ */
+void ItlIwx::
+iwx_mld_tpt_task(void *arg)
+{
+    struct iwx_softc *sc = (struct iwx_softc *)arg;
+    ItlIwx *that = container_of(sc, ItlIwx, com);
+    struct ieee80211com *ic = &sc->sc_ic;
+    uint32_t flags, now, tx = 0, rx = 0;
+    bool unblocked = false;
+
+    if (!that->getMainWorkLoop()->inGate()) {
+        that->getMainCommandGate()->runAction(
+            [](OSObject *, void *arg0, void *, void *, void *) -> IOReturn {
+                iwx_mld_tpt_task(arg0);
+                return kIOReturnSuccess;
+            }, arg);
+        return;
+    }
+    flags = __atomic_exchange_n(&sc->sc_mld_task_flags, 0, __ATOMIC_RELAXED);
+    if (!sc->sc_mld_emlsr_enabled || ic->ic_state != IEEE80211_S_RUN ||
+        (sc->sc_flags & IWX_FLAG_SHUTDOWN))
+        return;
+    if (flags & IWX_MLD_TASK_SELECT)
+        that->iwx_mld_apply_link_selection(sc);
+    if (!(flags & IWX_MLD_TASK_TICK))
+        return;
+
+    timeout_add_sec(&sc->sc_mld_tpt_timer, IWX_MLD_TPT_WINDOW_SEC);
+    now = iwx_mld_uptime();
+    for (int i = 0; i < 4; i++) {
+        tx += ic->ic_wcl_tx_packets[i];
+        rx += ic->ic_wcl_rx_packets[i];
+    }
+    uint32_t window_tx = tx - sc->sc_mld_tpt_tx, window_rx = rx - sc->sc_mld_tpt_rx;
+    sc->sc_mld_tpt_tx = tx;
+    sc->sc_mld_tpt_rx = rx;
+    if (!ic->ic_bss->ni_port_valid)
+        return;
+
+    if ((sc->sc_mld_emlsr_blocked & IWX_MLD_EMLSR_BLOCKED_PREVENTION) &&
+        now >= sc->sc_mld_emlsr_prevent_until) {
+        sc->sc_mld_emlsr_blocked &= ~IWX_MLD_EMLSR_BLOCKED_PREVENTION;
+        unblocked = true;
+    }
+    if (sc->sc_mld_emlsr_blocked & IWX_MLD_EMLSR_BLOCKED_TPT) {
+        if (window_tx >= IWX_MLD_ENTER_EMLSR_TPT_THRESH ||
+            window_rx >= IWX_MLD_ENTER_EMLSR_TPT_THRESH) {
+            sc->sc_mld_emlsr_blocked &= ~IWX_MLD_EMLSR_BLOCKED_TPT;
+            unblocked = true;
+        }
+    } else if (window_tx < IWX_MLD_ENTER_EMLSR_TPT_THRESH &&
+        window_rx < IWX_MLD_ENTER_EMLSR_TPT_THRESH) {
+        sc->sc_mld_emlsr_blocked |= IWX_MLD_EMLSR_BLOCKED_TPT;
+        iwx_mld_exit_emlsr(sc, IWX_MLD_EMLSR_EXIT_BLOCK);
+        return;
+    } else if (sc->sc_mld_emlsr_active) {
+        /* Primary channel nearly idle, or one of the links too weak. */
+        const struct ieee80211_node *primary =
+            iwx_mld_link_node(sc, sc->sc_mld_primary_link);
+
+        if (primary != NULL && primary->ni_chan_util >= 0 &&
+            (unsigned int)primary->ni_chan_util <
+            IWX_MLD_PERCENT_TO_255(IWX_MLD_EXIT_EMLSR_CHAN_LOAD)) {
+            iwx_mld_exit_emlsr(sc, IWX_MLD_EMLSR_EXIT_CHAN_LOAD);
+            return;
+        }
+        for (int i = 0; i < IWX_MLD_MAX_LINKS; i++) {
+            if ((sc->sc_mld_active_links & (1U << i)) && sc->sc_mld_link_energy[i] &&
+                -(int)sc->sc_mld_link_energy[i] < IWX_MLD_LOW_RSSI_THRESH) {
+                iwx_mld_exit_emlsr(sc, IWX_MLD_EMLSR_EXIT_LOW_RSSI);
+                return;
             }
         }
     }
-    return best_links;
+    if (unblocked) {
+        sc->sc_mld_retry_ticks = 0;
+        that->iwx_mld_apply_link_selection(sc);
+    } else if (!sc->sc_mld_emlsr_blocked && !sc->sc_mld_emlsr_active &&
+        ++sc->sc_mld_retry_ticks >= IWX_MLD_TRIGGER_LINK_SEL_SEC / IWX_MLD_TPT_WINDOW_SEC) {
+        /* Conditions change without a notification; look again now and then. */
+        sc->sc_mld_retry_ticks = 0;
+        that->iwx_mld_apply_link_selection(sc);
+    }
 }
 #endif
 
@@ -697,8 +1263,14 @@ iwx_mld_active_link_task(void *arg)
         iwx_mld_log_failure(sc, "mld-link-update", "apply-active-set",
             err, IWX_WIDE_ID(IWX_MAC_CONF_GROUP,
                 IWX_MLD_LINK_CONFIG_CMD), links);
-        disconnect = 1;
+        if (emlsr_active) {
+            /* The update rolled back: stay on the link and keep EMLSR off for a while. */
+            iwx_mld_note_emlsr_exit(sc, IWX_MLD_EMLSR_EXIT_FAIL_ENTRY);
+        } else {
+            disconnect = 1;
+        }
     }
+
     if (disconnect)
         that->iwx_newstate(&sc->sc_ic, IEEE80211_S_SCAN, 0);
 }
@@ -1352,7 +1924,6 @@ iwx_mld_rm_sta_local(struct iwx_softc *sc, struct iwx_node *in)
     sc->sc_mld_active_links = 0;
     sc->sc_mld_primary_link = 0;
     sc->sc_mld_emlsr_active = 0;
-    sc->sc_mld_tx_link_seq = 0;
     sc->sc_mld_txq_tidmask = 0;
 }
 
@@ -1603,7 +2174,6 @@ iwx_mld_rm_sta_cmd(struct iwx_softc *sc, struct iwx_node *in)
     sc->sc_mld_active_links = 0;
     sc->sc_mld_primary_link = 0;
     sc->sc_mld_emlsr_active = 0;
-    sc->sc_mld_tx_link_seq = 0;
     sc->sc_mld_txq_tidmask = 0;
     return 0;
 }
@@ -1639,7 +2209,6 @@ iwx_mld_auth(struct iwx_softc *sc)
     sc->sc_mld_active_sta_mask = 0;
     sc->sc_mld_primary_link = 0;
     sc->sc_mld_emlsr_active = 0;
-    sc->sc_mld_tx_link_seq = 0;
     sc->sc_mld_txq_tidmask = 0;
     for (int i = 0; i < IWX_NUM_PHY_CTX; i++) {
         sc->sc_phyctxt[i].id = i;
@@ -1824,6 +2393,7 @@ iwx_mld_run(struct iwx_softc *sc)
         ic->ic_ttlm_schedule(ic);
 #endif
     iwx_mld_log_links(sc);
+    iwx_mld_emlsr_start(sc);
     return 0;
 }
 
@@ -1831,6 +2401,8 @@ int ItlIwx::
 iwx_mld_run_stop(struct iwx_softc *sc)
 {
     struct iwx_node *in = (struct iwx_node *)sc->sc_ic.ic_bss;
+
+    iwx_mld_emlsr_stop(sc);
     int err = iwx_flush_sta(sc, in);
     if (err) {
         iwx_mld_log_failure(sc, "run-stop", "tx-flush", err,

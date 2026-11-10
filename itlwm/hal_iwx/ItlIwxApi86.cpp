@@ -225,6 +225,9 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
         auto c = &ic->ic_channels[channelIndex];
         if (!isset(ic->ic_chan_active, channelIndex) || !c->ic_freq || !c->ic_flags)
             continue;
+        /* Scan for the other MLD links: those channels only, 6 GHz non-PSC included. */
+        if (sc->sc_scan_mlo && !isset(sc->sc_scan_mlo_chans, channelIndex))
+            continue;
         bool is6GHz = IEEE80211_IS_CHAN_6GHZ(c);
         bool is2GHz = IEEE80211_IS_CHAN_2GHZ(c);
         bool is5GHz = IEEE80211_IS_CHAN_5GHZ(c);
@@ -240,7 +243,8 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
         }
         const bool rnrTarget = rnrBssidBitmap != 0;
         /* Match Linux's no-SSID passive scan and cached-RNR channel policy. */
-        const bool trimToPsc = scanActive && !directedJoin;
+        const bool trimToPsc = scanActive && !directedJoin && !sc->sc_scan_mlo;
+
         if (is6GHz && !AirportWCL::is6GHzPsc(channelNumber) && !rnrTarget &&
             trimToPsc)
             continue;

@@ -720,7 +720,6 @@ struct iwx_softc {
 	uint8_t sc_mld_active_links;
 	uint8_t sc_mld_primary_link;
 	uint8_t sc_mld_emlsr_active;
-	uint32_t sc_mld_tx_link_seq;
 	uint8_t sc_mld_pending_links;
 	uint8_t sc_mld_pending_primary_link;
 	uint8_t sc_mld_pending_emlsr;
@@ -732,6 +731,22 @@ struct iwx_softc {
     uint8_t sc_mld_sta_ids[IWX_MLD_MAX_LINKS];
     uint32_t sc_mld_sta_mask;
 	uint32_t sc_mld_active_sta_mask;
+	/* EMLSR policy, see ItlIwxMld.cpp */
+	CTimeout *sc_mld_tpt_timer;
+	struct task mld_tpt_task;
+	uint8_t sc_mld_emlsr_enabled;
+	uint8_t sc_mld_emlsr_blocked;
+	uint8_t sc_mld_emlsr_exit_reason;
+	uint8_t sc_mld_emlsr_exit_repeat;
+	uint8_t sc_mld_retry_ticks;
+	uint32_t sc_mld_task_flags;
+	uint32_t sc_mld_emlsr_last_exit;
+	uint32_t sc_mld_emlsr_prevent_until;
+	uint32_t sc_mld_mlo_scan_time;
+	uint32_t sc_mld_tpt_tx, sc_mld_tpt_rx;
+	uint32_t sc_mld_phy_load[IWX_NUM_PHY_CTX];
+	uint32_t sc_mld_phy_load_by_us[IWX_NUM_PHY_CTX];
+	uint8_t sc_mld_link_energy[IWX_MLD_MAX_LINKS];
 
 	int sc_fw_chunk_done;
 	int sc_init_complete;
@@ -776,6 +791,9 @@ struct iwx_softc {
 	uint8_t sc_scan_batch_pending;
 	uint8_t sc_scan_batch_sent;
 	uint8_t sc_scan_bgscan;
+	uint8_t sc_scan_mlo;	/* background scan of the other MLD links only */
+	uint8_t sc_scan_mlo_chans[howmany(IEEE80211_CHAN_MAX + 1, NBBY)];
+
 	uint8_t sc_scan_wcl_owned;
 	uint8_t sc_scan_wcl_join;
 	uint32_t sc_scan_unrestricted_fallback;
