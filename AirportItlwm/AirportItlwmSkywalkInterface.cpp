@@ -420,6 +420,7 @@ IOReturn AirportItlwmSkywalkInterface::
 getPHY_MODE(struct apple80211_phymode_data *pd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
+    struct ieee80211_node *ni = ieee80211_mld_active_node(ic);
     
     pd->version = APPLE80211_VERSION;
     pd->phy_mode = APPLE80211_MODE_11A
@@ -435,8 +436,8 @@ getPHY_MODE(struct apple80211_phymode_data *pd)
     if (ic->ic_eht_cap_valid)
         pd->phy_mode |= APPLE80211_MODE_11BE;
 
-    if (ic->ic_state == IEEE80211_S_RUN && ic->ic_bss &&
-        (ic->ic_bss->ni_flags & IEEE80211_NODE_EHT)) {
+    if (ic->ic_state == IEEE80211_S_RUN && ni &&
+        (ni->ni_flags & IEEE80211_NODE_EHT)) {
         pd->active_phy_mode = APPLE80211_MODE_11BE;
         return kIOReturnSuccess;
     }
@@ -461,8 +462,8 @@ getPHY_MODE(struct apple80211_phymode_data *pd)
             pd->active_phy_mode = APPLE80211_MODE_11AC;
             break;
         case IEEE80211_MODE_11AX:
-            pd->active_phy_mode = ic->ic_state == IEEE80211_S_RUN && ic->ic_bss &&
-                (ic->ic_bss->ni_flags & IEEE80211_NODE_HE) ? APPLE80211_MODE_11AX : APPLE80211_MODE_AUTO;
+            pd->active_phy_mode = ic->ic_state == IEEE80211_S_RUN && ni &&
+                (ni->ni_flags & IEEE80211_NODE_HE) ? APPLE80211_MODE_11AX : APPLE80211_MODE_AUTO;
             break;
             
         default:
@@ -505,12 +506,13 @@ IOReturn AirportItlwmSkywalkInterface::
 getMCS_INDEX_SET(struct apple80211_mcs_index_set_data *ad)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
+    struct ieee80211_node *ni = ieee80211_mld_active_node(ic);
     if (ic->ic_state == IEEE80211_S_RUN) {
         memset(ad, 0, sizeof(*ad));
         ad->version = APPLE80211_VERSION;
-        size_t size = min(ARRAY_SIZE(ic->ic_bss->ni_rxmcs), ARRAY_SIZE(ad->mcs_set_map));
+        size_t size = min(ARRAY_SIZE(ni->ni_rxmcs), ARRAY_SIZE(ad->mcs_set_map));
         for (int i = 0; i < size; i++)
-            ad->mcs_set_map[i] = ic->ic_bss->ni_rxmcs[i];
+            ad->mcs_set_map[i] = ni->ni_rxmcs[i];
         return kIOReturnSuccess;
     }
     return 6;
@@ -520,12 +522,13 @@ IOReturn AirportItlwmSkywalkInterface::
 getVHT_MCS_INDEX_SET(struct apple80211_vht_mcs_index_set_data *data)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_bss == NULL || ic->ic_curmode != IEEE80211_MODE_11AC) {
+    struct ieee80211_node *ni = ieee80211_mld_active_node(ic);
+    if (ni == NULL || ic->ic_curmode != IEEE80211_MODE_11AC) {
         return kIOReturnError;
     }
     memset(data, 0, sizeof(struct apple80211_vht_mcs_index_set_data));
     data->version = APPLE80211_VERSION;
-    data->mcs_map = ic->ic_bss->ni_vht_mcsinfo.tx_mcs_map;
+    data->mcs_map = ni->ni_vht_mcsinfo.tx_mcs_map;
     return kIOReturnSuccess;
 }
 
@@ -533,15 +536,16 @@ IOReturn AirportItlwmSkywalkInterface::
 getMCS_VHT(struct apple80211_mcs_vht_data *data)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_bss == NULL || ic->ic_curmode < IEEE80211_MODE_11AC) {
+    struct ieee80211_node *ni = ieee80211_mld_active_node(ic);
+    if (ni == NULL || ic->ic_curmode < IEEE80211_MODE_11AC) {
         return kIOReturnError;
     }
     memset(data, 0, sizeof(struct apple80211_mcs_vht_data));
     data->version = APPLE80211_VERSION;
-    data->guard_interval = (ieee80211_node_supports_vht_sgi80(ic->ic_bss) || ieee80211_node_supports_vht_sgi160(ic->ic_bss)) ? APPLE80211_GI_SHORT : APPLE80211_GI_LONG;
-    data->index = ic->ic_bss->ni_txmcs;
+    data->guard_interval = (ieee80211_node_supports_vht_sgi80(ni) || ieee80211_node_supports_vht_sgi160(ni)) ? APPLE80211_GI_SHORT : APPLE80211_GI_LONG;
+    data->index = ni->ni_txmcs;
     data->nss = fHalService->getDriverInfo()->getTxNSS();
-    switch (ic->ic_bss->ni_chw) {
+    switch (ni->ni_chw) {
         case IEEE80211_CHAN_WIDTH_320:
             data->bw = 320;
             break;
@@ -613,7 +617,8 @@ IOReturn AirportItlwmSkywalkInterface::
 getRATE(struct apple80211_rate_data *rd)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_bss == NULL)
+    struct ieee80211_node *ni = ieee80211_mld_active_node(ic);
+    if (ni == NULL)
         return 6;
     int nss;
     int sgi;
@@ -622,14 +627,14 @@ getRATE(struct apple80211_rate_data *rd)
         memset(rd, 0, sizeof(*rd));
         rd->version = APPLE80211_VERSION;
         rd->num_radios = 1;
-        sgi = ieee80211_node_supports_sgi(ic->ic_bss);
-        if (ic->ic_bss->ni_flags & IEEE80211_NODE_HE) {
-            rd->rate[0] = ic->ic_bss->ni_he_txrate_kbps / 1000;
+        sgi = ieee80211_node_supports_sgi(ni);
+        if (ni->ni_flags & IEEE80211_NODE_HE) {
+            rd->rate[0] = ni->ni_he_txrate_kbps / 1000;
         } else if (ic->ic_curmode == IEEE80211_MODE_11AC) {
             if (sgi)
                 index += 1;
             nss = fHalService->getDriverInfo()->getTxNSS();
-            switch (ic->ic_bss->ni_chw) {
+            switch (ni->ni_chw) {
                 case IEEE80211_CHAN_WIDTH_40:
                     index += 4;
                     break;
@@ -646,19 +651,19 @@ getRATE(struct apple80211_rate_data *rd)
             }
             index += 2 * (nss - 1);
             const struct ieee80211_vht_rateset *rs = &ieee80211_std_ratesets_11ac[index];
-            rd->rate[0] = rs->rates[ic->ic_bss->ni_txmcs % rs->nrates] / 2;
+            rd->rate[0] = rs->rates[ni->ni_txmcs % rs->nrates] / 2;
         } else if (ic->ic_curmode == IEEE80211_MODE_11N) {
-            int is_40mhz = ic->ic_bss->ni_chw == IEEE80211_CHAN_WIDTH_40;
+            int is_40mhz = ni->ni_chw == IEEE80211_CHAN_WIDTH_40;
             if (sgi)
                 index += 1;
             if (is_40mhz)
                 index += (IEEE80211_HT_RATESET_MIMO4_SGI + 1);
-            index += (ic->ic_bss->ni_txmcs / 16);
-            nss = ic->ic_bss->ni_txmcs / 8 + 1;
+            index += (ni->ni_txmcs / 16);
+            nss = ni->ni_txmcs / 8 + 1;
             index += 2 * (nss - 1);
-            rd->rate[0] = ieee80211_std_ratesets_11n[index].rates[ic->ic_bss->ni_txmcs % 8] / 2;
+            rd->rate[0] = ieee80211_std_ratesets_11n[index].rates[ni->ni_txmcs % 8] / 2;
         } else
-            rd->rate[0] = ic->ic_bss->ni_rates.rs_rates[ic->ic_bss->ni_txrate];
+            rd->rate[0] = ni->ni_rates.rs_rates[ni->ni_txrate];
         return kIOReturnSuccess;
     }
     return 6;
@@ -935,10 +940,11 @@ IOReturn AirportItlwmSkywalkInterface::
 getMCS(struct apple80211_mcs_data* md)
 {
     struct ieee80211com *ic = fHalService->get80211Controller();
-    if (ic->ic_state != IEEE80211_S_RUN ||  ic->ic_bss == NULL || !md)
+    struct ieee80211_node *ni = ieee80211_mld_active_node(ic);
+    if (ic->ic_state != IEEE80211_S_RUN ||  ni == NULL || !md)
         return 6;
     md->version = APPLE80211_VERSION;
-    md->index = ic->ic_bss->ni_txmcs;
+    md->index = ni->ni_txmcs;
     return kIOReturnSuccess;
 }
 
@@ -956,7 +962,7 @@ getLINK_CHANGED_EVENT_DATA(struct apple80211_link_changed_event_data *ed)
         ed->voluntary = disassocIsVoluntary;
         ed->reason = APPLE80211_LINK_DOWN_REASON_DEAUTH;
     } else
-        ed->rssi = -(0 - IWM_MIN_DBM - ic->ic_bss->ni_rssi);
+        ed->rssi = -(0 - IWM_MIN_DBM - ieee80211_mld_active_node(ic)->ni_rssi);
     XYLog("Link %s, reason: %d, voluntary: %d\n", ed->isLinkDown ? "down" : "up", ed->reason, ed->voluntary);
     return kIOReturnSuccess;
 }
