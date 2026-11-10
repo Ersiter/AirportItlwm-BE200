@@ -10302,7 +10302,15 @@ iwx_scan(struct iwx_softc *sc)
     }
     
     err = iwx_umac_scan(sc, 0);
-    if (err) {
+    /*
+     * A request with no channel left to scan is an empty scan, not a fault:
+     * mac80211 completes a scan the driver cannot start as aborted and goes on,
+     * and so does a batch that finds nothing after the first. Restarting the
+     * firmware for it, as every other error here does, took the interface away
+     * from the join that was waiting behind the scan.
+     */
+    const bool nothingToScan = err == ENOENT;
+    if (err && !nothingToScan) {
         XYLog("%s: could not initiate scan\n", DEVNAME(sc));
         return err;
     }
@@ -10325,6 +10333,8 @@ iwx_scan(struct iwx_softc *sc)
     }
     ic->ic_state = IEEE80211_S_SCAN;
     getMainCommandGate()->commandWakeup(&ic->ic_state); /* wake iwx_init() */
+    if (nothingToScan)
+        iwx_endscan(sc, IWX_SCAN_OFFLOAD_COMPLETED, false);
     
     return 0;
 }

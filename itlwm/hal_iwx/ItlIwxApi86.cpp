@@ -185,6 +185,7 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
     const uint8_t channelLimit = MIN(nitems(cp->channel_config),
                                      sc->sc_capa_n_scan_channels);
     uint16_t channelIndex = sc->sc_scan_next_channel;
+    const bool firstBatch = channelIndex == 1;
     bool hasLegacyChannel = false;
 #ifdef AIRPORT_WCL
     const bool directedJoin = explicitWclChannels && ic->ic_wcl_join_requested &&
@@ -334,6 +335,19 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
     }
     sc->sc_scan_next_channel = channelIndex;
     if (!cp->count) {
+        if (firstBatch) {
+            unsigned active = 0;
+
+            for (unsigned i = 1; i <= IEEE80211_CHAN_MAX; i++)
+                if (isset(ic->ic_chan_active, i) && ic->ic_channels[i].ic_freq &&
+                    ic->ic_channels[i].ic_flags)
+                    active++;
+            XYLog("%s: nothing to scan: %u active channels, channel limit %u, "
+                "scan %d join %d restricted %d bgscan %d mlo %d\n", __FUNCTION__,
+                active, channelLimit, ic->ic_wcl_scan_requested,
+                ic->ic_wcl_join_requested, ic->ic_wcl_scan_restricted, bgscan,
+                sc->sc_scan_mlo);
+        }
         ::free(req);
         return 0;
     }
