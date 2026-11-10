@@ -1314,6 +1314,14 @@ ieee80211_node_join_bss(struct ieee80211com *ic, struct ieee80211_node *selbs, i
         ieee80211_choose_rsnparams(ic);
     else if (ic->ic_flags & IEEE80211_F_WEPON)
         ni->ni_rsncipher = IEEE80211_CIPHER_USEGROUP;
+#ifdef AIRPORT_WCL
+    if (ic->ic_wcl_peer_is_mlo) {
+        const char *reason = ieee80211_mlo_unusable_reason(ic, ni);
+
+        if (reason != NULL)
+            ieee80211_mlo_downgrade(ic, reason);
+    }
+#endif
 
     if (ni->ni_rsnakms == IEEE80211_AKM_OWE &&
         ieee80211_owe_prepare(ni) != 0) {
@@ -2659,8 +2667,52 @@ ieee80211_mld_primary_node(struct ieee80211com *ic, struct ieee80211_node *ni)
 	return ni;
 }
 
+#ifdef AIRPORT_WCL
+/*
+ * Why this association cannot be an MLO one, or NULL when it can. Multi-link
+ * association needs an AKM whose keys are derived from the MLD addresses; the
+ * ones implemented here are SAE and OWE. wpa_supplicant likewise drops the
+ * PSK family from the AKMs it will use on a multi-link AP
+ * (wpa_bss_validate_rsne_ml()).
+ */
+const char *
+ieee80211_mlo_unusable_reason(struct ieee80211com *ic,
+	struct ieee80211_node *ni)
+{
+	if (ni->ni_rsnakms != IEEE80211_AKM_SAE &&
+	    ni->ni_rsnakms != IEEE80211_AKM_OWE)
+		return "the AKM is not SAE or OWE";
+	if (!ic->ic_wcl_local_mlo_addrs_valid || !ic->ic_eht_cap_valid)
+		return "no local MLD addresses or EHT capabilities";
+	if (!ni->ni_mld_valid)
+		return "the BSS advertises no Basic Multi-Link element";
+	if (!IEEE80211_ADDR_EQ(ni->ni_mld_addr, ic->ic_wcl_peer_mld_addr))
+		return "the MLD address differs from the one WCL reported";
+	if (ni->ni_rsnakms == IEEE80211_AKM_SAE &&
+	    !(ni->ni_rsnxecaps & IEEE80211_RSNXECAP_H2E))
+		return "SAE without hash-to-element";
+	return NULL;
+}
+
+/*
+ * Give up multi-link operation for this join and associate on one link. The
+ * MLD identity is never accepted unverified: the association restarts without
+ * MLD addresses, so SAE and the four-way handshake use the link addresses as
+ * they do for a station that is not multi-link.
+ */
+void
+ieee80211_mlo_downgrade(struct ieee80211com *ic, const char *reason)
+{
+	XYLog("%s: %s, continuing on a single link\n", __func__, reason);
+	ic->ic_wcl_peer_is_mlo = false;
+	memset(ic->ic_wcl_peer_mld_addr, 0, sizeof(ic->ic_wcl_peer_mld_addr));
+	ieee80211_mld_clear_links(ic);
+}
+#endif
+
 int
 ieee80211_mld_discover_links(struct ieee80211com *ic,
+
 	struct ieee80211_node *primary)
 {
 	struct ieee80211_mld_discovery discovery;

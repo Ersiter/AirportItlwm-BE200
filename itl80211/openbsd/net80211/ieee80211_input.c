@@ -3851,8 +3851,11 @@ ieee80211_recv_assoc_resp(struct ieee80211com *ic, mbuf_t m,
             (ni->ni_mld_link_id != UINT8_MAX &&
              ni->ni_mld_link_id != expected_link_id)) {
             if (ieee80211_rsn_uses_mld(ic, ni)) {
+                ieee80211_mlo_downgrade(ic,
+                    "the association response lacks the AP MLD identity");
                 ic->ic_assoc_status = IEEE80211_STATUS_UNSPECIFIED;
                 ic->ic_stats.is_rx_auth_fail++;
+
                 if (ic->ic_event_handler)
                     (*ic->ic_event_handler)(ic, IEEE80211_EVT_STA_ASSOC_DONE, NULL);
                 ieee80211_new_state(ic, IEEE80211_S_SCAN, -1);
