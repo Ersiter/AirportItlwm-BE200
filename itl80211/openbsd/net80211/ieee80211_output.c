@@ -173,49 +173,7 @@ int
 ieee80211_output(struct _ifnet *ifp, mbuf_t m, struct sockaddr *dst,
     struct rtentry *rt)
 {
-    XYLog("%s 啊啊啊啊\n", __FUNCTION__);
-	struct ieee80211_frame *wh;
-	struct m_tag *mtag;
-	int error = 0;
-    
-    //TODO
-//
-//	/* Interface has to be up and running */
-//	if ((ifp->if_flags & (IFF_UP | IFF_RUNNING)) !=
-//	    (IFF_UP | IFF_RUNNING)) {
-//		error = ENETDOWN;
-//		goto bad;
-//	}
-//
-//	/* Try to get the DLT from a mbuf tag */
-//	if ((mtag = m_tag_find(m, PACKET_TAG_DLT, NULL)) != NULL) {
-//		struct ieee80211com *ic = (struct ieee80211com *)ifp;
-//		u_int dlt = *(u_int *)(mtag + 1);
-//
-//		/* Fallback to ethernet for non-802.11 linktypes */
-//		if (!(dlt == DLT_IEEE802_11 || dlt == DLT_IEEE802_11_RADIO))
-//			goto fallback;
-//
-//		if (mbuf_pkthdr_len(m) < sizeof(struct ieee80211_frame_min))
-//			return (EINVAL);
-//		wh = mtod(m, struct ieee80211_frame *);
-//		if ((wh->i_fc[0] & IEEE80211_FC0_VERSION_MASK) !=
-//		    IEEE80211_FC0_VERSION_0)
-//			return (EINVAL);
-//		if (!(ic->ic_caps & IEEE80211_C_RAWCTL) &&
-//		    (wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) ==
-//		    IEEE80211_FC0_TYPE_CTL)
-//			return (EINVAL);
-//
-//		return (if_enqueue(ifp, m));
-//	}
-
- fallback:
 	return (if_enqueue(ifp, m));
-
- bad:
-	mbuf_freem(m);
-	return (error);
 }
 
 const char *

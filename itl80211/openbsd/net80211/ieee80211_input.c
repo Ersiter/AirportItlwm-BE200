@@ -616,7 +616,7 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
      * Only CTS and ACK control frames do not have this field.
      */
     if (mbuf_len(m) < sizeof(struct ieee80211_frame_min)) {
-        DPRINTF(("frame too short, len %u\n", mbuf_len(m)));
+        DPRINTF(("frame too short, len %zu\n", mbuf_len(m)));
         ic->ic_stats.is_rx_tooshort++;
         goto out;
     }
@@ -636,7 +636,7 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
     if (type != IEEE80211_FC0_TYPE_CTL) {
         hdrlen = ieee80211_get_hdrlen(wh);
         if (mbuf_len(m) < hdrlen) {
-            DPRINTF(("frame too short, len %u\n", mbuf_len(m)));
+            DPRINTF(("frame too short, len %zu\n", mbuf_len(m)));
             ic->ic_stats.is_rx_tooshort++;
             goto err;
         }
@@ -2303,7 +2303,6 @@ ieee80211_recv_probe_resp_bss(struct ieee80211com *ic, mbuf_t m,
     u_int8_t chan, bchan, erp, dtim_count, dtim_period;
     u_int chanidx, channel_band;
     bool chanFromHe6 = false;
-    int is_new;
     
     /*
      * We process beacon/probe response frames for:
@@ -2571,9 +2570,7 @@ ieee80211_recv_probe_resp_bss(struct ieee80211com *ic, mbuf_t m,
         ni = ieee80211_alloc_node(ic, wh->i_addr2);
         if (ni == NULL)
             return;
-        is_new = 1;
-    } else
-        is_new = 0;
+    }
     
         ni->ni_chan = &ic->ic_channels[chanidx];
     ieee80211_setup_he_6ghz_capa(ni, he6ghzcap,
@@ -4329,7 +4326,7 @@ ieee80211_recv_addba_resp(struct ieee80211com *ic, mbuf_t m,
     const struct ieee80211_frame *wh;
     const u_int8_t *frm;
     struct ieee80211_tx_ba *ba;
-    u_int16_t status, params, bufsz, timeout;
+    u_int16_t status, params;
     u_int8_t token, tid;
     int err = 0;
 
@@ -4346,8 +4343,6 @@ ieee80211_recv_addba_resp(struct ieee80211com *ic, mbuf_t m,
     status = LE_READ_2(&frm[3]);
     params = LE_READ_2(&frm[5]);
     tid = (params >> 2) & 0xf;
-    bufsz = (params >> 6) & 0x3ff;
-    timeout = LE_READ_2(&frm[7]);
     
     DPRINTF(("received ADDBA resp from %s, TID %d, status %d\n",
              ether_sprintf(ni->ni_macaddr), tid, status));
@@ -4713,7 +4708,7 @@ ieee80211_recv_pspoll(struct ieee80211com *ic, mbuf_t m,
         return;
     
     if (mbuf_len(m) < sizeof(*psp)) {
-        DPRINTF(("frame too short, len %u\n", mbuf_len(m)));
+        DPRINTF(("frame too short, len %zu\n", mbuf_len(m)));
         ic->ic_stats.is_rx_tooshort++;
         return;
     }

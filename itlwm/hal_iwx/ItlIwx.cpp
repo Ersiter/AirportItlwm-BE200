@@ -1400,7 +1400,7 @@ iwx_ctxt_info_gen3_init(struct iwx_softc *sc, const struct iwx_fw_sects *fws)
     
     control_flags = IWX_PRPH_SCRATCH_RB_SIZE_4K;
     control_flags |= IWX_PRPH_SCRATCH_MTR_MODE;
-    control_flags |= IWX_PRPH_MTR_FORMAT_256B & IWX_PRPH_SCRATCH_MTR_FORMAT;
+    control_flags |= (uint32_t)IWX_PRPH_MTR_FORMAT_256B & (uint32_t)IWX_PRPH_SCRATCH_MTR_FORMAT;
     
     /* initialize RX default queue */
     prph_sc_ctrl->rbd_cfg.free_rbd_addr =
@@ -1449,7 +1449,7 @@ iwx_ctxt_info_gen3_init(struct iwx_softc *sc, const struct iwx_fw_sects *fws)
         htole16(IWX_RX_QUEUE_CB_SIZE(IWX_RX_MQ_RING_COUNT));
     
     /* Allocate IML. */
-    if (!sc->sc_iml || !sc->sc_iml_len || sc->sc_iml_len > IWX_IML_MAX_LEN) {
+    if (!sc->sc_iml_len || sc->sc_iml_len > IWX_IML_MAX_LEN) {
         err = EINVAL;
         goto fail1;
     }
@@ -12356,14 +12356,6 @@ iwx_endscan(struct iwx_softc *sc, uint8_t status, bool allowContinuation)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     
-    struct ieee80211_node *ni, *nextbs;
-    
-//    ni = RB_MIN(ieee80211_tree, &ic->ic_tree);
-//    for (; ni != NULL; ni = nextbs) {
-//        nextbs = RB_NEXT(ieee80211_tree, &ic->ic_tree, ni);
-//        XYLog("%s scan_result ssid=%s, bssid=%s, ni_rsnciphers=%d, ni_rsncipher=%d, ni_rsngroupmgmtcipher=%d, ni_rsngroupcipher=%d, ni_rssi=%d,  ni_capinfo=%d, ni_intval=%d, ni_rsnakms=%d, ni_supported_rsnakms=%d, ni_rsnprotos=%d, ni_supported_rsnprotos=%d, ni_rstamp=%d\n", __FUNCTION__, ni->ni_essid, ether_sprintf(ni->ni_bssid), ni->ni_rsnciphers, ni->ni_rsncipher, ni->ni_rsngroupmgmtcipher, ni->ni_rsngroupcipher, ni->ni_rssi, ni->ni_capinfo, ni->ni_intval, ni->ni_rsnakms, ni->ni_supported_rsnakms, ni->ni_rsnprotos, ni->ni_supported_rsnprotos, ni->ni_rstamp);
-//    }
-    
     if ((sc->sc_flags & (IWX_FLAG_SCANNING | IWX_FLAG_BGSCAN)) == 0)
         return;
 
@@ -12750,7 +12742,6 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
         .data = { &mcc_cmd },
     };
     struct iwx_rx_packet *pkt;
-    size_t resp_len;
     uint8_t response_version;
     uint8_t parse_version;
     struct iwx_mcc_response_view response{};
@@ -12787,7 +12778,6 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
         goto out;
     }
     
-    resp_len = iwx_rx_packet_payload_len(pkt);
     err = iwx_apply_mcc_update_response(
         pkt, parse_version,
         isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_MCC_UPDATE_11AX_SUPPORT),
@@ -14702,7 +14692,6 @@ iwx_intr(OSObject *object, IOInterruptEventSource* sender, int count)
     ItlIwx *that = (ItlIwx*)object;
     struct iwx_softc *sc = &that->com;
     const int generation = sc->sc_generation;
-    int handled = 0;
     int r1, r2, rv = 0;
     
 //    IWX_WRITE(&that->com, IWX_CSR_INT_MASK, 0);
@@ -14758,10 +14747,7 @@ iwx_intr(OSObject *object, IOInterruptEventSource* sender, int count)
             IWX_WRITE(sc, IWX_RFH_Q0_FRBDCB_WIDX_TRG, 8);
     }
     
-    handled |= (r1 & (IWX_CSR_INT_BIT_ALIVE /*| IWX_CSR_INT_BIT_SCD*/));
-    
     if (r1 & IWX_CSR_INT_BIT_RF_KILL) {
-        handled |= IWX_CSR_INT_BIT_RF_KILL;
         XYLog("%s RF_KILL has been toggled\n", __FUNCTION__);
         that->iwx_check_rfkill(sc);
         iwx_schedule_recovery(sc, __FUNCTION__, __LINE__);
@@ -14797,7 +14783,6 @@ iwx_intr(OSObject *object, IOInterruptEventSource* sender, int count)
     }
     
     if (r1 & IWX_CSR_INT_BIT_HW_ERR) {
-        handled |= IWX_CSR_INT_BIT_HW_ERR;
         XYLog("%s: hardware error, stopping device \n", DEVNAME(sc));
         if ((sc->sc_flags & IWX_FLAG_SHUTDOWN) == 0) {
             sc->sc_flags |= IWX_FLAG_HW_ERR;
@@ -14810,7 +14795,6 @@ iwx_intr(OSObject *object, IOInterruptEventSource* sender, int count)
     /* firmware chunk loaded */
     if (r1 & IWX_CSR_INT_BIT_FH_TX) {
         IWX_WRITE(sc, IWX_CSR_FH_INT_STATUS, IWX_CSR_FH_INT_TX_MASK);
-        handled |= IWX_CSR_INT_BIT_FH_TX;
         
         sc->sc_fw_chunk_done = 1;
         that->wakeupOn(&sc->sc_fw);
@@ -14819,11 +14803,9 @@ iwx_intr(OSObject *object, IOInterruptEventSource* sender, int count)
     if (r1 & (IWX_CSR_INT_BIT_FH_RX | IWX_CSR_INT_BIT_SW_RX |
               IWX_CSR_INT_BIT_RX_PERIODIC)) {
         if (r1 & (IWX_CSR_INT_BIT_FH_RX | IWX_CSR_INT_BIT_SW_RX)) {
-            handled |= (IWX_CSR_INT_BIT_FH_RX | IWX_CSR_INT_BIT_SW_RX);
             IWX_WRITE(sc, IWX_CSR_FH_INT_STATUS, IWX_CSR_FH_INT_RX_MASK);
         }
         if (r1 & IWX_CSR_INT_BIT_RX_PERIODIC) {
-            handled |= IWX_CSR_INT_BIT_RX_PERIODIC;
             IWX_WRITE(sc, IWX_CSR_INT, IWX_CSR_INT_BIT_RX_PERIODIC);
         }
         
