@@ -460,7 +460,11 @@ iwx_mld_emlsr_link_usable(struct ieee80211_node *ni)
 enum {
     IWX_MLD_EMLSR_BLOCKED_TPT        = (1U << 0),
     IWX_MLD_EMLSR_BLOCKED_PREVENTION = (1U << 1),
+    IWX_MLD_EMLSR_BLOCKED_ROC        = (1U << 2),
 };
+
+/* Seconds without a P2P ROC request after which EMLSR may be used again. */
+#define IWX_MLD_ROC_IDLE_SEC             10
 
 enum {
     IWX_MLD_TASK_TICK   = (1U << 0),
@@ -1046,6 +1050,11 @@ iwx_mld_tpt_task(void *arg)
     if (!ic->ic_bss->ni_port_valid)
         return;
 
+    if ((sc->sc_mld_emlsr_blocked & IWX_MLD_EMLSR_BLOCKED_ROC) &&
+        now >= sc->sc_mld_roc_last + IWX_MLD_ROC_IDLE_SEC) {
+        sc->sc_mld_emlsr_blocked &= ~IWX_MLD_EMLSR_BLOCKED_ROC;
+        unblocked = true;
+    }
     if ((sc->sc_mld_emlsr_blocked & IWX_MLD_EMLSR_BLOCKED_PREVENTION) &&
         now >= sc->sc_mld_emlsr_prevent_until) {
         sc->sc_mld_emlsr_blocked &= ~IWX_MLD_EMLSR_BLOCKED_PREVENTION;
@@ -2534,4 +2543,17 @@ iwx_mld_deauth(struct iwx_softc *sc)
     return 0;
 }
 
-
+/*
+ * iwl_mld_vif_iter_emlsr_block_roc(): EMLSR needs the radio of both links, so
+ * it is blocked while the P2P Device listens. The block is lifted again from
+ * the throughput task once no ROC was requested for IWX_MLD_ROC_IDLE_SEC.
+ */
+void ItlIwx::
+iwx_mld_roc_block_emlsr(struct iwx_softc *sc)
+{
+    sc->sc_mld_roc_last = iwx_mld_uptime();
+    if (sc->sc_mld_emlsr_blocked & IWX_MLD_EMLSR_BLOCKED_ROC)
+        return;
+    sc->sc_mld_emlsr_blocked |= IWX_MLD_EMLSR_BLOCKED_ROC;
+    iwx_mld_exit_emlsr(sc, IWX_MLD_EMLSR_EXIT_BLOCK);
+}

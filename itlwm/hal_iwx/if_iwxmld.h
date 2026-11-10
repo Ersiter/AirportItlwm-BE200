@@ -455,4 +455,64 @@ static_assert(sizeof(iwx_mld_sta_cfg_cmd_v2) == 104, "MLD STA v2 command ABI");
 static_assert(sizeof(iwx_mld_scd_queue_cfg_cmd) == 36, "MLD SCD v3 command ABI");
 static_assert(sizeof(iwx_mld_sec_key_cmd) == 80, "MLD SEC_KEY v1 command ABI");
 
+/*
+ * Remain-on-channel for a P2P Device MAC, as in Linux mld/roc.c. The aux
+ * station it uses is added with AUX_STA_CMD and carries the frames sent
+ * while the radio is on the channel.
+ */
+#define IWX_MLD_AUX_STA_CMD 0x0b
+#define IWX_MLD_ROC_CMD 0x0e
+#define IWX_MLD_ROC_NOTIF 0xf8
+
+enum iwx_mld_roc_activity {
+	IWX_MLD_ROC_ACTIVITY_HOTSPOT,
+	IWX_MLD_ROC_ACTIVITY_P2P_DISC,
+	IWX_MLD_ROC_ACTIVITY_P2P_TXRX,
+	IWX_MLD_ROC_ACTIVITY_P2P_NEG,
+}; /* ROC_ACTIVITY_API_E_VER_1 */
+
+struct iwx_mld_aux_sta_cmd {
+	uint32_t sta_id;
+	uint32_t lmac_id;
+	uint8_t mac_addr[6];
+	uint16_t reserved_for_mac_addr;
+} __packed; /* AUX_STA_CMD_API_S_VER_1 */
+
+struct iwx_mld_roc_req_v5 {
+	uint32_t action;
+	uint32_t activity;
+	uint32_t sta_id;
+	struct iwx_fw_channel_info channel_info;
+	uint8_t node_addr[6];
+	uint16_t reserved;
+	uint32_t max_delay;
+	uint32_t duration;
+} __packed; /* ROC_CMD_API_S_VER_5 */
+
+struct iwx_mld_roc_req_v6 {
+	uint32_t action;
+	uint32_t activity;
+	uint32_t sta_id;
+	struct iwx_fw_channel_info channel_info;
+	uint8_t node_addr[6];
+	uint16_t reserved1;
+	uint32_t max_delay;
+	uint32_t duration;
+	uint32_t interval;
+	uint8_t repetitions;
+	uint8_t reserved2[3];
+} __packed; /* ROC_CMD_API_S_VER_6 */
+
+struct iwx_mld_roc_notif {
+	uint32_t success;
+	uint32_t started;
+	uint32_t activity;
+} __packed; /* ROC_NOTIF_API_S_VER_1 */
+
+static_assert(sizeof(iwx_mld_aux_sta_cmd) == 16, "MLD AUX_STA command ABI");
+static_assert(sizeof(iwx_mld_roc_req_v5) == 36, "MLD ROC v5 command ABI");
+static_assert(sizeof(iwx_mld_roc_req_v6) == 44, "MLD ROC v6 command ABI");
+static_assert(sizeof(iwx_mld_roc_notif) == 12, "MLD ROC notification ABI");
+
+
 #endif

@@ -282,7 +282,7 @@ public:
     int    iwx_nic_init(struct iwx_softc *);
     int    iwx_enable_txq(struct iwx_softc *, int, int, int, int);
     int     iwx_tvqm_alloc_txq(struct iwx_softc *, int, int);
-    int     iwx_tvqm_enable_txq(struct iwx_softc *, int, int, uint32_t);
+    int     iwx_tvqm_enable_txq(struct iwx_softc *, int, int, uint32_t, int sta_id = IWX_STATION_ID);
     void    iwx_post_alive(struct iwx_softc *);
     int iwx_send_time_event_cmd(struct iwx_softc *sc,
                             const struct iwx_time_event_cmd *cmd);
@@ -429,6 +429,29 @@ public:
     void    iwx_del_task(struct iwx_softc *, struct taskq *, struct task *);
     int    iwx_scan(struct iwx_softc *);
     static int    iwx_bgscan(struct ieee80211com *);
+    static int    iwx_awdl_listen(struct ieee80211com *, uint8_t, uint16_t);
+    static int    iwx_awdl_tx(struct ieee80211com *, uint8_t, const uint8_t *, size_t);
+    int    iwx_awdl_tx_frame(struct iwx_softc *, const uint8_t *, size_t);
+    int    iwx_awdl_listen_v14(struct iwx_softc *, uint8_t, uint16_t);
+    void   iwx_awdl_listen_abort(struct iwx_softc *);
+    int    iwx_aux_roc(struct iwx_softc *, uint8_t, uint16_t);
+    int    iwx_p2p_phy_cmd(struct iwx_softc *, struct iwx_phy_ctxt *, uint32_t);
+    int    iwx_p2p_binding_cmd(struct iwx_softc *, int);
+    int    iwx_p2p_setup(struct iwx_softc *, uint8_t);
+    int    iwx_p2p_set_channel(struct iwx_softc *, uint8_t);
+    int    iwx_p2p_roc(struct iwx_softc *, uint8_t, uint16_t);
+    void   iwx_p2p_session_cmd(struct iwx_softc *, uint32_t, uint32_t);
+    void   iwx_p2p_roc_event(struct iwx_softc *, uint32_t, uint32_t);
+    int    iwx_mld_p2p_setup(struct iwx_softc *, uint8_t);
+    int    iwx_mld_p2p_mac_cmd(struct iwx_softc *, uint32_t, bool);
+    int    iwx_mld_aux_sta_add(struct iwx_softc *);
+    int    iwx_mld_roc_cmd(struct iwx_softc *, uint32_t, uint32_t);
+    void   iwx_mld_roc_notif(struct iwx_softc *, struct iwx_rx_packet *);
+    void   iwx_mld_roc_block_emlsr(struct iwx_softc *);
+
+    int    iwx_aux_roc_add_sta(struct iwx_softc *, uint8_t);
+    void   iwx_aux_roc_rm_sta(struct iwx_softc *);
+    void   iwx_aux_roc_sync_counters(struct iwx_softc *);
     int    iwx_umac_scan_abort(struct iwx_softc *);
     int    iwx_scan_abort(struct iwx_softc *);
     int    iwx_rs_rval2idx(uint8_t);
