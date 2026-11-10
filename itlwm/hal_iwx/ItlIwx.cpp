@@ -10978,14 +10978,17 @@ iwx_mld_aux_sta_add(struct iwx_softc *sc)
     struct iwx_mld_aux_sta_cmd cmd;
     int err, queue, generation = sc->sc_generation;
 
-    memset(&cmd, 0, sizeof(cmd));
-    cmd.sta_id = htole32(IWX_AUX_STA_ID);
-    cmd.lmac_id = 0;
-    err = iwx_send_cmd_pdu(sc, IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_AUX_STA_CMD),
-        0, sizeof(cmd), &cmd);
-    if (err)
-        return err;
-    sc->sc_aux_roc_sta = 1;
+    /* The station survives a failed queue allocation; do not add it twice. */
+    if (!sc->sc_aux_roc_sta) {
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.sta_id = htole32(IWX_AUX_STA_ID);
+        cmd.lmac_id = 0;
+        err = iwx_send_cmd_pdu(sc, IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_AUX_STA_CMD),
+            0, sizeof(cmd), &cmd);
+        if (err)
+            return err;
+        sc->sc_aux_roc_sta = 1;
+    }
     if (!iwx_nic_lock(sc))
         return EBUSY;
     queue = iwx_tvqm_enable_txq(sc, IWX_MAX_TID_COUNT, 0, IWX_DEFAULT_QUEUE_SIZE,
@@ -10993,8 +10996,15 @@ iwx_mld_aux_sta_add(struct iwx_softc *sc)
     if (generation != sc->sc_generation)
         return ENXIO;
     iwx_nic_unlock(sc);
+    /*
+     * iwx_mld_queue_cmd() recorded the aux queue's TID as one of the station's
+     * queues. It is not: removing the station's queues would then try to
+     * remove a queue the station does not have.
+     */
+    sc->sc_mld_txq_tidmask &= ~(1U << IWX_MAX_TID_COUNT);
     if (queue < 0)
         return -queue;
+
     sc->sc_p2p_queue = 1;
     sc->sc_aux_roc_qid = queue;
     sc->sc_ic.ic_awdl_roc_qid = queue;

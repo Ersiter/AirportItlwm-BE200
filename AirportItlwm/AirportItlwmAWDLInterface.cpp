@@ -32,6 +32,11 @@ initIfnetParams(struct ifnet_init_params *params)
     // Publish awdl0's own address before IOEthernetInterface reads it as the
     // ifnet uniqueid; en6 already owns the station MAC.
     setProperty(kIOMACAddress, (void *)&fMac, kIOEthernetAddressSize);
+    // The controller is an IO80211Controller, so configd would list awdl0 as a
+    // second Wi-Fi network service ("Wi-Fi 2") and run DHCP on it. A network
+    // interface carrying HiddenInterface is left out of the service list.
+    setProperty("HiddenInterface", kOSBooleanTrue);
+
     if (!AirportItlwmEthernetInterface::initIfnetParams(params))
         return false;
     params->uniqueid = &fMac;
