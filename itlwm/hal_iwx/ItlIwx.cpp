@@ -14407,6 +14407,10 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
                 /* Empty command ACK; complete the synchronous HE setup below. */
                 break;
 
+            case IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_BEACON_FILTER_IN_NOTIF):
+                iwx_mld_handle_beacon_filter_notif(sc, pkt);
+                break;
+
             case IWX_WIDE_ID(IWX_STATISTICS_GROUP, IWX_STATISTICS_OPER_NOTIF):
                 iwx_mld_handle_stats_oper_notif(sc, pkt);
                 break;

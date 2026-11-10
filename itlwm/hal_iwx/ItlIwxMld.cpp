@@ -928,12 +928,23 @@ iwx_mld_handle_stats_oper_notif(struct iwx_softc *sc, struct iwx_rx_packet *pkt)
         sc->sc_mld_phy_load[phy] = (not_by_us >> 1) +
             (sc->sc_mld_phy_load[phy] >> 1);
     }
-    for (int link = 0; link < IWX_FW_MAX_LINKS; link++) {
-        const uint8_t *entry = data + links_offset + link * IWX_STATS_PER_LINK_SIZE;
+}
 
-        sc->sc_mld_link_energy[link] = (uint8_t)MIN(le32toh(
-            *(const uint32_t *)(entry + 12)), 255);
-    }
+/*
+ * iwl_mld_handle_beacon_filter_notif(): the average energy of the beacons the
+ * firmware received on a link, as a positive number of dBm below zero. It comes
+ * with the beacons of the links in use, about eight times a second.
+ */
+void ItlIwx::
+iwx_mld_handle_beacon_filter_notif(struct iwx_softc *sc, struct iwx_rx_packet *pkt)
+{
+    const struct iwx_beacon_filter_notif *notif =
+        (const struct iwx_beacon_filter_notif *)pkt->data;
+    uint32_t link = le32toh(notif->link_id);
+
+    if (iwx_rx_packet_payload_len(pkt) != sizeof(*notif) || link >= IWX_MLD_MAX_LINKS)
+        return;
+    sc->sc_mld_link_energy[link] = (uint8_t)MIN(le32toh(notif->average_energy), 255);
 }
 
 /* Arm the traffic window and the statistics when the association is an MLO one. */

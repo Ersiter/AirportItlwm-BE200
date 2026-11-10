@@ -100,6 +100,12 @@
 #define IWX_UCODE_TLV_CAPA_MLD_API_SUPPORT 110
 #define IWX_EMLSR_MODE_NOTIF 0xf3
 #define IWX_EMLSR_TRANS_FAIL_NOTIF 0xf7
+#define IWX_BEACON_FILTER_IN_NOTIF 0xf8
+
+struct iwx_beacon_filter_notif {
+    uint32_t average_energy;
+    uint32_t link_id;
+} __packed;
 
 /* Statistics (iwlmld fw/api/stats.h), configured through the system group. */
 #define IWX_SYSTEM_STATISTICS_CMD 0x0f

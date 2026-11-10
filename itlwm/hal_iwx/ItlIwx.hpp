@@ -484,6 +484,7 @@ public:
     void iwx_mld_mlo_scan_done(iwx_softc *);
     int iwx_mld_request_periodic_stats(iwx_softc *, bool);
     void iwx_mld_handle_stats_oper_notif(iwx_softc *, struct iwx_rx_packet *);
+    void iwx_mld_handle_beacon_filter_notif(iwx_softc *, struct iwx_rx_packet *);
     void iwx_mld_emlsr_start(iwx_softc *);
     void iwx_mld_emlsr_stop(iwx_softc *);
     static void iwx_mld_exit_emlsr(iwx_softc *, int);
