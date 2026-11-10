@@ -22,6 +22,7 @@ printf 'started\tfinished\tcommand\tstatus\n' > "$out/status.tsv"
 /bin/cp "$0" "$out/collector.command"
 stream_pid=''
 sample_pid=''
+kernel_pid=''
 packet_pids=''
 live_start=''
 
@@ -52,7 +53,7 @@ collect_crash_reports() {
 
 stop_live() {
     local pid status
-    for pid in "$sample_pid" "$stream_pid" $packet_pids; do
+    for pid in "$sample_pid" "$kernel_pid" "$stream_pid" $packet_pids; do
         [ -n "$pid" ] || continue
         kill -TERM "$pid" 2>/dev/null
         wait "$pid"
@@ -60,6 +61,7 @@ stop_live() {
         printf '%s\t%s\tlive-process-%s\t%s\n' "$live_start" "$(date '+%Y-%m-%d %H:%M:%S %z')" "$pid" "$status" >> "$out/status.tsv"
     done
     sample_pid=''
+    kernel_pid=''
     stream_pid=''
     packet_pids=''
 }
@@ -133,6 +135,12 @@ kernel_tail() {
     /sbin/dmesg | /usr/bin/tail -n 2000
 }
 
+# The driver's own lines. The kernel buffer is small and other messages push
+# them out within seconds, so they are polled during the attempt and merged.
+driver_lines() {
+    /sbin/dmesg | /usr/bin/grep -a 'itlwm' | /usr/bin/grep -a -v 'unhandled firmware response'
+}
+
 # airportd writes this one itself; it never reaches the unified log.
 wifi_log_tail() {
     /usr/bin/tail -n 5000 /var/log/wifi.log
@@ -197,6 +205,7 @@ capture crash-reports collect_crash_reports
 capture kext-load-log /usr/bin/log show --last 24h --info --style compact --predicate \
     '(process == "kernelmanagerd" OR process == "kextd") AND (eventMessage CONTAINS[c] "itlwm" OR eventMessage CONTAINS[c] "IO80211" OR eventMessage CONTAINS[c] "IOSkywalk")'
 snapshot before
+capture before-driver-log driver_lines
 
 live_start="$(date '+%Y-%m-%d %H:%M:%S %z')"
 printf 'Attempt window starts: %s\n' "$live_start" >> "$out/attempt.txt"
@@ -234,6 +243,15 @@ done
     done
 ) 2>&1 &
 sample_pid=$!
+: > "$out/.driver-poll"
+(
+    trap - EXIT INT TERM
+    while :; do
+        driver_lines >> "$out/.driver-poll"
+        sleep 2
+    done
+) 2>&1 &
+kernel_pid=$!
 
 echo
 echo 'Recording started. Open the Wi-Fi list and reproduce ONE problem now.'
@@ -245,6 +263,9 @@ read_status=$?
 printf 'Result entered: %s\nTerminal read status: %s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')" "$read_status" >> "$out/attempt.txt"
 sleep 20
 stop_live
+driver_lines >> "$out/.driver-poll"
+/usr/bin/awk '!seen[$0]++' "$out/before-driver-log.txt" "$out/.driver-poll" > "$out/driver-log.txt"
+/bin/rm -f "$out/.driver-poll"
 snapshot_after
 capture recent-log /usr/bin/log show --last 30m --info --style compact --predicate "$predicate"
 
@@ -277,7 +298,7 @@ done
 /usr/bin/comm -13 "$out/keys-before.txt" "$out/keys-after.txt" > "$out/keys-new-after-attempt.txt"
 
 # The links and widths the association negotiated, and every active-link change.
-/usr/bin/grep -h -E 'iwx_mld_log_links|active links 0x|EMLSR|selected links'     "$out/live-log.txt" "$out/recent-log.txt" 2>/dev/null | /usr/bin/sort -u > "$out/negotiated-links.txt"
+/usr/bin/grep -a -h -E 'iwx_mld_log_links|active links 0x|EMLSR|selected links'     "$out/driver-log.txt" "$out/live-log.txt" "$out/recent-log.txt" 2>/dev/null | /usr/bin/awk '!seen[$0]++' > "$out/negotiated-links.txt"
 
 archive="$out.tar.gz"
 if /usr/bin/tar -czf "$archive" -C "$base" "$(basename "$out")"; then
