@@ -28,7 +28,7 @@ static AirportWCL::ChannelBand wclChannelBand(const ieee80211_channel *channel)
 
 static uint16_t wclCurrentChannelSpec(ieee80211com *ic)
 {
-    const auto ni = ic->ic_bss;
+    const auto ni = ieee80211_mld_active_node(ic);
     if (ic->ic_state != IEEE80211_S_RUN || !ni || !ni->ni_chan ||
         ni->ni_chan == IEEE80211_CHAN_ANYC)
         return 0;
@@ -381,7 +381,7 @@ IOReturn AirportItlwmSkywalkInterface::updateWCLLinkQualityGated(
         (ifnet_flags(interface) & (IFF_UP | IFF_RUNNING)) == (IFF_UP | IFF_RUNNING) &&
         ic && ic->ic_state == IEEE80211_S_RUN && ic->ic_bss &&
         IEEE80211_ADDR_EQ(ic->ic_bss->ni_bssid, self->joinBSSID)) {
-        int rssi = IWM_MIN_DBM + ic->ic_bss->ni_rssi;
+        int rssi = IWM_MIN_DBM + ieee80211_mld_active_node(ic)->ni_rssi;
         quality = rssi >= -70 ? 100 : (rssi >= -85 ? 50 : 20);
     }
     if (arg1 || quality != self->wclReportedLinkQuality ||
@@ -439,7 +439,8 @@ IOReturn AirportItlwmSkywalkInterface::wclCommand(OSObject *, void *a0, void *a1
             if (uint16_t spec = wclCurrentChannelSpec(ic)) {
                 auto bss = static_cast<AirportWCL::BeaconMetadata *>(a2);
                 bss->channelSpec = spec;
-                bss->channel = ieee80211_chan2number(ic, ic->ic_bss->ni_chan);
+                bss->channel = ieee80211_chan2number(ic,
+                    ieee80211_mld_active_node(ic)->ni_chan);
             }
             /* WCL derives active PHY from this descriptor's EHT IEs. */
             if (self->fHalService->get80211Controller()->ic_bss &&
@@ -799,7 +800,8 @@ void AirportItlwmSkywalkInterface::postWCLScanResult(const ieee80211_node *node,
         auto ic = fHalService->get80211Controller();
         if (uint16_t currentSpec = wclCurrentChannelSpec(ic)) {
             metadata->channelSpec = currentSpec;
-            metadata->channel = ieee80211_chan2number(ic, ic->ic_bss->ni_chan);
+            metadata->channel = ieee80211_chan2number(ic,
+                ieee80211_mld_active_node(ic)->ni_chan);
         }
         wclBssValid = messageSize <= sizeof(wclBssInfo);
         if (wclBssValid) {

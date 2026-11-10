@@ -478,15 +478,15 @@ getCHANNEL(struct apple80211_channel_data *cd)
 {
     struct ieee80211com * ic = fHalService->get80211Controller();
     /* Same rule as the scan list: no channel means no channel to report. */
-    const struct ieee80211_channel *chan =
-        ic->ic_bss != NULL ? ic->ic_bss->ni_chan : NULL;
+    const struct ieee80211_node *ni = ieee80211_mld_active_node(ic);
+    const struct ieee80211_channel *chan = ni != NULL ? ni->ni_chan : NULL;
     if (ic->ic_state == IEEE80211_S_RUN && chan != NULL &&
         chan != IEEE80211_CHAN_ANYC) {
         memset(cd, 0, sizeof(apple80211_channel_data));
         cd->version = APPLE80211_VERSION;
         cd->channel.version = APPLE80211_VERSION;
         cd->channel.channel = ieee80211_chan2number(ic, chan);
-        cd->channel.flags = ieeeChanFlag2apple(chan->ic_flags, ic->ic_bss->ni_chw);
+        cd->channel.flags = ieeeChanFlag2apple(chan->ic_flags, ni->ni_chw);
         return kIOReturnSuccess;
     }
     return 6;
@@ -671,7 +671,7 @@ getBSSID(struct apple80211_bssid_data *bd)
     if (ic->ic_state == IEEE80211_S_RUN) {
         memset(bd, 0, sizeof(*bd));
         bd->version = APPLE80211_VERSION;
-        memcpy(bd->bssid.octet, ic->ic_bss->ni_bssid, APPLE80211_ADDR_LEN);
+        memcpy(bd->bssid.octet, ieee80211_mld_active_node(ic)->ni_bssid, APPLE80211_ADDR_LEN);
         return kIOReturnSuccess;
     }
     return 6;
@@ -688,7 +688,7 @@ getRSSI(struct apple80211_rssi_data *rd)
         rd->rssi[0] = rd->aggregate_rssi
         = rd->rssi_ext[0]
         = rd->aggregate_rssi_ext
-        = -(0 - IWM_MIN_DBM - ic->ic_bss->ni_rssi);
+        = -(0 - IWM_MIN_DBM - ieee80211_mld_active_node(ic)->ni_rssi);
         return kIOReturnSuccess;
     }
     return 6;

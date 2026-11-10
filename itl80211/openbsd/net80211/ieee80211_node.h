@@ -765,6 +765,7 @@ void ieee80211_iterate_nodes(struct ieee80211com *,
 int ieee80211_mld_discover_links(struct ieee80211com *, struct ieee80211_node *);
 int ieee80211_mld_set_active_link_by_bssid(struct ieee80211com *, const uint8_t *);
 struct ieee80211_node *ieee80211_mld_primary_node(struct ieee80211com *, struct ieee80211_node *);
+struct ieee80211_node *ieee80211_mld_active_node(struct ieee80211com *);
 void ieee80211_mld_clear_links(struct ieee80211com *);
 const char *ieee80211_mlo_unusable_reason(struct ieee80211com *,
     struct ieee80211_node *);
@@ -773,6 +774,7 @@ void ieee80211_mlo_downgrade(struct ieee80211com *, const char *);
 int ieee80211_setup_he_6ghz_capa(struct ieee80211_node *, const uint8_t *, size_t);
 #else
 #define ieee80211_mld_primary_node(ic, ni) (ni)
+#define ieee80211_mld_active_node(ic) ((ic)->ic_bss)
 #endif
 void ieee80211_clean_cached(struct ieee80211com *);
 void ieee80211_clean_sta_bss_node(struct ieee80211com *);

@@ -2667,6 +2667,22 @@ ieee80211_mld_primary_node(struct ieee80211com *ic, struct ieee80211_node *ni)
 	return ni;
 }
 
+/*
+ * The node of the link the station is using, which is what is reported to the
+ * host: its BSSID, channel and signal. Slot 0 is ic_bss.
+ */
+struct ieee80211_node *
+ieee80211_mld_active_node(struct ieee80211com *ic)
+{
+	uint8_t slot = ic->ic_wcl_active_mld_link;
+
+	if (slot > 0 && slot < ic->ic_mld_link_count &&
+	    ic->ic_mld_links[slot].assoc_accepted &&
+	    ic->ic_mld_links[slot].ni != NULL)
+		return ic->ic_mld_links[slot].ni;
+	return ic->ic_bss;
+}
+
 #ifdef AIRPORT_WCL
 /*
  * Why this association cannot be an MLO one, or NULL when it can. Multi-link

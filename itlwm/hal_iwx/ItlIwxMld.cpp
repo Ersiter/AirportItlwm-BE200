@@ -321,6 +321,7 @@ iwx_mld_update_active_links(struct iwx_softc *sc, uint8_t link_mask,
     if (link_mask == old_links && new_sta_mask == old_sta_mask) {
         sc->sc_mld_primary_link = primary_link;
         sc->sc_mld_emlsr_active = emlsr_active;
+        ic->ic_wcl_active_mld_link = primary_link;
         return 0;
     }
 
@@ -374,6 +375,7 @@ iwx_mld_update_active_links(struct iwx_softc *sc, uint8_t link_mask,
     sc->sc_mld_active_sta_mask = new_sta_mask;
     sc->sc_mld_primary_link = primary_link;
     sc->sc_mld_emlsr_active = emlsr_active;
+    ic->ic_wcl_active_mld_link = primary_link;
     return 0;
 
 rollback_added:
