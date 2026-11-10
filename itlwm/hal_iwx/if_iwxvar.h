@@ -723,6 +723,7 @@ struct iwx_softc {
 	uint8_t sc_mld_pending_links;
 	uint8_t sc_mld_pending_primary_link;
 	uint8_t sc_mld_pending_emlsr;
+	uint8_t sc_mld_pending_soft;
 	uint8_t sc_mld_link_update_pending;
 	uint8_t sc_mld_disconnect_pending;
 	int sc_mld_pending_generation;

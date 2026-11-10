@@ -421,12 +421,13 @@ iwx_mld_emlsr_link_usable(struct ieee80211_node *ni)
  * worth it, from scan data on every link that is at most five seconds old, and
  * leaves again when the pair stops paying off.
  *
- * Differences from iwlmld, each forced by the macOS side: the link WCL joined
- * (slot 0) stays active, so EMLSR is only formed with it and a single link is
- * always slot 0; low RSSI uses the firmware's per-link beacon statistics; the
- * channel load of an inactive link comes from its BSS Load element or the
- * per-band default. The secondary-link usage exit is left out: received frames
- * are not attributed to a link.
+ * Differences from iwlmld: low RSSI uses the firmware's per-link beacon
+ * statistics; the channel load of an inactive link comes from its BSS Load
+ * element or the per-band default; the 6 GHz beacon RSSI correction is the
+ * fixed 4 dB iwlmld falls back to. The secondary-link usage exit is left out:
+ * received frames are not attributed to a link. Any link may be active, the
+ * one WCL joined included or not; macOS is told about the active one through
+ * ieee80211_mld_active_node().
  */
 #define IWX_MLD_TPT_WINDOW_SEC           5
 #define IWX_MLD_ENTER_EMLSR_TPT_THRESH   400
@@ -583,7 +584,7 @@ iwx_mld_get_chan_load(struct iwx_softc *sc, int slot,
         IEEE80211_IS_CHAN_5GHZ(ni->ni_chan) ? 15 : 0);
 }
 
-/* iwl_mld_get_link_grade() without the puncturing penalty. */
+/* iwl_mld_get_link_grade() */
 static unsigned int
 iwx_mld_get_link_grade(struct iwx_softc *sc, int slot)
 {
@@ -615,8 +616,17 @@ iwx_mld_get_link_grade(struct iwx_softc *sc, int slot)
         grade = table[i].grade;
         break;
     }
-    return grade * (IWX_MLD_SCALE_FACTOR -
+    grade = grade * (IWX_MLD_SCALE_FACTOR -
         iwx_mld_get_chan_load(sc, slot, ni)) / IWX_MLD_SCALE_FACTOR;
+    /* iwl_mld_apply_puncturing_penalty(): a link of 80 MHz or more loses its punctured share. */
+    if (width >= 80 && ni->ni_eht_puncture) {
+        unsigned int n_subchannels = width / 20;
+        unsigned int n_punctured = __builtin_popcount(
+            ni->ni_eht_puncture & ((1U << n_subchannels) - 1));
+
+        grade = grade * (n_subchannels - n_punctured) / n_subchannels;
+    }
+    return grade;
 }
 
 /* iwl_mld_get_min_chan_load_thresh() */
@@ -665,12 +675,10 @@ iwx_mld_emlsr_pair_allowed(struct iwx_softc *sc, int a, int b)
             high->ni_chan->ic_center_freq1 - high_bw / 2 < 5490)
             return false;
     }
-    /* The measured share needs the primary link's own channel statistics. */
-    if (a < IWX_NUM_PHY_CTX && (sc->sc_mld_active_links & (1U << a)))
-        load_percent = sc->sc_mld_phy_load[a];
-    else
-        load_percent = iwx_mld_get_chan_load(sc, a, na) * 100 /
-            IWX_MLD_SCALE_FACTOR;
+    /* Only the primary link's measured load counts, so it has to be on the air. */
+    if (a >= IWX_NUM_PHY_CTX || !(sc->sc_mld_active_links & (1U << a)))
+        return false;
+    load_percent = sc->sc_mld_phy_load[a];
     if (load_percent < iwx_mld_min_chan_load_thresh(na))
         return false;
     if (bw_a <= bw_b)
@@ -685,50 +693,63 @@ iwx_mld_emlsr_pair_allowed(struct iwx_softc *sc, int a, int b)
 }
 
 /*
- * iwl_mld_select_links(): pick the links to keep active. Returns the mask and
- * the primary link; *emlsr tells whether it is an EMLSR pair.
+ * _iwl_mld_select_links(): pick the links to keep active: the best single link,
+ * or an EMLSR pair when EMLSR is not blocked and the pair is worth at least as
+ * much. Returns the mask and the primary link; *emlsr tells whether it is a pair.
  */
 uint8_t ItlIwx::
 iwx_mld_select_links(struct iwx_softc *sc, uint8_t *primary, bool *emlsr)
 {
     struct ieee80211com *ic = &sc->sc_ic;
+    const int count = MIN(ic->ic_mld_link_count, IWX_MLD_MAX_LINKS);
     unsigned int grade[IWX_MLD_MAX_LINKS] = {};
     unsigned int max_grade = 0;
-    uint8_t links = 1;
+    int best = -1;
+    uint8_t links;
 
-    *primary = 0;
     *emlsr = false;
-    for (int i = 0; i < ic->ic_mld_link_count && i < IWX_MLD_MAX_LINKS; i++) {
+    for (int i = 0; i < count; i++) {
         uint8_t sta = sc->sc_mld_sta_ids[i];
 
         if (sta == 0xff || !(sc->sc_mld_sta_mask & (1U << sta)))
             continue;
         grade[i] = iwx_mld_get_link_grade(sc, i);
-        if (grade[i] > max_grade)
+        if (grade[i] > max_grade) {
             max_grade = grade[i];
+            best = i;
+        }
     }
-    if (!grade[0] || sc->sc_mld_emlsr_blocked)
+    if (best < 0) {
+        *primary = sc->sc_mld_primary_link;
+        return sc->sc_mld_active_links;
+    }
+    *primary = best;
+    links = 1U << best;
+    if (sc->sc_mld_emlsr_blocked)
         return links;
 
-    for (int i = 1; i < ic->ic_mld_link_count && i < IWX_MLD_MAX_LINKS; i++) {
-        unsigned int pair_grade;
-        int pri = grade[i] > grade[0] ? i : 0;
-        int sec = pri == 0 ? i : 0;
+    for (int a = 0; a < count; a++) {
+        for (int b = a + 1; b < count; b++) {
+            unsigned int pair_grade;
+            int pri = grade[b] > grade[a] ? b : a;
+            int sec = pri == a ? b : a;
 
-        if (!grade[i] || !iwx_mld_emlsr_link_usable(iwx_mld_link_node(sc, 0)) ||
-            !iwx_mld_emlsr_link_usable(iwx_mld_link_node(sc, i)) ||
-            !iwx_mld_emlsr_pair_allowed(sc, pri, sec))
-            continue;
-        /* The more the primary link is loaded, the more EMLSR is worth. */
-        pair_grade = grade[pri] + grade[sec] *
-            iwx_mld_get_chan_load(sc, pri, iwx_mld_link_node(sc, pri)) /
-            IWX_MLD_SCALE_FACTOR;
-        if (pair_grade < max_grade)
-            continue;
-        max_grade = pair_grade;
-        links = 1U | (1U << i);
-        *primary = pri;
-        *emlsr = true;
+            if (!grade[a] || !grade[b] ||
+                !iwx_mld_emlsr_link_usable(iwx_mld_link_node(sc, a)) ||
+                !iwx_mld_emlsr_link_usable(iwx_mld_link_node(sc, b)) ||
+                !iwx_mld_emlsr_pair_allowed(sc, pri, sec))
+                continue;
+            /* The more the primary link is loaded, the more EMLSR is worth. */
+            pair_grade = grade[pri] + grade[sec] *
+                iwx_mld_get_chan_load(sc, pri, iwx_mld_link_node(sc, pri)) /
+                IWX_MLD_SCALE_FACTOR;
+            if (pair_grade < max_grade)
+                continue;
+            max_grade = pair_grade;
+            links = (1U << a) | (1U << b);
+            *primary = pri;
+            *emlsr = true;
+        }
     }
     XYLog("%s: grades %u/%u/%u, selected links 0x%x primary %u%s\n", __FUNCTION__,
         grade[0], grade[1], grade[2], links, *primary, *emlsr ? " (EMLSR)" : "");
@@ -761,15 +782,30 @@ iwx_mld_note_emlsr_exit(struct iwx_softc *sc, int reason)
         iwx_mld_emlsr_exit_name(reason));
 }
 
-/* iwl_mld_exit_emlsr(): back to the link WCL joined. */
+/* iwl_mld_exit_emlsr(): keep the better of the two links, the primary one on a tie. */
 void ItlIwx::
 iwx_mld_exit_emlsr(struct iwx_softc *sc, int reason)
 {
+    uint8_t keep = sc->sc_mld_primary_link;
+    unsigned int keep_grade;
+
     if (!sc->sc_mld_emlsr_active)
         return;
-    XYLog("%s: leaving EMLSR, reason %s\n", __FUNCTION__,
-        iwx_mld_emlsr_exit_name(reason));
-    iwx_mld_schedule_active_links(sc, 1, 0, false, false);
+    keep_grade = iwx_mld_get_link_grade(sc, keep);
+    for (int i = 0; i < IWX_MLD_MAX_LINKS; i++) {
+        unsigned int grade;
+
+        if (!(sc->sc_mld_active_links & (1U << i)))
+            continue;
+        grade = iwx_mld_get_link_grade(sc, i);
+        if (grade > keep_grade) {
+            keep_grade = grade;
+            keep = i;
+        }
+    }
+    XYLog("%s: leaving EMLSR, reason %s, keeping link %u\n", __FUNCTION__,
+        iwx_mld_emlsr_exit_name(reason), keep);
+    iwx_mld_schedule_active_links(sc, 1U << keep, keep, false, false);
     iwx_mld_note_emlsr_exit(sc, reason);
     /* The channel statistics are not valid while in EMLSR. */
     memset(sc->sc_mld_phy_load, 0, sizeof(sc->sc_mld_phy_load));
@@ -833,9 +869,11 @@ iwx_mld_apply_link_selection(struct iwx_softc *sc)
         return;
     }
     links = iwx_mld_select_links(sc, &primary, &emlsr);
-    if (!emlsr || sc->sc_mld_emlsr_active)
+    if (sc->sc_mld_emlsr_active ||
+        (links == sc->sc_mld_active_links && primary == sc->sc_mld_primary_link))
         return;
-    iwx_mld_schedule_active_links(sc, links, primary, true, false);
+    iwx_mld_schedule_active_links(sc, links, primary, emlsr, false);
+    sc->sc_mld_pending_soft = 1;
 }
 
 int ItlIwx::
@@ -1145,6 +1183,7 @@ iwx_mld_schedule_active_links(struct iwx_softc *sc, uint8_t links,
     sc->sc_mld_pending_primary_link = primary_link;
     sc->sc_mld_pending_emlsr = emlsr_active;
     sc->sc_mld_disconnect_pending = disconnect;
+    sc->sc_mld_pending_soft = 0;
     sc->sc_mld_link_update_pending = 1;
     sc->sc_mld_pending_generation = sc->sc_generation;
     splx(s);
@@ -1212,7 +1251,7 @@ iwx_mld_active_link_task(void *arg)
 {
     struct iwx_softc *sc = (struct iwx_softc *)arg;
     ItlIwx *that = container_of(sc, ItlIwx, com);
-    uint8_t links, primary_link, emlsr_active, disconnect, pending;
+    uint8_t links, primary_link, emlsr_active, disconnect, pending, soft;
     int generation, err;
 
     if (!that->getMainWorkLoop()->inGate()) {
@@ -1235,9 +1274,11 @@ iwx_mld_active_link_task(void *arg)
     primary_link = sc->sc_mld_pending_primary_link;
     emlsr_active = sc->sc_mld_pending_emlsr;
     disconnect = sc->sc_mld_disconnect_pending;
+    soft = sc->sc_mld_pending_soft;
     generation = sc->sc_mld_pending_generation;
     sc->sc_mld_link_update_pending = 0;
     sc->sc_mld_disconnect_pending = 0;
+    sc->sc_mld_pending_soft = 0;
     splx(s);
     if (!pending || generation != sc->sc_generation ||
         (sc->sc_flags & IWX_FLAG_SHUTDOWN))
@@ -1263,8 +1304,8 @@ iwx_mld_active_link_task(void *arg)
         iwx_mld_log_failure(sc, "mld-link-update", "apply-active-set",
             err, IWX_WIDE_ID(IWX_MAC_CONF_GROUP,
                 IWX_MLD_LINK_CONFIG_CMD), links);
-        if (emlsr_active) {
-            /* The update rolled back: stay on the link and keep EMLSR off for a while. */
+        if (soft || emlsr_active) {
+            /* A choice of the policy that rolled back: stay on the links and wait before choosing again. */
             iwx_mld_note_emlsr_exit(sc, IWX_MLD_EMLSR_EXIT_FAIL_ENTRY);
         } else {
             disconnect = 1;
