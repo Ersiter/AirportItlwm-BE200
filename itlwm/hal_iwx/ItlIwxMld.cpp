@@ -1739,6 +1739,13 @@ iwx_mld_mac_ctxt_cmd(struct iwx_softc *sc, struct iwx_node *in,
         cmd.filter_flags |= htole32(IWX_MLD_MAC_CFG_FILTER_ACCEPT_BEACON);
     }
 
+    /* What the firmware is given, for when it asserts on this command. */
+    XYLog("%s: action %u assoc %d aid %u he %u eht %u eml timeout %u sync delay %u "
+        "filter 0x%x mld %d\n", __FUNCTION__, action, assoc,
+        le16toh(cmd.client.assoc_id), le16toh(cmd.he_support),
+        le32toh(cmd.eht_support), cmd.client.esr_transition_timeout,
+        le16toh(cmd.client.medium_sync_delay), le32toh(cmd.filter_flags),
+        ni->ni_mld_valid);
     return iwx_send_cmd_pdu(sc,
         IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_MAC_CONFIG_CMD),
         0, sizeof(cmd), &cmd);
