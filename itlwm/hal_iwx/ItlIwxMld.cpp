@@ -1694,9 +1694,45 @@ fail:
     return err;
 }
 
+/*
+ * One line per link after association, like the IWL_DEBUG_EHT output of
+ * iwlmld: what the AP MLD accepted, what the AP says about EMLSR, and which
+ * links are active. Without it a report cannot tell a single-link association
+ * from one the AP never offered EMLSR for.
+ */
+static void
+iwx_mld_log_links(struct iwx_softc *sc)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+
+    if (!ic->ic_wcl_peer_is_mlo)
+        return;
+    XYLog("%s: %d link(s), AP EML capabilities 0x%04x (EMLSR %s), driver EMLSR %s, "
+        "active links 0x%x\n", __FUNCTION__, ic->ic_mld_link_count,
+        ic->ic_bss->ni_mld_eml_capa,
+        ic->ic_mld_emlsr_peer_supported ? "offered" : "not offered",
+        ic->ic_mld_emlsr_supported ? "available" : "unavailable",
+        sc->sc_mld_active_links);
+    for (int i = 0; i < ic->ic_mld_link_count; i++) {
+        const struct ieee80211_mld_link_info *link = &ic->ic_mld_links[i];
+        const struct ieee80211_node *ni = link->ni;
+
+        if (ni == NULL || ni->ni_chan == NULL)
+            continue;
+        XYLog("%s: slot %d link id %u %s ch %d width %d rssi %d %s\n",
+            __FUNCTION__, i, link->ap_link_id,
+            IEEE80211_IS_CHAN_6GHZ(ni->ni_chan) ? "6GHz" :
+            IEEE80211_IS_CHAN_5GHZ(ni->ni_chan) ? "5GHz" : "2.4GHz",
+            ieee80211_chan2ieee(ic, ni->ni_chan), ni->ni_chw,
+            (int)ni->ni_rssi + IWX_MIN_DBM,
+            i == 0 || link->assoc_accepted ? "accepted" : "rejected");
+    }
+}
+
 int ItlIwx::
 iwx_mld_run(struct iwx_softc *sc)
 {
+
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_node *in = (struct iwx_node *)ic->ic_bss;
     int err;
@@ -1787,6 +1823,7 @@ iwx_mld_run(struct iwx_softc *sc)
     if (ic->ic_ttlm_schedule)
         ic->ic_ttlm_schedule(ic);
 #endif
+    iwx_mld_log_links(sc);
     return 0;
 }
 
