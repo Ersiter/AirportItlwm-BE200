@@ -378,6 +378,7 @@ struct ieee80211_node {
 	u_int8_t		ni_mld_link_id;
 	u_int8_t		ni_mld_valid;
 	uint16_t		ni_mld_eml_capa;
+	int16_t			ni_chan_util;	/* BSS Load channel utilization, -1 if absent */
 	uint16_t		ni_mld_med_sync_delay;
 	uint16_t		ni_mld_capa_ops;
 	uint16_t		ni_he_6ghz_capa;

@@ -2285,8 +2285,9 @@ ieee80211_recv_probe_resp_bss(struct ieee80211com *ic, mbuf_t m,
     const struct ieee80211_frame *wh;
     const u_int8_t *frm, *efrm;
     const u_int8_t *tstamp, *ssid, *rnr, *rates, *xrates, *edcaie, *wmmie, *extcap;
-    const u_int8_t *rsnie, *rsnxeie, *wpaie, *htcaps, *htop;
+    const u_int8_t *rsnie, *rsnxeie, *wpaie, *htcaps, *htop, *bssload;
     const uint8_t *csa;
+
     const uint8_t *vhtcap;
     const uint8_t *vhtopmode;
     const uint8_t *hecap;
@@ -2341,6 +2342,7 @@ ieee80211_recv_probe_resp_bss(struct ieee80211com *ic, mbuf_t m,
     
     ssid = rates = xrates = edcaie = wmmie = extcap = rsnie = wpaie = csa = vhtcap = vhtopmode = hecap = heopmode = he6ghzcap = NULL;
     rnr = NULL;
+    bssload = NULL;
     rsnxeie = NULL;
     htcaps = htop = NULL;
     if (rxi->rxi_chan) {
@@ -2368,6 +2370,10 @@ ieee80211_recv_probe_resp_bss(struct ieee80211com *ic, mbuf_t m,
                 break;
             case IEEE80211_ELEMID_RNR:
                 rnr = frm;
+                break;
+            case IEEE80211_ELEMID_QBSS_LOAD:
+                if (frm[1] == 5)
+                    bssload = frm;
                 break;
             case IEEE80211_ELEMID_CSA:
                 csa = frm;
@@ -2866,7 +2872,9 @@ ieee80211_recv_probe_resp_bss(struct ieee80211com *ic, mbuf_t m,
     } else
         ni->ni_rssi = rxi->rxi_rssi;
     ni->ni_rstamp = rxi->rxi_tstamp;
+    ni->ni_chan_util = bssload != NULL ? bssload[4] : -1;
     memcpy(ni->ni_tstamp, tstamp, sizeof(ni->ni_tstamp));
+
     ni->ni_intval = bintval;
     ni->ni_capinfo = capinfo;
     if (profile) {
