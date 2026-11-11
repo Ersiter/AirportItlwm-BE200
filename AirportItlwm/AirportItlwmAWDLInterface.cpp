@@ -1081,10 +1081,12 @@ scheduleOwnListen(uint64_t afterUs)
     if (awHuntAllowed() && !fHuntStartUs)
         fHuntStartUs = now;
     if (awHuntAllowed() && !ic->ic_awdl_want_data && now - fHuntStartUs < kHuntWindowUs) {
-        static const uint8_t kSocial[3] = { 6, 44, 149 };
-        uint8_t list[3];
+        // Channel 6 is the rendezvous every AWDL node visits (slot 9 of its sequence) and the one
+        // channel Intel firmware transmits on reliably, so it gets half of the time.
+        static const uint8_t kSocial[4] = { 6, 149, 6, 44 };
+        uint8_t list[4];
         unsigned n = 0;
-        for (unsigned i = 0; i < 3; i++)
+        for (unsigned i = 0; i < 4; i++)
             if (kSocial[i] != home)
                 list[n++] = kSocial[i];
         fListenNextChan = list[(now / kHuntStepUs) % n];
