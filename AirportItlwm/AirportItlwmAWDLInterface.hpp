@@ -222,6 +222,8 @@ private:
     uint32_t fListenNextDwellTU;
     uint64_t fListenAligned;
     uint64_t fListenNoSlot;
+    uint64_t fListenHunt;
+    uint64_t fHuntStartUs;
     bool fPeerValid;
     ether_addr fPeerMac;
     uint64_t fPeerSeenUs;

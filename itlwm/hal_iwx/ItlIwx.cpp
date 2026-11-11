@@ -6861,6 +6861,14 @@ iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
             ic->ic_awdl_listen_rx_beacon++;
         else if (ltype == IEEE80211_FC0_TYPE_MGT && lsub == IEEE80211_FC0_SUBTYPE_ACTION)
             ic->ic_awdl_listen_rx_action++;
+        ic->ic_awdl_rx_fc[((ltype >> 2) << 4) | (lsub >> 4)]++;
+        /* What kind of frame arrives at all: keep the header of the latest of each kind. */
+        const int kind = (ltype == IEEE80211_FC0_TYPE_MGT && (lsub == IEEE80211_FC0_SUBTYPE_ACTION ||
+            lsub == IEEE80211_FC0_SUBTYPE_ACTION_NOACK)) ? 0 :
+            (ltype == IEEE80211_FC0_TYPE_MGT && lsub == IEEE80211_FC0_SUBTYPE_PROBE_REQ) ? 1 : 2;
+        const size_t keep = MIN(mbuf_len(m), sizeof(ic->ic_awdl_rx_last_hdr[kind]));
+        memcpy(ic->ic_awdl_rx_last_hdr[kind], lwh, keep);
+        ic->ic_awdl_rx_last_len[kind] = (uint8_t)keep;
     }
     
     if (iwx_rx_reorder(sc, m, chanidx, desc,

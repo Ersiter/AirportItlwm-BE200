@@ -536,6 +536,13 @@ struct ieee80211com {
     uint32_t        ic_awdl_listen_rx_all;
     uint32_t        ic_awdl_listen_rx_beacon;
     uint32_t        ic_awdl_listen_rx_action;
+    /*
+     * Every frame the firmware delivered on the listen channel, by frame control
+     * (index = type << 4 | subtype), and the header of the latest one of three kinds.
+     */
+    uint32_t        ic_awdl_rx_fc[64];
+    uint8_t         ic_awdl_rx_last_hdr[3][32];   /* action, probe request, other */
+    uint8_t         ic_awdl_rx_last_len[3];
     uint32_t        ic_awdl_listen_done;
     /* Aux ROC listen: sent, response errors, TE started/ended/not scheduled. */
     uint32_t        ic_awdl_roc_sent;

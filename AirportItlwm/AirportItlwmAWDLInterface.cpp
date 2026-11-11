@@ -180,6 +180,18 @@ static unsigned awListenChannelOverride()
     return (unsigned)chan;
 }
 
+// -itlawdlhunt (diagnostic): while no peer has been heard, spend most of the time on the
+// social channels in turn instead of the sparse slots of our own sequence.
+static bool awHuntAllowed()
+{
+    static int allowed = -1;
+    if (allowed < 0) {
+        int v = 0;
+        allowed = PE_parse_boot_argn("-itlawdlhunt", &v, sizeof(v)) ? 1 : 0;
+    }
+    return allowed == 1;
+}
+
 // -itlawdlnopeerlisten turns off listening on the tracked peer's channel in
 // slots where our own sequence stays home.
 static bool awPeerListenAllowed()
@@ -809,6 +821,7 @@ publishListenState()
     setProperty("AWDLListenBusy", fListenBusy, 64);
     setProperty("AWDLListenAligned", fListenAligned, 64);
     setProperty("AWDLListenNoSlot", fListenNoSlot, 64);
+    setProperty("AWDLListenHunt", fListenHunt, 64);
     setProperty("AWDLListenAlignedActive", fListenAlignedActive);
     setProperty("AWDLPeerUpdates", fPeerUpdates, 64);
     setProperty("AWDLPeerPredHit", fPeerPredHit, 64);
@@ -827,6 +840,24 @@ publishListenState()
     setProperty("AWDLListenRxAll", ic->ic_awdl_listen_rx_all, 32);
     setProperty("AWDLListenRxBeacon", ic->ic_awdl_listen_rx_beacon, 32);
     setProperty("AWDLListenRxAction", ic->ic_awdl_listen_rx_action, 32);
+    {
+        // Frame control byte (type/subtype) : count, for every kind of frame heard on the listen channel.
+        char fc[64 * 12 + 1];
+        size_t o = 0;
+        for (unsigned i = 0; i < 64 && o + 12 < sizeof(fc); i++)
+            if (ic->ic_awdl_rx_fc[i])
+                o += snprintf(fc + o, sizeof(fc) - o, "%02x:%u ", ((i >> 4) << 2) | ((i & 15) << 4), ic->ic_awdl_rx_fc[i]);
+        fc[o] = 0;
+        setProperty("AWDLRxFc", fc);
+        static const char *const names[3] = { "AWDLRxLastAction", "AWDLRxLastProbeReq", "AWDLRxLastOther" };
+        for (unsigned k = 0; k < 3; k++) {
+            char hex[32 * 2 + 1];
+            for (unsigned i = 0; i < ic->ic_awdl_rx_last_len[k]; i++)
+                snprintf(hex + i * 2, 3, "%02x", ic->ic_awdl_rx_last_hdr[k][i]);
+            hex[ic->ic_awdl_rx_last_len[k] * 2] = 0;
+            setProperty(names[k], hex);
+        }
+    }
     setProperty("AWDLRocSent", ic->ic_awdl_roc_sent, 32);
     setProperty("AWDLRocRespErr", ic->ic_awdl_roc_resp_err, 32);
     setProperty("AWDLRocStarted", ic->ic_awdl_roc_started, 32);
@@ -912,6 +943,14 @@ startListen(unsigned chan, uint32_t dwellTU, unsigned home, bool aligned)
 static const int64_t kListenLeadUs = 6000;
 // Without a frame from the peer for this long, go back to listening blindly.
 static const uint64_t kPeerStaleUs = 30000000;
+// Hunt: each social channel for this long, dwell and pause between listens. The pause keeps
+// the station link alive (a beacon every 100 TU still gets through). It only runs for the
+// first kHuntWindowUs after the first listen, so a diagnostic boot-arg left in place does not
+// leave the station link at 60 % airtime for good.
+static const uint64_t kHuntWindowUs = 600000000;
+static const uint64_t kHuntStepUs = 3000000;
+static const uint32_t kHuntDwellTU = 100;
+static const int64_t kHuntGapUs = 60000;
 static const uint64_t kPeerReplaceUs = 10000000;
 
 static int64_t floorDiv(int64_t a, int64_t b)
@@ -1039,6 +1078,25 @@ scheduleOwnListen(uint64_t afterUs)
     // the P2P MAC picks the change up before the next dwell.
     ic->ic_awdl_want_data = fPeerValid && now - fPeerSeenUs <= kPeerStaleUs;
     uint64_t from = afterUs > now ? afterUs : now;
+    if (awHuntAllowed() && !fHuntStartUs)
+        fHuntStartUs = now;
+    if (awHuntAllowed() && !ic->ic_awdl_want_data && now - fHuntStartUs < kHuntWindowUs) {
+        static const uint8_t kSocial[3] = { 6, 44, 149 };
+        uint8_t list[3];
+        unsigned n = 0;
+        for (unsigned i = 0; i < 3; i++)
+            if (kSocial[i] != home)
+                list[n++] = kSocial[i];
+        fListenNextChan = list[(now / kHuntStepUs) % n];
+        fListenNextDwellTU = kHuntDwellTU;
+        uint64_t abs;
+        nanoseconds_to_absolutetime((from + kHuntGapUs) * 1000, &abs);
+        fListenTimer->cancelTimeout();
+        fListenTimer->wakeAtTime(abs);
+        fListenAlignedActive = true;
+        fListenHunt++;
+        return true;
+    }
     int64_t slot = (int64_t)slotUs();
     uint16_t pm = presenceMode();
     int64_t k = floorDiv((int64_t)from + kListenLeadUs - fRefUs, slot) + 1;
@@ -1741,6 +1799,8 @@ init(IO80211Controller *controller, ether_addr *mac, unsigned int role, char con
     fListenNextDwellTU = 0;
     fListenAligned = 0;
     fListenNoSlot = 0;
+    fListenHunt = 0;
+    fHuntStartUs = 0;
     fPeerValid = false;
     fPeerSeenUs = 0;
     fPeerRefUs = 0;
