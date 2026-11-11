@@ -484,6 +484,10 @@ private:
     static constexpr unsigned kWCLScanResultCopies = 96;
     WCLScanResultCopy wclScanCopies[kWCLScanResultCopies] = {};
     unsigned wclScanResultCount = 0;
+    // Last WCL scan, for ioreg: what was asked, how it ended, which channels produced a beacon.
+    uint64_t wclScanStartNs = 0;
+    uint32_t wclScanCount = 0;
+    uint16_t wclScanBeaconByChan[256] = {};
     bool wclBssValid;
     bool wclLinkIndicated;
     uint8_t wclBssInfo[sizeof(AirportWCL::BeaconMetadata) + 0x800];

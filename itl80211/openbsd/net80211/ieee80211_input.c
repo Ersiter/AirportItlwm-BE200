@@ -646,6 +646,8 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
             ic->ic_awdl_rx_uc_other++;
         IEEE80211_ADDR_COPY(ic->ic_awdl_rx_uc_last_src, wh->i_addr2);
         ic->ic_awdl_rx_uc_last_chan = rxi ? (uint8_t)rxi->rxi_chan : 0;
+        ic->ic_awdl_rx_uc_by_chan[ic->ic_awdl_rx_uc_last_chan == 6 ? 0 : ic->ic_awdl_rx_uc_last_chan == 44 ? 1 :
+            ic->ic_awdl_rx_uc_last_chan == 149 ? 2 : 3]++;
         /*
          * The peer wants a Block Ack agreement with awdl0. Nothing here keeps a
          * reorder window or lets the firmware score A-MPDUs for this address,
@@ -669,10 +671,24 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
                 rsp[sizeof(*rh) + 0] = IEEE80211_CATEG_BA;
                 rsp[sizeof(*rh) + 1] = IEEE80211_ACTION_ADDBA_RESP;
                 rsp[sizeof(*rh) + 2] = body[2];                 /* dialog token */
-                rsp[sizeof(*rh) + 3] = IEEE80211_STATUS_REFUSED & 0xff;
-                rsp[sizeof(*rh) + 4] = IEEE80211_STATUS_REFUSED >> 8;
-                rsp[sizeof(*rh) + 5] = body[3] & ~0x01;         /* BA parameters as asked, no A-MSDU */
-                rsp[sizeof(*rh) + 6] = body[4];
+                if (ic->ic_awdl_ba_accept) {
+                    /*
+                     * The peer may be waiting for an agreement before it sends data at all
+                     * (a refusal gave 12 requests and no data frame in 6 minutes). Accept with a
+                     * window of one MPDU and no A-MSDU: the firmware has no receive reorder state
+                     * for awdl0, so the peer is asked to send single frames, which it ACKs.
+                     */
+                    uint16_t bp = (uint16_t)((body[3] | (body[4] << 8)) & 0x003e) | (1 << 6); /* tid + policy, size 1 */
+                    rsp[sizeof(*rh) + 3] = IEEE80211_STATUS_SUCCESS & 0xff;
+                    rsp[sizeof(*rh) + 4] = IEEE80211_STATUS_SUCCESS >> 8;
+                    rsp[sizeof(*rh) + 5] = bp & 0xff;
+                    rsp[sizeof(*rh) + 6] = bp >> 8;
+                } else {
+                    rsp[sizeof(*rh) + 3] = IEEE80211_STATUS_REFUSED & 0xff;
+                    rsp[sizeof(*rh) + 4] = IEEE80211_STATUS_REFUSED >> 8;
+                    rsp[sizeof(*rh) + 5] = body[3] & ~0x01;     /* BA parameters as asked, no A-MSDU */
+                    rsp[sizeof(*rh) + 6] = body[4];
+                }
                 ic->ic_awdl_ba_req++;
                 if ((*ic->ic_awdl_tx)(ic, (uint8_t)rxi->rxi_chan, rsp, sizeof(rsp)) == 0)
                     ic->ic_awdl_ba_resp_sent++;

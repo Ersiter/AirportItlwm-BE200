@@ -601,11 +601,13 @@ struct ieee80211com {
     uint32_t        ic_awdl_rx_uc_other;
     uint8_t         ic_awdl_rx_uc_last_src[IEEE80211_ADDR_LEN];
     uint8_t         ic_awdl_rx_uc_last_chan;
+    uint32_t        ic_awdl_rx_uc_by_chan[4];   /* unicast to awdl0 heard on 6, 44, 149, other */
     /* ADDBA requests from AWDL peers, refused so the peer sends plain MPDUs the firmware ACKs. */
     uint32_t        ic_awdl_ba_req;
     uint32_t        ic_awdl_ba_resp_sent;
     uint32_t        ic_awdl_ba_resp_err;
     uint16_t        ic_awdl_ba_resp_seq;
+    int             ic_awdl_ba_accept;      /* -itlawdlbaaccept: answer ADDBA with success, window 1 */
     uint32_t        ic_awdl_p2p_addr_changes;
     /*
      * Frames whose addr1 is ic_awdl_addr, counted in the driver right after

@@ -350,6 +350,8 @@ bool AirportItlwm::start(IOService *provider)
         XYLog("experimental AWDL enabled\n");
         fHalService->get80211Controller()->ic_vendor_action_handler = awdlActionFrameHandler;
         fHalService->get80211Controller()->ic_awdl_data_handler = awdlDataFrameHandler;
+        fHalService->get80211Controller()->ic_awdl_ba_accept =
+            PE_parse_boot_argn("-itlawdlbaaccept", &boot_value, sizeof(boot_value)) ? 1 : 0;
     }
 #endif
 

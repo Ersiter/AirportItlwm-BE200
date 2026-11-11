@@ -574,6 +574,9 @@ IOReturn AirportItlwmSkywalkInterface::startWCLScan(const AirportWCL::ScanReques
     scanCompleted = false;
     deferredScan = scan;
     clearWCLScanResults();
+    wclScanCount++;
+    absolutetime_to_nanoseconds(mach_absolute_time(), &wclScanStartNs);
+    bzero(wclScanBeaconByChan, sizeof(wclScanBeaconByChan));
     // The HAL consumes the old completion before programming this request.
     ic->ic_wcl_scan_restart = ic->ic_wcl_scan_restart_supported &&
         (ic->ic_state == IEEE80211_S_SCAN || (ic->ic_flags & IEEE80211_F_BGSCAN));
@@ -610,6 +613,21 @@ void AirportItlwmSkywalkInterface::finishWCLScan(IOReturn status)
 {
     if (!scanPending)
         return;
+    {
+        uint64_t nowNs;
+        absolutetime_to_nanoseconds(mach_absolute_time(), &nowNs);
+        char summary[320];
+        int o = snprintf(summary, sizeof(summary), "n=%u type=%u ssidLen=%u channels=%u results=%u status=0x%x ms=%llu beacons:",
+            wclScanCount, (unsigned)deferredScan.type, (unsigned)deferredScan.ssidLength,
+            (unsigned)deferredScan.channelCount, wclScanResultCount, (unsigned)status,
+            (nowNs - wclScanStartNs) / 1000000);
+        for (unsigned c = 0; c < 256 && o < (int)sizeof(summary) - 12; ++c)
+            if (wclScanBeaconByChan[c])
+                o += snprintf(summary + o, sizeof(summary) - o, " %u:%u", c, wclScanBeaconByChan[c]);
+        setProperty("WCLScanLast", summary);
+        if (deferredScan.ssidLength)
+            setProperty("WCLScanLastDirected", summary);
+    }
     scanPending = scanDeferred = false;
     scanCompleted = false;
     scanSource->cancelTimeout();
@@ -686,6 +704,8 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
     }
     const unsigned channel = ieee80211_chan2number(ic, node->ni_chan);
     const bool sixGHz = IEEE80211_IS_CHAN_6GHZ(node->ni_chan);
+    if (!sixGHz && channel < 256 && wclScanBeaconByChan[channel] != 0xffff)
+        wclScanBeaconByChan[channel]++;
     const uint16_t spec = AirportWCL::channelSpec20(channel, wclChannelBand(node->ni_chan));
     if (!spec) {
         return;
