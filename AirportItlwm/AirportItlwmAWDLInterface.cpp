@@ -1091,6 +1091,11 @@ scheduleOwnListen(uint64_t afterUs)
                 list[n++] = kSocial[i];
         fListenNextChan = list[(now / kHuntStepUs) % n];
         fListenNextDwellTU = kHuntDwellTU;
+        // On hardware an iPhone's unicast frames to awdl0 arrived while none of its broadcast
+        // PSF/MIF did, so the firmware filter drops broadcast frames that carry the AWDL BSSID.
+        // The P2P MAC is promiscuous (-itlawdlpromisc) from the first listen, not only once a
+        // peer is known, to let them through.
+        ic->ic_awdl_want_data = 1;
         uint64_t abs;
         nanoseconds_to_absolutetime((from + kHuntGapUs) * 1000, &abs);
         fListenTimer->cancelTimeout();
