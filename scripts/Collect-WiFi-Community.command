@@ -146,6 +146,26 @@ wifi_log_tail() {
     /usr/bin/tail -n 5000 /var/log/wifi.log
 }
 
+# On a CNVi adapter Bluetooth shares the chip with Wi-Fi, so a report of one
+# often needs the other: what is loaded, what the controller reports, and what
+# the Bluetooth side logged.
+bluetooth_state() {
+    printf 'Loaded Bluetooth-related kexts\n'
+    /usr/bin/kmutil showloaded 2>/dev/null | /usr/bin/grep -i -E 'bluetooth|fixup|lilu|usbtoolbox|usbinjectall'
+    printf '\nController\n'
+    /usr/sbin/system_profiler -timeout 30 -detailLevel basic SPBluetoothDataType
+    printf '\nHost controller registry entries\n'
+    /usr/sbin/ioreg -r -c IOBluetoothHostController -d 2 -w 0
+    printf '\nKernel buffer lines\n'
+    /sbin/dmesg | /usr/bin/grep -a -i -E 'bluetooth|btlfx|intelbt|ibtfw' | /usr/bin/tail -n 400
+}
+
+bluetooth_log() {
+    /usr/bin/log show --last 30m --info --style compact --predicate \
+        'process == "bluetoothd" OR (process == "kernel" AND (eventMessage CONTAINS[c] "bluetooth" OR eventMessage CONTAINS[c] "btlfx"))' \
+        | /usr/bin/tail -n 4000
+}
+
 snapshot_after() {
     local phase="after"
     capture "$phase-wifi-driver" /usr/sbin/ioreg -p IOService -r -c AirportItlwm -l -w 0
@@ -154,6 +174,7 @@ snapshot_after() {
     capture "$phase-ifconfig" /sbin/ifconfig -a
     capture "$phase-wifi-status" /usr/bin/wdutil info
     capture "$phase-wifi-log" wifi_log_tail
+    capture "$phase-bluetooth" bluetooth_state
     capture "$phase-wifi-profiler" /usr/sbin/system_profiler -timeout 30 -detailLevel basic SPAirPortDataType
 }
 
@@ -172,6 +193,7 @@ snapshot() {
     capture "$phase-wifi-log" wifi_log_tail
     capture "$phase-network-state" /usr/sbin/scutil --nwi
     capture "$phase-routes" /usr/sbin/netstat -rn
+    capture "$phase-bluetooth" bluetooth_state
     capture "$phase-wifi-profiler" /usr/sbin/system_profiler -timeout 30 -detailLevel full SPAirPortDataType
 }
 
@@ -268,6 +290,7 @@ driver_lines >> "$out/.driver-poll"
 /bin/rm -f "$out/.driver-poll"
 snapshot_after
 capture recent-log /usr/bin/log show --last 30m --info --style compact --predicate "$predicate"
+capture bluetooth-log bluetooth_log
 
 /bin/rm -f "$out/.sample-properties"
 
