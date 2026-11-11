@@ -896,6 +896,10 @@ struct iwx_softc {
 	uint32_t sc_aux_roc_sent;
 	uint32_t sc_aux_roc_resp_err;
 	uint32_t sc_aux_roc_started;
+	uint8_t sc_listener_up;	/* the LISTENER MAC, link, station and queue exist and are active */
+	uint8_t sc_listener_chan;
+	uint8_t sc_listener_tries;
+	struct iwx_phy_ctxt sc_listener_phy;
 	uint8_t sc_awdl_mc_variant;	/* multicast filter variant active during this listen (0 = station's) */
 	uint32_t sc_awdl_mc_roc_count;
 	uint32_t sc_aux_roc_ended;
@@ -959,6 +963,10 @@ struct iwx_node {
 #define IWX_STATION_ID 0
 
 #define IWX_AUX_STA_ID 1
+/* -itlawdllistener (MLD API): a standing LISTENER MAC + its own PHY context, link and station. */
+#define IWX_LISTENER_MAC_ID   2
+#define IWX_LISTENER_LINK_ID  3
+#define IWX_LISTENER_STA_ID   9
 #define IWX_MONITOR_STA_ID 2
 
 #define IWX_ICT_SIZE		4096

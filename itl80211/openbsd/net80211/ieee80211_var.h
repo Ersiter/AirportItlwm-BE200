@@ -605,6 +605,10 @@ struct ieee80211com {
     /* ADDBA requests from AWDL peers, refused so the peer sends plain MPDUs the firmware ACKs. */
     uint32_t        ic_awdl_ba_req;
     uint32_t        ic_awdl_ba_resp_sent;
+    uint8_t         ic_awdl_listener_chan;  /* standing listener's channel, 0 = none */
+    uint8_t         ic_awdl_listener_stage; /* last failed bring-up stage */
+    uint8_t         ic_awdl_listener_tries;
+    int             ic_awdl_listener_code;  /* error of that stage */
     uint32_t        ic_awdl_ba_resp_err;
     uint16_t        ic_awdl_ba_resp_seq;
     int             ic_awdl_ba_accept;      /* -itlawdlbaaccept: answer ADDBA with success, window 1 */

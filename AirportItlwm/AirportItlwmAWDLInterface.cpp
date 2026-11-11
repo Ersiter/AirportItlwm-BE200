@@ -1086,12 +1086,13 @@ scheduleOwnListen(uint64_t afterUs)
         // Channel 6 is the rendezvous every AWDL node visits (slot 9 of its sequence) and the one
         // channel Intel firmware transmits on reliably, so it gets half of the time.
         static const uint8_t kSocial[4] = { 6, 149, 6, 44 };
+        const uint8_t listener = ic->ic_awdl_listener_chan;
         uint8_t list[4];
         unsigned n = 0;
         for (unsigned i = 0; i < 4; i++)
             if (kSocial[i] != home)
                 list[n++] = kSocial[i];
-        fListenNextChan = list[(now / kHuntStepUs) % n];
+        fListenNextChan = listener ? listener : list[(now / kHuntStepUs) % n];
         fListenNextDwellTU = kHuntDwellTU;
         // On hardware an iPhone's unicast frames to awdl0 arrived while none of its broadcast
         // PSF/MIF did, so the firmware filter drops broadcast frames that carry the AWDL BSSID.
@@ -1544,6 +1545,12 @@ publishTxState()
     setProperty("AWDLRxUcChan149", ic->ic_awdl_rx_uc_by_chan[2], 32);
     setProperty("AWDLRxUcChanOther", ic->ic_awdl_rx_uc_by_chan[3], 32);
     setProperty("AWDLBaAccept", ic->ic_awdl_ba_accept ? true : false);
+    {
+        char ls[96];
+        snprintf(ls, sizeof(ls), "chan=%u tries=%u failStage=%u failCode=%d", ic->ic_awdl_listener_chan,
+            ic->ic_awdl_listener_tries, ic->ic_awdl_listener_stage, ic->ic_awdl_listener_code);
+        setProperty("AWDLListener", ls);
+    }
     setProperty("AWDLBaReq", ic->ic_awdl_ba_req, 32);
     setProperty("AWDLBaRespSent", ic->ic_awdl_ba_resp_sent, 32);
     setProperty("AWDLBaRespErr", ic->ic_awdl_ba_resp_err, 32);

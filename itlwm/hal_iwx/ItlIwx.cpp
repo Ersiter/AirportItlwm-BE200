@@ -10391,6 +10391,16 @@ static bool iwx_awdl_promisc_enabled()
     return enabled == 1;
 }
 
+static bool iwx_awdl_listener_enabled()
+{
+    static int enabled = -1;
+    if (enabled < 0) {
+        int v;
+        enabled = PE_parse_boot_argn("-itlawdllistener", &v, sizeof(v)) ? 1 : 0;
+    }
+    return enabled == 1;
+}
+
 static bool iwx_p2p_listen_enabled()
 {
     static int enabled = -1;
@@ -10528,6 +10538,23 @@ iwx_awdl_listen(struct ieee80211com *ic, uint8_t chan, uint16_t dwell_tu)
     if (chan == 0 || chan > IEEE80211_CHAN_MAX || ic->ic_channels[chan].ic_flags == 0)
         return EINVAL;
     int err;
+    if (iwx_awdl_listener_enabled() && sc->sc_use_mld_api) {
+        if (!sc->sc_listener_up && sc->sc_listener_tries < 3 && ic->ic_bss) {
+            sc->sc_listener_tries++;
+            ic->ic_awdl_listener_tries = sc->sc_listener_tries;
+            if (that->iwx_mld_listener_setup(sc, (uint8_t)ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan)))
+                sc->sc_awdl_listen_fail++;
+        }
+        if (sc->sc_listener_up) {
+            /* The radio is already there for good; only the listener's own channel is on offer. */
+            if (chan != sc->sc_listener_chan)
+                return EBUSY;
+            ic->ic_awdl_listen_chan = chan;
+            sc->sc_awdl_listen_active = 1;
+            sc->sc_aux_roc_running = 1;
+            return 0;
+        }
+    }
     if (iwx_p2p_listen_enabled()) {
         err = that->iwx_p2p_roc(sc, chan, dwell_tu);
         if (!err)
@@ -11074,6 +11101,165 @@ iwx_mld_aux_sta_add(struct iwx_softc *sc)
 }
 
 /*
+ * One LINK_CONFIG_CMD of the listener's link, as iwl_mld_add_link_to_fw() / iwl_mld_change_link_in_fw()
+ * send it for a monitor interface: ADD with no PHY, MODIFY to attach the PHY and the rates, MODIFY
+ * to activate.
+ */
+int ItlIwx::
+iwx_mld_listener_link(struct iwx_softc *sc, uint32_t action, uint32_t changes, uint32_t active)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct iwx_mld_link_config_cmd cmd;
+
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.action = htole32(action);
+    cmd.link_id = htole32(IWX_LISTENER_LINK_ID);
+    cmd.mac_id = htole32(IWX_LISTENER_MAC_ID);
+    cmd.spec_link_id = 0;
+    cmd.phy_id = htole32(action == IWX_FW_CTXT_ACTION_ADD ? IWX_FW_CTXT_INVALID :
+        sc->sc_listener_phy.id);
+    if (ic->ic_awdl_addr_gen)
+        IEEE80211_ADDR_COPY(cmd.local_link_addr, ic->ic_awdl_addr);
+    else {
+        IEEE80211_ADDR_COPY(cmd.local_link_addr, ic->ic_myaddr);
+        cmd.local_link_addr[0] ^= 0x02;
+    }
+    if (action == IWX_FW_CTXT_ACTION_MODIFY) {
+        static const uint8_t bz_fifo[] = { 1, 0, 2, 3 };
+        cmd.active = htole32(active);
+        /* ACK rates: 6, 12 and 24 Mbit/s, the mandatory OFDM set. */
+        cmd.cck_rates = 0;
+        cmd.ofdm_rates = htole32(0x15);
+        cmd.cck_short_preamble = 0;
+        cmd.short_slot = htole32(1);
+        for (int i = 0; i < EDCA_NUM_AC; i++) {
+            struct ieee80211_edca_ac_params *ac = &ic->ic_edca_ac[i];
+            int txf = bz_fifo[i];
+            cmd.ac[txf].cw_min = htole16((1 << ac->ac_ecwmin) - 1);
+            cmd.ac[txf].cw_max = htole16((1 << ac->ac_ecwmax) - 1);
+            cmd.ac[txf].aifsn = ac->ac_aifsn;
+            cmd.ac[txf].fifos_mask = (1 << txf);
+            cmd.ac[txf].edca_txop = htole16(ac->ac_txoplimit * 32);
+        }
+        cmd.modify_mask = htole32(changes);
+    }
+    return iwx_send_cmd_pdu(sc, IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD),
+        0, sizeof(cmd), &cmd);
+}
+
+/*
+ * -itlawdllistener: what Linux iwl-mld does for a monitor interface, kept for as long as AWDL
+ * runs instead of the short ROC listens that never delivered a broadcast frame:
+ * MAC_CONFIG (LISTENER, promiscuous, awdl0's address), LINK_CONFIG ADD, PHY_CONTEXT ADD, LINK_CONFIG
+ * MODIFY (PHY + rates, then active), STA_CONFIG (BCAST_MGMT, the monitor station), and a TX queue
+ * for it. ForbiddenItlwm (AX211, legacy API) does the same with a second MAC + PHY + binding +
+ * station and gets AWDL broadcasts and ACKed unicast; the firmware shares the radio between the
+ * station and this link. Only the band the station is on, so no cross-band retune: 149 when the
+ * station is on 5 GHz, else 6. Failure stage: 1 MAC, 2 link add, 3 PHY, 4 link rates, 5 link
+ * active, 6 station, 7 queue. A failure leaves the ROC listens as before.
+ */
+int ItlIwx::
+iwx_mld_listener_setup(struct iwx_softc *sc, uint8_t home)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    uint32_t stage = 0;
+    int err = 0, queue;
+    uint8_t chan = home > 14 ? 149 : 6;
+    int generation = sc->sc_generation;
+
+    if (ic->ic_mld_link_count > 2 || sc->sc_capa_num_stations <= IWX_LISTENER_STA_ID ||
+        ic->ic_channels[chan].ic_flags == 0)
+        return ENOTSUP;
+
+    stage = 1;
+    {
+        struct iwx_mld_mac_config_cmd cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.id_and_color = htole32(IWX_LISTENER_MAC_ID);
+        cmd.action = htole32(IWX_FW_CTXT_ACTION_ADD);
+        cmd.mac_type = htole32(IWX_FW_MAC_TYPE_LISTENER);
+        if (ic->ic_awdl_addr_gen)
+            IEEE80211_ADDR_COPY(cmd.local_mld_addr, ic->ic_awdl_addr);
+        else {
+            IEEE80211_ADDR_COPY(cmd.local_mld_addr, ic->ic_myaddr);
+            cmd.local_mld_addr[0] ^= 0x02;
+        }
+        cmd.filter_flags = htole32(IWX_MLD_MAC_CFG_FILTER_PROMISC |
+            IWX_MLD_MAC_CFG_FILTER_ACCEPT_CONTROL_AND_MGMT |
+            IWX_MLD_MAC_CFG_FILTER_ACCEPT_BEACON |
+            IWX_MLD_MAC_CFG_FILTER_ACCEPT_PROBE_REQ |
+            IWX_MLD_MAC_CFG_FILTER_ACCEPT_GRP);
+        /* iwl_mld_set_wifi_gen(): a sniffer MAC takes the hardware's capabilities. */
+        cmd.he_support = htole16(1);
+        cmd.eht_support = htole32(1);
+        err = iwx_send_cmd_pdu(sc, IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_MAC_CONFIG_CMD),
+            0, sizeof(cmd), &cmd);
+        if (err)
+            goto fail;
+    }
+    stage = 2;
+    if ((err = iwx_mld_listener_link(sc, IWX_FW_CTXT_ACTION_ADD, 0, 0)) != 0)
+        goto fail;
+    stage = 3;
+    memset(&sc->sc_listener_phy, 0, sizeof(sc->sc_listener_phy));
+    sc->sc_listener_phy.id = IWX_NUM_PHY_CTX - 1;
+    sc->sc_listener_phy.channel = &ic->ic_channels[chan];
+    sc->sc_listener_phy.mld_config_valid = 1;
+    sc->sc_listener_phy.mld_width = IEEE80211_CHAN_WIDTH_20;
+    if ((err = iwx_phy_ctxt_cmd(sc, &sc->sc_listener_phy, 1, 1, IWX_FW_CTXT_ACTION_ADD, 0)) != 0)
+        goto fail;
+    stage = 4;
+    if ((err = iwx_mld_listener_link(sc, IWX_FW_CTXT_ACTION_MODIFY,
+        IWX_MLD_LINK_CONTEXT_MODIFY_RATES_INFO | IWX_MLD_LINK_CONTEXT_MODIFY_QOS_PARAMS, 0)) != 0)
+        goto fail;
+    stage = 5;
+    if ((err = iwx_mld_listener_link(sc, IWX_FW_CTXT_ACTION_MODIFY,
+        IWX_MLD_LINK_CONTEXT_MODIFY_ACTIVE, 1)) != 0)
+        goto fail;
+    stage = 6;
+    {
+        struct iwx_mld_sta_cfg_cmd_v2 cmd;
+        int cmd_ver = iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP, IWX_MLD_STA_CONFIG_CMD);
+        size_t size = (cmd_ver == 2) ? sizeof(cmd) : sizeof(struct iwx_mld_mvm_sta_cfg_cmd);
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.sta_id = htole32(IWX_LISTENER_STA_ID);
+        cmd.link_id = htole32(IWX_LISTENER_LINK_ID);
+        cmd.station_type = htole32(1);      /* STATION_TYPE_BCAST_MGMT */
+        cmd.mfp = htole32(1);
+        err = iwx_send_cmd_pdu(sc, IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_STA_CONFIG_CMD),
+            0, size, &cmd);
+        if (err)
+            goto fail;
+    }
+    stage = 7;
+    if (!iwx_nic_lock(sc)) {
+        err = EBUSY;
+        goto fail;
+    }
+    queue = iwx_tvqm_enable_txq(sc, IWX_MAX_TID_COUNT, 0, IWX_DEFAULT_QUEUE_SIZE, IWX_LISTENER_STA_ID);
+    if (generation != sc->sc_generation)
+        return ENXIO;
+    iwx_nic_unlock(sc);
+    /* The monitor station's queue is not one of the station's (see iwx_mld_aux_sta_add). */
+    sc->sc_mld_txq_tidmask &= ~(1U << IWX_MAX_TID_COUNT);
+    if (queue < 0) {
+        err = -queue;
+        goto fail;
+    }
+    sc->sc_p2p_queue = 1;
+    sc->sc_aux_roc_qid = queue;
+    ic->ic_awdl_roc_qid = queue;
+    sc->sc_listener_chan = chan;
+    ic->ic_awdl_listener_chan = chan;
+    sc->sc_listener_up = 1;
+    return 0;
+fail:
+    ic->ic_awdl_listener_stage = (uint8_t)stage;
+    ic->ic_awdl_listener_code = err;
+    return err;
+}
+
+/*
  * What iwx_p2p_setup() does for the MLD API: the P2P Device MAC (ADD once,
  * MODIFY when awdl0's address or the promiscuous request changes) and the aux
  * station. There is no PHY context or binding to program: the channel travels
@@ -11382,6 +11568,8 @@ iwx_aux_roc_sync_counters(struct iwx_softc *sc)
 void ItlIwx::
 iwx_awdl_listen_abort(struct iwx_softc *sc)
 {
+    if (sc->sc_listener_up)
+        return;     /* the listener stays for the whole AWDL session */
     if (iwx_p2p_listen_enabled()) {
         if (sc->sc_aux_roc_pending || sc->sc_aux_roc_running)
             iwx_p2p_session_cmd(sc, IWX_FW_CTXT_ACTION_REMOVE, 0);
@@ -14633,6 +14821,9 @@ iwx_stop(struct _ifnet *ifp)
     sc->sc_p2p_bound = 0;
     sc->sc_p2p_sta = 0;
     sc->sc_p2p_queue = 0;
+    sc->sc_listener_up = 0;
+    sc->sc_listener_tries = 0;
+    sc->sc_ic.ic_awdl_listener_chan = 0;
     sc->sc_flags &= ~IWX_FLAG_MAC_ACTIVE;
     sc->sc_flags &= ~IWX_FLAG_BINDING_ACTIVE;
     sc->sc_flags &= ~IWX_FLAG_STA_ACTIVE;
