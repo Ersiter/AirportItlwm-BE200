@@ -491,6 +491,7 @@ startAWTimeline()
     fLastValid = false;
     fInAW = false;
     fAWRunning = true;
+    fHuntStartUs = 0;               // every AWDL session gets its own hunt window
     publishAWDLAddress();
     AWDL_LOG("seq %u slot %llu us", fRefSeq, slotUs());
     scheduleNextAW(now);
@@ -945,8 +946,9 @@ static const int64_t kListenLeadUs = 6000;
 static const uint64_t kPeerStaleUs = 30000000;
 // Hunt: each social channel for this long, dwell and pause between listens. The pause keeps
 // the station link alive (a beacon every 100 TU still gets through). It only runs for the
-// first kHuntWindowUs after the first listen, so a diagnostic boot-arg left in place does not
-// leave the station link at 60 % airtime for good.
+// first kHuntWindowUs of each AWDL session (counted from its first listen), so a diagnostic
+// boot-arg left in place does not leave the station link at 60 % airtime for good. It used to
+// count from the first listen after boot, and a test started later never hunted.
 static const uint64_t kHuntWindowUs = 600000000;
 static const uint64_t kHuntStepUs = 3000000;
 static const uint32_t kHuntDwellTU = 100;
