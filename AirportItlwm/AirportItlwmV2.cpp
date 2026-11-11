@@ -1091,6 +1091,12 @@ getCARD_CAPABILITIES(OSObject *object,
         (1 << (APPLE80211_CAP_SHORT_GI_20MHZ - 16));
     // Apple80211Scan/ScanAsync reject native scan requests without capability 22.
     cd->capabilities[2] |= 0x40;
+    // Capability 73 (byte 9, 0x02): Apple80211Scan/ScanAsync use SCAN_REQ_MULTIPLE (type 86) for a
+    // directed scan (the Personal Hotspot join) unless it is set, and Tahoe's IO80211Family
+    // answers type 86 with an unconditional error, so airportd's scan failed with 102 nine times
+    // and gave up. With it set they send the ordinary SCAN_REQ (type 10, len 5528) that every
+    // other scan already uses. The pre-WCL branch below has always set the same bit.
+    cd->capabilities[9] |= 0x02;
     // Apple80211Associate2 filters SAE using both MFP and SAE capabilities.
     if (caps & IEEE80211_C_MFP)
         cd->capabilities[6] |= 0x01;
