@@ -11067,7 +11067,8 @@ iwx_mld_roc_cmd(struct iwx_softc *sc, uint32_t action, uint32_t duration_tu)
     const uint8_t chan = sc->sc_p2p_roc_chan;
     struct iwx_mld_roc_req_v6 req;
     int version = iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP, IWX_MLD_ROC_CMD);
-    size_t size = version == 5 ? sizeof(struct iwx_mld_roc_req_v5) : sizeof(req);
+    /* iwl_mvm_roc_add_cmd(): firmware older than ROC_CMD v6 takes the v5 layout (this one reports v4). */
+    size_t size = version < 6 ? sizeof(struct iwx_mld_roc_req_v5) : sizeof(req);
     /* The listen is only useful while the AW slot lasts. */
     const uint32_t max_delay = MIN(duration_tu, 32);
 
@@ -15336,6 +15337,8 @@ iwx_rx_pkt(struct iwx_softc *sc, struct iwx_rx_data *data, struct mbuf_list *ml)
             case IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD):
             case IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_STA_CONFIG_CMD):
             case IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_STA_REMOVE_CMD):
+            case IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_AUX_STA_CMD):
+            case IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_ROC_CMD):
             case IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_MLD_SEC_KEY_CMD):
             case IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_MLD_SCD_QUEUE_CONFIG_CMD):
             case IWX_WIDE_ID(IWX_DATA_PATH_GROUP, IWX_MLD_RX_BAID_CONFIG_CMD):
