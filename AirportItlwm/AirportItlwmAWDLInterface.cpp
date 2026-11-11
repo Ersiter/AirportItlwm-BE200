@@ -1537,6 +1537,9 @@ publishTxState()
     setProperty("AWDLRxUcData", ic->ic_awdl_rx_uc_data, 32);
     setProperty("AWDLRxUcOther", ic->ic_awdl_rx_uc_other, 32);
     setProperty("AWDLRxUcLastChannel", ic->ic_awdl_rx_uc_last_chan, 32);
+    setProperty("AWDLBaReq", ic->ic_awdl_ba_req, 32);
+    setProperty("AWDLBaRespSent", ic->ic_awdl_ba_resp_sent, 32);
+    setProperty("AWDLBaRespErr", ic->ic_awdl_ba_resp_err, 32);
     setProperty("AWDLFwUcMgmt", ic->ic_awdl_fw_uc_mgmt, 32);
     setProperty("AWDLFwUcData", ic->ic_awdl_fw_uc_data, 32);
     setProperty("AWDLFwUcBadCrc", ic->ic_awdl_fw_uc_badcrc, 32);

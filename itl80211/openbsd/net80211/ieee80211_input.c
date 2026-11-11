@@ -646,6 +646,41 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
             ic->ic_awdl_rx_uc_other++;
         IEEE80211_ADDR_COPY(ic->ic_awdl_rx_uc_last_src, wh->i_addr2);
         ic->ic_awdl_rx_uc_last_chan = rxi ? (uint8_t)rxi->rxi_chan : 0;
+        /*
+         * The peer wants a Block Ack agreement with awdl0. Nothing here keeps a
+         * reorder window or lets the firmware score A-MPDUs for this address,
+         * so refuse: the peer then sends ordinary MPDUs, which the firmware ACKs.
+         * Unanswered, the peer keeps retrying and holds its data back.
+         */
+        if (type == IEEE80211_FC0_TYPE_MGT && subtype == IEEE80211_FC0_SUBTYPE_ACTION &&
+            mbuf_len(m) >= sizeof(struct ieee80211_frame) + 9 && rxi && ic->ic_awdl_tx) {
+            const uint8_t *body = (const uint8_t *)&wh[1];
+            if (body[0] == IEEE80211_CATEG_BA && body[1] == IEEE80211_ACTION_ADDBA_REQ) {
+                uint8_t rsp[sizeof(struct ieee80211_frame) + 9];
+                struct ieee80211_frame *rh = (struct ieee80211_frame *)rsp;
+                uint16_t rseq = (uint16_t)(ic->ic_awdl_ba_resp_seq++ << 4);
+                memset(rsp, 0, sizeof(rsp));
+                rh->i_fc[0] = IEEE80211_FC0_VERSION_0 | IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_ACTION;
+                IEEE80211_ADDR_COPY(rh->i_addr1, wh->i_addr2);
+                IEEE80211_ADDR_COPY(rh->i_addr2, ic->ic_awdl_addr);
+                IEEE80211_ADDR_COPY(rh->i_addr3, wh->i_addr3);
+                rh->i_seq[0] = rseq & 0xff;
+                rh->i_seq[1] = rseq >> 8;
+                rsp[sizeof(*rh) + 0] = IEEE80211_CATEG_BA;
+                rsp[sizeof(*rh) + 1] = IEEE80211_ACTION_ADDBA_RESP;
+                rsp[sizeof(*rh) + 2] = body[2];                 /* dialog token */
+                rsp[sizeof(*rh) + 3] = IEEE80211_STATUS_REFUSED & 0xff;
+                rsp[sizeof(*rh) + 4] = IEEE80211_STATUS_REFUSED >> 8;
+                rsp[sizeof(*rh) + 5] = body[3] & ~0x01;         /* BA parameters as asked, no A-MSDU */
+                rsp[sizeof(*rh) + 6] = body[4];
+                ic->ic_awdl_ba_req++;
+                if ((*ic->ic_awdl_tx)(ic, (uint8_t)rxi->rxi_chan, rsp, sizeof(rsp)) == 0)
+                    ic->ic_awdl_ba_resp_sent++;
+                else
+                    ic->ic_awdl_ba_resp_err++;
+                goto out;
+            }
+        }
         /* Data for awdl0 must not be taken as station traffic. */
         if (type == IEEE80211_FC0_TYPE_DATA) {
             if (ic->ic_awdl_data_handler && (*ic->ic_awdl_data_handler)(ic, m, rxi)) {
