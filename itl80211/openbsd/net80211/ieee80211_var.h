@@ -627,6 +627,10 @@ struct ieee80211com {
      * filter on the P2P MAC.
      */
     uint32_t        ic_awdl_fw_foreign_data;
+    /* Group-addressed management / AWDL action frames the firmware delivered, by multicast-filter variant. */
+    uint32_t        ic_awdl_fw_mc_mgmt[4];
+    uint32_t        ic_awdl_fw_mc_awdl[4];
+    uint32_t        ic_awdl_mc_variant_roc[4];
     /*
      * Set by the AWDL interface while an AWDL peer is active (seen in the
      * last 30 s). The P2P MAC only accepts data frames (IN_PROMISC) then,

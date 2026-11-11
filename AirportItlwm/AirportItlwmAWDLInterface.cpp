@@ -1550,6 +1550,15 @@ publishTxState()
     setProperty("AWDLFwUcMgmt", ic->ic_awdl_fw_uc_mgmt, 32);
     setProperty("AWDLFwUcData", ic->ic_awdl_fw_uc_data, 32);
     setProperty("AWDLFwUcBadCrc", ic->ic_awdl_fw_uc_badcrc, 32);
+    {
+        char mc[160];
+        snprintf(mc, sizeof(mc), "v0:%u/%u v1:%u/%u v2:%u/%u v3:%u/%u",
+            ic->ic_awdl_fw_mc_awdl[0], ic->ic_awdl_fw_mc_mgmt[0], ic->ic_awdl_fw_mc_awdl[1], ic->ic_awdl_fw_mc_mgmt[1],
+            ic->ic_awdl_fw_mc_awdl[2], ic->ic_awdl_fw_mc_mgmt[2], ic->ic_awdl_fw_mc_awdl[3], ic->ic_awdl_fw_mc_mgmt[3]);
+        setProperty("AWDLFwMcAwdlOverMgmt", mc);
+        snprintf(mc, sizeof(mc), "v1:%u v2:%u v3:%u", ic->ic_awdl_mc_variant_roc[1], ic->ic_awdl_mc_variant_roc[2], ic->ic_awdl_mc_variant_roc[3]);
+        setProperty("AWDLMcVariantListens", mc);
+    }
     setProperty("AWDLFwUcDropDecrypt", ic->ic_awdl_fw_uc_drop_decrypt, 32);
     setProperty("AWDLFwUcLastChannel", ic->ic_awdl_fw_uc_last_chan, 32);
     setProperty("AWDLFwUcLastFc", ic->ic_awdl_fw_uc_last_fc, 32);

@@ -273,6 +273,7 @@ public:
     void    iwx_apm_stop(struct iwx_softc *);
     void    iwx_sw_reset(struct iwx_softc *);
     int    iwx_allow_mcast(struct iwx_softc *);
+    void   iwx_awdl_mcast_variant(struct iwx_softc *, uint8_t);
     void    iwx_init_msix_hw(struct iwx_softc *);
     void    iwx_conf_msix_hw(struct iwx_softc *, int);
     int    iwx_start_hw(struct iwx_softc *);

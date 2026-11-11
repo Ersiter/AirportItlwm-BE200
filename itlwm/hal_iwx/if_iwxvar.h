@@ -896,6 +896,8 @@ struct iwx_softc {
 	uint32_t sc_aux_roc_sent;
 	uint32_t sc_aux_roc_resp_err;
 	uint32_t sc_aux_roc_started;
+	uint8_t sc_awdl_mc_variant;	/* multicast filter variant active during this listen (0 = station's) */
+	uint32_t sc_awdl_mc_roc_count;
 	uint32_t sc_aux_roc_ended;
 	uint32_t sc_aux_roc_not_sched;
 

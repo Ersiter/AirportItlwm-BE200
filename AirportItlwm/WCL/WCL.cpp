@@ -70,7 +70,9 @@ static void clearWCLSAE(ieee80211com *ic)
 enum { WCL_USER_EAPOL_DEFER, WCL_USER_EAPOL_SET_LINK, WCL_USER_EAPOL_TAKE, WCL_USER_EAPOL_PURGE };
 
 // IO80211 waits for the complete request, including every band and batch.
-static constexpr uint32_t WCL_SCAN_TIMEOUT_MS = 20000;
+// airportd gives up on a scan after 17-20 s (-3905 'Timeout') and the Personal Hotspot fallback
+// scans every channel, 6 GHz included, which takes longer than that; end earlier and keep what was heard.
+static constexpr uint32_t WCL_SCAN_TIMEOUT_MS = 14000;
 
 IOReturn AirportItlwmSkywalkInterface::wclUserEapolGated(
     OSObject *, void *arg0, void *arg1, void *arg2, void *arg3)
@@ -627,6 +629,8 @@ void AirportItlwmSkywalkInterface::finishWCLScan(IOReturn status)
         setProperty("WCLScanLast", summary);
         if (deferredScan.ssidLength)
             setProperty("WCLScanLastDirected", summary);
+        if (deferredScan.channelCount && deferredScan.channelCount <= 4)
+            setProperty("WCLScanLastRestricted", summary);
     }
     scanPending = scanDeferred = false;
     scanCompleted = false;
@@ -687,7 +691,7 @@ void AirportItlwmSkywalkInterface::clearWCLScanResults()
 void AirportItlwmSkywalkInterface::completeWCLScan()
 {
     if (!wclStopping)
-        finishWCLScan(scanCompleted ? kIOReturnSuccess : kIOReturnTimeout);
+        finishWCLScan(scanCompleted || wclScanResultCount ? kIOReturnSuccess : kIOReturnTimeout);
 }
 
 void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, const uint8_t *ies, size_t length)
