@@ -509,6 +509,18 @@ IOReturn AirportItlwmSkywalkInterface::beginWCLScan(apple80211ScanRequest *reque
     if (!AirportWCL::decodeScan(request, 0x1550, scan)) {
         return kIOReturnBadArgument;
     }
+#if __IO80211_TARGET == __MAC_26_0
+    // Instant Hotspot supplies one name plus a wildcard in the native SSID list.
+    const auto raw = reinterpret_cast<const uint8_t *>(request);
+    if (!scan.ssidLength && AirportWCL::read32(raw + 0x1318) == 2) {
+        uint32_t length = AirportWCL::read32(raw + 0x1320);
+        if (length > sizeof(scan.ssid))
+            return kIOReturnBadArgument;
+        scan.ssidLength = length;
+        memcpy(scan.ssid, raw + 0x1324, length);
+        XYLog("%s: native SSID list target length %u\n", __FUNCTION__, length);
+    }
+#endif
     return startWCLScan(scan);
 }
 
@@ -837,6 +849,14 @@ void AirportItlwmSkywalkInterface::postWCLScanResult(const ieee80211_node *node,
         AirportWCL::scanChannelSelected(sixGHz ? deferredScan.channels6GHz :
             deferredScan.channels, deferredScan.channelCount != 0, channel))
         keepWCLScanResult(metadata, messageSize);
+    if (scanPending && deferredScan.ssidLength == ssidBytes && ssidBytes &&
+        memcmp(deferredScan.ssid, ssid, ssidBytes) == 0) {
+        char target[112];
+        snprintf(target, sizeof(target), "n=%u bssid=%s channel=%u ieLength=%zu",
+            wclScanCount, ether_sprintf(bssid), channel, length);
+        setProperty("WCLScanTarget", target);
+        setProperty("WCLScanTargetIE", metadata + 1, (unsigned)length);
+    }
     instance->postMessage(this, AirportWCL::ScanResult, metadata, messageSize, true);
     IOFree(metadata, size);
 }
