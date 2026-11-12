@@ -2,14 +2,14 @@
 //  AirportItlwmAWDLInterface.cpp
 //  AirportItlwm
 //
-//  awdl0 for macOS 26 (Tahoe), stage 1: accept and log the AWDL control plane.
+//  awdl0 for macOS 26 (Tahoe) and macOS 15 (Sequoia), stage 1: accept and log the AWDL control plane.
 //
 
 #include "AirportItlwmV2.hpp"
 #include "AirportItlwmAWDLInterface.hpp"
 #include "AirportItlwmSkywalkInterface.hpp"
 
-#if defined(AIRPORT_WCL) && __IO80211_TARGET != __MAC_15_2
+#ifdef AIRPORT_WCL
 
 extern IOCommandGate *_fCommandGate;
 
@@ -238,6 +238,22 @@ static bool awTimelineAllowed()
 
 #pragma mark - receive path, mirrors AppleBCMWLANProximityInterface::handleActionFrame_rx
 
+#if __IO80211_TARGET == __MAC_15_2
+// Sequoia: IO80211Buffer has no virtual methods (plain exports), the pool is the controller's, and
+// bpfTapInput takes over the buffer.
+typedef IO80211BufferPool AWDLBufferPoolABI;
+typedef IO80211Buffer AWDLBufferABI;
+static inline AWDLBufferPoolABI *awdlMgmtPool(IO80211VirtualInterface *, IO80211Controller *c) { return itlGetMgmtFramePool(c); }
+static inline AWDLBufferABI *awdlBufGet(AWDLBufferPoolABI *pool) { return pool->getBuffer(); }
+static inline size_t awdlBufCapacity(AWDLBufferABI *b) { return b->getCapacity(); }
+static inline uint8_t *awdlBufBytes(AWDLBufferABI *b) { return (uint8_t *)b->getBytesNoCopy(); }
+static inline void awdlBufSetLength(AWDLBufferABI *b, size_t n) { b->setLength(n); }
+static inline void awdlBufReturn(AWDLBufferABI *b) { b->returnBuffer(); }
+static inline void awdlBufSubmit(IO80211VirtualInterface *i, AWDLBufferABI *b, void *meta, size_t n)
+{
+    itlSubmitMgmtFrame(i, b, 12, meta, n);
+}
+#else
 // IO80211BufferPool / IO80211Buffer vtable slots (Tahoe KC, address point relative).
 enum : size_t {
     kPoolGetBuffer   = 0x118,
@@ -252,6 +268,20 @@ static inline R vcall(const void *obj, size_t slot, A... args)
     auto fn = *reinterpret_cast<R (* const *)(const void *, A...)>(*reinterpret_cast<const uint8_t * const *>(obj) + slot);
     return fn(obj, args...);
 }
+static inline AWDLBufferPoolABI *awdlMgmtPool(IO80211VirtualInterface *i, IO80211Controller *)
+{
+    return IO80211VirtualInterface_getMgmtFramePool(i);
+}
+static inline AWDLBufferABI *awdlBufGet(AWDLBufferPoolABI *pool) { return vcall<AWDLBufferABI *>(pool, kPoolGetBuffer); }
+static inline size_t awdlBufCapacity(AWDLBufferABI *b) { return vcall<size_t>(b, kBufGetCapacity); }
+static inline uint8_t *awdlBufBytes(AWDLBufferABI *b) { return vcall<uint8_t *>(b, kBufGetBytes); }
+static inline void awdlBufSetLength(AWDLBufferABI *b, size_t n) { vcall<void>(b, kBufSetLength, n); }
+static inline void awdlBufReturn(AWDLBufferABI *b) { vcall<void>(b, kBufReturn); }
+static inline void awdlBufSubmit(IO80211VirtualInterface *i, AWDLBufferABI *b, void *meta, size_t n)
+{
+    IO80211VirtualInterface_bpfTapInput(i, b, 12, meta, n);
+}
+#endif
 
 // Metadata AppleBCMWLANProximityInterface passes to bpfTapInput (0x48 bytes).
 struct AWDLRxMeta {
@@ -328,22 +358,22 @@ inputActionFrame(const uint8_t *frame, size_t len, const ieee80211_rxinfo *rxi)
         setProperty("AWDLRxLastChannel", rxi->rxi_chan, 32);
     }
 
-    AWDLBufferPoolABI *pool = IO80211VirtualInterface_getMgmtFramePool(this);
-    AWDLBufferABI *buf = pool ? vcall<AWDLBufferABI *>(pool, kPoolGetBuffer) : nullptr;
+    AWDLBufferPoolABI *pool = awdlMgmtPool(this, fController);
+    AWDLBufferABI *buf = pool ? awdlBufGet(pool) : nullptr;
     if (!buf) {
         fRxAFDropped++;
         return 1;
     }
     size_t payload = len - hdr;
-    if (payload > vcall<size_t>(buf, kBufGetCapacity)) {
-        vcall<void>(buf, kBufReturn);
+    if (payload > awdlBufCapacity(buf)) {
+        awdlBufReturn(buf);
         fRxAFDropped++;
         return 1;
     }
     // Copied verbatim: bytes 8..15 are phy_tx_time / target_tx_time, which the
     // peer manager uses for time sync.
-    memcpy(vcall<uint8_t *>(buf, kBufGetBytes), af, payload);
-    vcall<void>(buf, kBufSetLength, payload);
+    memcpy(awdlBufBytes(buf), af, payload);
+    awdlBufSetLength(buf, payload);
 
     const struct ieee80211_frame *wh = (const struct ieee80211_frame *)frame;
     AWDLRxMeta meta = {};
@@ -370,7 +400,7 @@ inputActionFrame(const uint8_t *frame, size_t len, const ieee80211_rxinfo *rxi)
     syncFromFrame(af, payload, wh->i_addr2, rxUs);
 
     // Consumes buf (peer manager input + bpf, then returnBuffer).
-    IO80211VirtualInterface_bpfTapInput(this, buf, 12, &meta, sizeof(meta));
+    awdlBufSubmit(this, buf, &meta, sizeof(meta));
     return 1;
 }
 
@@ -2343,4 +2373,4 @@ AWDL_SET_STUB(PSF_DWELL, apple80211_awdl_psf_dwell_params)
 AWDL_SET_STUB(AWDL_CONFIG, apple80211_awdl_config_request)
 AWDL_SET_STUB(AWDL_RTG_PEER_STATS_CONFIG, apple80211_rtg_peer_stats_cfg)
 
-#endif /* AIRPORT_WCL && Tahoe */
+#endif /* AIRPORT_WCL */

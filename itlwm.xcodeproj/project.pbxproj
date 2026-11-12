@@ -622,6 +622,7 @@
 		F8A028302A4A7E0500C6DE90 /* AirportItlwmEthernetInterface.hpp in Headers */ = {isa = PBXBuildFile; fileRef = F8A0282E2A4A7E0400C6DE90 /* AirportItlwmEthernetInterface.hpp */; };
 		F8A028722A4A7FE100C6DE90 /* AirportItlwmSkywalkInterface.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8A028702A4A7FE100C6DE90 /* AirportItlwmSkywalkInterface.cpp */; };
 		1EE81010096D5892BA04A0E1 /* AirportItlwmAWDLInterface.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 3C6104E34D78EB99C79D1C20 /* AirportItlwmAWDLInterface.cpp */; };
+		7C41E0B35A2D4F8E9B6A1D03 /* AirportItlwmAWDLInterface.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 3C6104E34D78EB99C79D1C20 /* AirportItlwmAWDLInterface.cpp */; };
 		F8A028732A4A7FE100C6DE90 /* AirportItlwmSkywalkInterface.hpp in Headers */ = {isa = PBXBuildFile; fileRef = F8A028712A4A7FE100C6DE90 /* AirportItlwmSkywalkInterface.hpp */; };
 		F8A0287F2A4A80EA00C6DE90 /* IOPCIEDeviceWrapper.cpp in Sources */ = {isa = PBXBuildFile; fileRef = F8A0287D2A4A80EA00C6DE90 /* IOPCIEDeviceWrapper.cpp */; };
 		F8A028802A4A80EA00C6DE90 /* IOPCIEDeviceWrapper.hpp in Headers */ = {isa = PBXBuildFile; fileRef = F8A0287E2A4A80EA00C6DE90 /* IOPCIEDeviceWrapper.hpp */; };
@@ -3471,6 +3472,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7C41E0B35A2D4F8E9B6A1D03 /* AirportItlwmAWDLInterface.cpp in Sources */,
 				E6B00D0FB5D540779710EAF1 /* ec_p256_m31.c in Sources */,
 				B31CA34654BF4976A305CCE7 /* i31.c in Sources */,
 				1113DC0822F6441DB271CD90 /* ieee80211_sae.c in Sources */,

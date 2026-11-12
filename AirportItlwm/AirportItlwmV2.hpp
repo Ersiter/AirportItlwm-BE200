@@ -265,7 +265,7 @@ public:
     static int awdlDataFrameHandler(struct ieee80211com *ic, mbuf_t m, struct ieee80211_rxinfo *rxi);
     // Experimental awdl0 support, enabled with the -itlawdl boot argument.
     bool fAWDLEnabled;
-#if defined(AIRPORT_WCL) && __IO80211_TARGET != __MAC_15_2
+#ifdef AIRPORT_WCL
     class AirportItlwmAWDLInterface *fAWDLIf;
     class AirportItlwmAWDLEthernetInterface *fAWDLBsdIf;
     bool fCreatingAWDL;

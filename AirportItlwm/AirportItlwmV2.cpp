@@ -146,7 +146,7 @@ bool AirportItlwm::init(OSDictionary *properties)
     bool ret = super::init(properties);
     awdlSyncEnable = true;
     fAWDLEnabled = false;
-#if defined(AIRPORT_WCL) && __IO80211_TARGET != __MAC_15_2
+#ifdef AIRPORT_WCL
     fAWDLIf = nullptr;
     fAWDLBsdIf = nullptr;
     fCreatingAWDL = false;
@@ -490,7 +490,7 @@ bool AirportItlwm::start(IOService *provider)
 
 int AirportItlwm::awdlActionFrameHandler(struct ieee80211com *ic, mbuf_t m, struct ieee80211_rxinfo *rxi)
 {
-#if defined(AIRPORT_WCL) && __IO80211_TARGET != __MAC_15_2
+#ifdef AIRPORT_WCL
     AirportItlwm *that = OSDynamicCast(AirportItlwm, ic->ic_ac.ac_if.controller);
     if (!that || !that->fAWDLIf)
         return 0;
@@ -506,7 +506,7 @@ int AirportItlwm::awdlActionFrameHandler(struct ieee80211com *ic, mbuf_t m, stru
 // to awdl0's BSD interface, as OWL does (seemoo-lab/owl src/rx.c).
 int AirportItlwm::awdlDataFrameHandler(struct ieee80211com *ic, mbuf_t m, struct ieee80211_rxinfo *rxi)
 {
-#if defined(AIRPORT_WCL) && __IO80211_TARGET != __MAC_15_2
+#ifdef AIRPORT_WCL
     AirportItlwm *that = OSDynamicCast(AirportItlwm, ic->ic_ac.ac_if.controller);
     if (!that || !that->fAWDLIf || !that->fAWDLBsdIf)
         return 0;
@@ -520,7 +520,7 @@ void AirportItlwm::stop(IOService *provider)
 {
     XYLog("%s\n", __PRETTY_FUNCTION__);XYLog("%s\n", __PRETTY_FUNCTION__);
     struct _ifnet *ifp = &fHalService->get80211Controller()->ic_ac.ac_if;
-#if defined(AIRPORT_WCL) && __IO80211_TARGET != __MAC_15_2
+#ifdef AIRPORT_WCL
     destroyAWDLInterface();
 #endif
 #ifdef AIRPORT_WCL
@@ -618,7 +618,7 @@ bool AirportItlwm::configureInterface(IONetworkInterface *netif)
         XYLog("super failed\n");
         return false;
     }
-#if defined(AIRPORT_WCL) && __IO80211_TARGET != __MAC_15_2
+#ifdef AIRPORT_WCL
     // awdl0 must not take over the station's net80211 ifnet or statistics.
     if (AirportItlwmAWDLEthernetInterface *awdl = OSDynamicCast(AirportItlwmAWDLEthernetInterface, netif))
         return awdl->registerOutputHandler(awdl,
@@ -649,7 +649,7 @@ bool AirportItlwm::configureInterface(IONetworkInterface *netif)
 
 IONetworkInterface *AirportItlwm::createInterface()
 {
-#if defined(AIRPORT_WCL) && __IO80211_TARGET != __MAC_15_2
+#ifdef AIRPORT_WCL
     if (fCreatingAWDL) {
         AirportItlwmAWDLEthernetInterface *awdl = new AirportItlwmAWDLEthernetInterface;
         if (awdl) {
@@ -1097,8 +1097,11 @@ getCARD_CAPABILITIES(OSObject *object,
     // directed scan (the Personal Hotspot join) unless it is set, and Tahoe's IO80211Family
     // answers type 86 with an unconditional error, so airportd's scan failed with 102 nine times
     // and gave up. With it set they send the ordinary SCAN_REQ (type 10, len 5528) that every
-    // other scan already uses. The pre-WCL branch below has always set the same bit.
+    // other scan already uses. The pre-WCL branch below has always set the same bit. Set on
+    // macOS 26 only: type 86 on macOS 15 has not been looked at, so its capabilities stay as they were.
+#if __IO80211_TARGET != __MAC_15_2
     cd->capabilities[9] |= 0x02;
+#endif
     // Apple80211Associate2 filters SAE using both MFP and SAE capabilities.
     if (caps & IEEE80211_C_MFP)
         cd->capabilities[6] |= 0x01;

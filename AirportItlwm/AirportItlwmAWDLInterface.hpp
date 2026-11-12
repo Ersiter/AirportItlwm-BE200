@@ -2,7 +2,7 @@
 //  AirportItlwmAWDLInterface.hpp
 //  AirportItlwm
 //
-//  awdl0 for macOS 26 (Tahoe): the IO80211AWDLProtocol interface, a host-side
+//  awdl0 for macOS 26 (Tahoe) and macOS 15 (Sequoia): the IO80211AWDLProtocol interface, a host-side
 //  availability-window timeline, listen/transmit on Intel P2P Device dwells and a data path.
 //  The contract was reverse-engineered from the macOS 26 IO80211Family and AppleBCMWLAN kexts.
 //
@@ -10,19 +10,27 @@
 #ifndef AirportItlwmAWDLInterface_hpp
 #define AirportItlwmAWDLInterface_hpp
 
-#if defined(AIRPORT_WCL) && __IO80211_TARGET != __MAC_15_2
+#ifdef AIRPORT_WCL
 
 #include <Airport/Apple80211.h>
+#if __IO80211_TARGET == __MAC_15_2
+#include <Airport/macOS15/IO80211VirtualInterface.h>
+#include <Airport/macOS15/IO80211AWDLProtocol.h>
+#include <Airport/macOS15/IO80211ManagementBuffer.h>
+#else
 #include <Airport/macOS26/IO80211VirtualInterface.h>
 #include <Airport/macOS26/IO80211AWDLProtocol.h>
+#endif
 #include "AirportItlwmEthernetInterface.hpp"
 #include <IOKit/IOTimerEventSource.h>
 
 class AirportItlwm;
 struct ieee80211_rxinfo;
 
-// IO80211Family buffer objects, used only through their vtables / exported
-// functions. Slot offsets are from the Tahoe kernel collection.
+// IO80211Family buffer objects. On macOS 26 they are used only through their vtables and the
+// interface's exports (slot offsets from the Tahoe kernel collection); on macOS 15 IO80211Buffer has
+// no virtual methods and the pool comes from the controller (IO80211ManagementBuffer.h).
+#if __IO80211_TARGET != __MAC_15_2
 class AWDLBufferPoolABI;
 class AWDLBufferABI;
 extern "C" AWDLBufferPoolABI *IO80211VirtualInterface_getMgmtFramePool(IO80211VirtualInterface *)
@@ -30,6 +38,7 @@ extern "C" AWDLBufferPoolABI *IO80211VirtualInterface_getMgmtFramePool(IO80211Vi
 extern "C" void IO80211VirtualInterface_bpfTapInput(IO80211VirtualInterface *, AWDLBufferABI *,
                                                     unsigned int, void *, unsigned long)
     __asm__("__ZN23IO80211VirtualInterface11bpfTapInputEP13IO80211BufferjPvm");
+#endif
 
 // Role values used by IO80211 on Tahoe (apple80211_virtual_if_role).
 enum : unsigned int {
@@ -322,5 +331,5 @@ private:
     uint64_t fCallCount;
 };
 
-#endif /* AIRPORT_WCL && Tahoe */
+#endif /* AIRPORT_WCL */
 #endif /* AirportItlwmAWDLInterface_hpp */
