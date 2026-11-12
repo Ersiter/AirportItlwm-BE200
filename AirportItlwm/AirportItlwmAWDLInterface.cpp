@@ -668,8 +668,12 @@ postAWEvents()
     ev.startUsBE = OSSwapHostToBigInt32((uint32_t)start);
     ev.chan.version = APPLE80211_VERSION;
     if (slotChan) {
-        ev.chan.channel = slotChan->channel;
+        ev.chan.channel = ownChannelAt(seq);
         ev.chan.flags = slotChan->flags;
+        const ieee80211com *ic = fController->fHalService->get80211Controller();
+        if (ic->ic_awdl_listener_chan)
+            ev.chan.flags = (ev.chan.channel <= 14 ? APPLE80211_C_FLAG_2GHZ :
+                APPLE80211_C_FLAG_5GHZ) | APPLE80211_C_FLAG_20MHZ;
     }
     if (!ev.chan.channel) {
         ev.chan.channel = 6;
@@ -1090,6 +1094,10 @@ ownChannelAt(uint16_t seq) const
         return 0;
     uint16_t pm = presenceMode();
     const apple80211_channel *c = (const apple80211_channel *)(fChanSeq + kChanSeqEntries) + (seq / pm) % count;
+    const ieee80211com *ic = fController ? fController->fHalService->get80211Controller() : nullptr;
+    // A standing link cannot follow the system's hopping sequence. Keep idle slots.
+    if (c->channel && ic && ic->ic_awdl_listener_chan)
+        return ic->ic_awdl_listener_chan;
     return (uint8_t)c->channel;
 }
 
@@ -1157,7 +1165,8 @@ scheduleOwnListen(uint64_t afterUs)
                 fromPeer = true;
             }
         }
-        if (!chan || chan == home)
+        if (!chan || chan == home ||
+            (ic->ic_awdl_listener_chan && chan != ic->ic_awdl_listener_chan))
             continue;
         unsigned run = 1;
         if (!fromPeer) {
@@ -1360,14 +1369,16 @@ buildAWDLFrame(uint8_t *buf, size_t cap, bool mi, uint64_t nowUs)
     uint16_t curAW = (uint16_t)(seq + ((int64_t)nowUs - start) / ((int64_t)period * 1024));
     uint16_t down = (uint16_t)((start + slot - (int64_t)nowUs + 1023) / 1024);
     unsigned count = fChanSeqValid ? fChanSeq[kChanSeqCount] : 0;
+    const ieee80211com *ic = fController ? fController->fHalService->get80211Controller() : nullptr;
+    const uint8_t listenerChan = ic ? ic->ic_awdl_listener_chan : 0;
     auto chanAt = [&](uint16_t s) -> uint8_t {
         if (!count)
-            return 6;
-        const apple80211_channel *c = (const apple80211_channel *)(fChanSeq + kChanSeqEntries) + (s / pm) % count;
-        return (uint8_t)c->channel;
+            return listenerChan ? listenerChan : 6;
+        return ownChannelAt(s);
     };
     const ether_addr &master = isSyncMaster() ? fMac : fSyncMaster;
-    uint8_t masterChan = fMasterChannel ? (uint8_t)fMasterChannel : 6;
+    uint8_t masterChan = isSyncMaster() && listenerChan ? listenerChan :
+        (fMasterChannel ? (uint8_t)fMasterChannel : 6);
 
     uint8_t *p = af + kAWDLFixedHeaderLen;
     auto put16 = [](uint8_t *q, uint16_t v) { q[0] = v & 0xff; q[1] = v >> 8; };
@@ -1389,9 +1400,11 @@ buildAWDLFrame(uint8_t *buf, size_t cap, bool mi, uint64_t nowUs)
         q[2] = fChanSeqValid ? fChanSeq[8] : 0;
         q[3] = fChanSeqValid ? fChanSeq[kChanSeqStep] : (uint8_t)(pm - 1);
         uint8_t fill = fChanSeqValid ? fChanSeq[9] : 255;
+        if (listenerChan && fill && fill != 255)
+            fill = listenerChan;
         put16(q + 4, fill == 255 ? 0xffff : (uint16_t)(fill | (opClass(fill) << 8)));
         for (unsigned i = 0; i < 16; i++) {
-            uint8_t c = count ? chanAt((uint16_t)(i * pm)) : 6;
+            uint8_t c = chanAt((uint16_t)(i * pm));
             q[6 + 2 * i] = c;
             q[7 + 2 * i] = opClass(c);
         }
@@ -1969,12 +1982,14 @@ getSSID(apple80211_ssid_data *d)
 IOReturn AirportItlwmAWDLInterface::
 getCHANNEL(apple80211_channel_data *d)
 {
-    // Social channel 6 until channel sequencing is implemented.
+    const ieee80211com *ic = fController ? fController->fHalService->get80211Controller() : nullptr;
+    const uint8_t chan = ic && ic->ic_awdl_listener_chan ? ic->ic_awdl_listener_chan : 6;
     memset(d, 0, sizeof(*d));
     d->version = APPLE80211_VERSION;
     d->channel.version = APPLE80211_VERSION;
-    d->channel.channel = 6;
-    d->channel.flags = APPLE80211_C_FLAG_2GHZ | APPLE80211_C_FLAG_20MHZ;
+    d->channel.channel = chan;
+    d->channel.flags = (chan <= 14 ? APPLE80211_C_FLAG_2GHZ : APPLE80211_C_FLAG_5GHZ) |
+        APPLE80211_C_FLAG_20MHZ;
     return kIOReturnSuccess;
 }
 
@@ -2312,6 +2327,20 @@ getAWDL_SYNCHRONIZATION_CHANNEL_SEQUENCE(apple80211_awdl_sync_channel_sequence *
     if (!fChanSeqValid)
         return kIOReturnUnsupported;
     memcpy(d, fChanSeq, sizeof(fChanSeq));
+    const ieee80211com *ic = fController ? fController->fHalService->get80211Controller() : nullptr;
+    if (ic && ic->ic_awdl_listener_chan) {
+        uint8_t *raw = (uint8_t *)d;
+        if (raw[9] && raw[9] != 255)
+            raw[9] = ic->ic_awdl_listener_chan;
+        auto channels = (apple80211_channel *)(raw + kChanSeqEntries);
+        for (unsigned i = 0; i < raw[kChanSeqCount]; ++i) {
+            if (!channels[i].channel)
+                continue;
+            channels[i].channel = ic->ic_awdl_listener_chan;
+            channels[i].flags = (channels[i].channel <= 14 ? APPLE80211_C_FLAG_2GHZ :
+                APPLE80211_C_FLAG_5GHZ) | APPLE80211_C_FLAG_20MHZ;
+        }
+    }
     return kIOReturnSuccess;
 }
 
