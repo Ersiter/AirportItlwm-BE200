@@ -10401,6 +10401,25 @@ static bool iwx_awdl_listener_enabled()
     return enabled == 1;
 }
 
+/*
+ * -itlawdlclient: the standing MAC is a P2P client 'associated' to the AWDL BSSID instead of a
+ * LISTENER. On hardware the LISTENER link came up and heard AWDL broadcasts (PeerUpdates 1 -> 14) only
+ * while the station was not associated, and crashed the firmware (NMI_INTERRUPT_LMAC_FATAL) at link
+ * activation every time a station was on another channel, in either band. Linux iwl-mld allows two
+ * different channels only for the combination STATION + P2P_CLIENT/GO (num_different_channels = 2), and
+ * a client MAC takes frames of its BSSID (the AWDL BSSID is in addr3 of every AWDL frame) and ACKs
+ * to its address.
+ */
+static bool iwx_awdl_client_enabled()
+{
+    static int enabled = -1;
+    if (enabled < 0) {
+        int v;
+        enabled = PE_parse_boot_argn("-itlawdlclient", &v, sizeof(v)) ? 1 : 0;
+    }
+    return enabled == 1;
+}
+
 static bool iwx_p2p_listen_enabled()
 {
     static int enabled = -1;
@@ -10538,7 +10557,7 @@ iwx_awdl_listen(struct ieee80211com *ic, uint8_t chan, uint16_t dwell_tu)
     if (chan == 0 || chan > IEEE80211_CHAN_MAX || ic->ic_channels[chan].ic_flags == 0)
         return EINVAL;
     int err;
-    if (iwx_awdl_listener_enabled() && sc->sc_use_mld_api) {
+    if ((iwx_awdl_listener_enabled() || iwx_awdl_client_enabled()) && sc->sc_use_mld_api) {
         /* sc_listener_tries survives firmware restarts: two attempts per boot, never a crash loop. */
         if (!sc->sc_listener_up && sc->sc_listener_tries < 2 && ic->ic_bss) {
             sc->sc_listener_tries++;
@@ -11181,21 +11200,30 @@ iwx_mld_listener_setup(struct iwx_softc *sc, bool home2g)
         memset(&cmd, 0, sizeof(cmd));
         cmd.id_and_color = htole32(IWX_LISTENER_MAC_ID);
         cmd.action = htole32(IWX_FW_CTXT_ACTION_ADD);
-        cmd.mac_type = htole32(IWX_FW_MAC_TYPE_LISTENER);
+        cmd.mac_type = htole32(iwx_awdl_client_enabled() ? IWX_FW_MAC_TYPE_P2P_STA :
+            IWX_FW_MAC_TYPE_LISTENER);
         if (ic->ic_awdl_addr_gen)
             IEEE80211_ADDR_COPY(cmd.local_mld_addr, ic->ic_awdl_addr);
         else {
             IEEE80211_ADDR_COPY(cmd.local_mld_addr, ic->ic_myaddr);
             cmd.local_mld_addr[0] ^= 0x02;
         }
-        cmd.filter_flags = htole32(IWX_MLD_MAC_CFG_FILTER_PROMISC |
-            IWX_MLD_MAC_CFG_FILTER_ACCEPT_CONTROL_AND_MGMT |
-            IWX_MLD_MAC_CFG_FILTER_ACCEPT_BEACON |
-            IWX_MLD_MAC_CFG_FILTER_ACCEPT_PROBE_REQ |
-            IWX_MLD_MAC_CFG_FILTER_ACCEPT_GRP);
-        /* iwl_mld_set_wifi_gen(): a sniffer MAC takes the hardware's capabilities. */
-        cmd.he_support = htole16(1);
-        cmd.eht_support = htole32(1);
+        if (iwx_awdl_client_enabled()) {
+            /* iwl_mld_fill_mac_cmd_sta(): GRP, and beacons until associated. */
+            cmd.filter_flags = htole32(IWX_MLD_MAC_CFG_FILTER_ACCEPT_GRP |
+                IWX_MLD_MAC_CFG_FILTER_ACCEPT_BEACON |
+                IWX_MLD_MAC_CFG_FILTER_ACCEPT_CONTROL_AND_MGMT |
+                IWX_MLD_MAC_CFG_FILTER_ACCEPT_PROBE_REQ);
+        } else {
+            cmd.filter_flags = htole32(IWX_MLD_MAC_CFG_FILTER_PROMISC |
+                IWX_MLD_MAC_CFG_FILTER_ACCEPT_CONTROL_AND_MGMT |
+                IWX_MLD_MAC_CFG_FILTER_ACCEPT_BEACON |
+                IWX_MLD_MAC_CFG_FILTER_ACCEPT_PROBE_REQ |
+                IWX_MLD_MAC_CFG_FILTER_ACCEPT_GRP);
+            /* iwl_mld_set_wifi_gen(): a sniffer MAC takes the hardware's capabilities. */
+            cmd.he_support = htole16(1);
+            cmd.eht_support = htole32(1);
+        }
         err = iwx_send_cmd_pdu(sc, IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_MAC_CONFIG_CMD),
             0, sizeof(cmd), &cmd);
         if (err)
@@ -11228,10 +11256,44 @@ iwx_mld_listener_setup(struct iwx_softc *sc, bool home2g)
         memset(&cmd, 0, sizeof(cmd));
         cmd.sta_id = htole32(IWX_LISTENER_STA_ID);
         cmd.link_id = htole32(IWX_LISTENER_LINK_ID);
-        cmd.station_type = htole32(1);      /* STATION_TYPE_BCAST_MGMT */
-        cmd.mfp = htole32(1);
+        if (iwx_awdl_client_enabled()) {
+            /* The 'AP' of this client: the AWDL BSSID, as a peer link station. */
+            static const uint8_t kBssid[6] = { 0x00, 0x25, 0x00, 0xff, 0x94, 0x73 };
+            const uint8_t *bssid = ic->ic_awdl_bssid_valid ? ic->ic_awdl_bssid : kBssid;
+            cmd.station_type = htole32(IWX_STA_LINK);
+            IEEE80211_ADDR_COPY(cmd.peer_mld_address, bssid);
+            IEEE80211_ADDR_COPY(cmd.peer_link_address, bssid);
+            cmd.assoc_id = htole32(1);
+        } else {
+            cmd.station_type = htole32(1);      /* STATION_TYPE_BCAST_MGMT */
+            cmd.mfp = htole32(1);
+        }
         err = iwx_send_cmd_pdu(sc, IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_STA_CONFIG_CMD),
             0, size, &cmd);
+        if (err)
+            goto fail;
+    }
+    if (iwx_awdl_client_enabled()) {
+        /* iwl_mld_fill_mac_cmd_sta(): is_assoc is not allowed on ADD, set it when the station exists. */
+        struct iwx_mld_mac_config_cmd cmd;
+        stage = 8;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.id_and_color = htole32(IWX_LISTENER_MAC_ID);
+        cmd.action = htole32(IWX_FW_CTXT_ACTION_MODIFY);
+        cmd.mac_type = htole32(IWX_FW_MAC_TYPE_P2P_STA);
+        if (ic->ic_awdl_addr_gen)
+            IEEE80211_ADDR_COPY(cmd.local_mld_addr, ic->ic_awdl_addr);
+        else {
+            IEEE80211_ADDR_COPY(cmd.local_mld_addr, ic->ic_myaddr);
+            cmd.local_mld_addr[0] ^= 0x02;
+        }
+        cmd.filter_flags = htole32(IWX_MLD_MAC_CFG_FILTER_ACCEPT_GRP |
+            IWX_MLD_MAC_CFG_FILTER_ACCEPT_CONTROL_AND_MGMT |
+            IWX_MLD_MAC_CFG_FILTER_ACCEPT_PROBE_REQ);
+        cmd.client.is_assoc = 1;
+        cmd.client.assoc_id = htole16(1);
+        err = iwx_send_cmd_pdu(sc, IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_MAC_CONFIG_CMD),
+            0, sizeof(cmd), &cmd);
         if (err)
             goto fail;
     }
