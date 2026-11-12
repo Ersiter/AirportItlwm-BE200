@@ -10539,10 +10539,11 @@ iwx_awdl_listen(struct ieee80211com *ic, uint8_t chan, uint16_t dwell_tu)
         return EINVAL;
     int err;
     if (iwx_awdl_listener_enabled() && sc->sc_use_mld_api) {
-        if (!sc->sc_listener_up && sc->sc_listener_tries < 3 && ic->ic_bss) {
+        /* sc_listener_tries survives firmware restarts: two attempts per boot, never a crash loop. */
+        if (!sc->sc_listener_up && sc->sc_listener_tries < 2 && ic->ic_bss) {
             sc->sc_listener_tries++;
             ic->ic_awdl_listener_tries = sc->sc_listener_tries;
-            if (that->iwx_mld_listener_setup(sc, (uint8_t)ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan)))
+            if (that->iwx_mld_listener_setup(sc, IEEE80211_IS_CHAN_2GHZ(ic->ic_bss->ni_chan)))
                 sc->sc_awdl_listen_fail++;
         }
         if (sc->sc_listener_up) {
@@ -11154,17 +11155,20 @@ iwx_mld_listener_link(struct iwx_softc *sc, uint32_t action, uint32_t changes, u
  * MODIFY (PHY + rates, then active), STA_CONFIG (BCAST_MGMT, the monitor station), and a TX queue
  * for it. ForbiddenItlwm (AX211, legacy API) does the same with a second MAC + PHY + binding +
  * station and gets AWDL broadcasts and ACKed unicast; the firmware shares the radio between the
- * station and this link. Only the band the station is on, so no cross-band retune: 149 when the
- * station is on 5 GHz, else 6. Failure stage: 1 MAC, 2 link add, 3 PHY, 4 link rates, 5 link
+ * station and this link. The listener goes on the OTHER band than the station: on hardware the
+ * link came up and heard peers on channel 6 while the station was on 5 GHz (PeerUpdates 1 -> 14), and
+ * the firmware crashed (NMI_INTERRUPT_LMAC_FATAL, 26 times in 3 minutes) every time it was activated
+ * on 149 beside a station on 44/157, the same band on a different channel. Linux iwl-mld likewise only
+ * runs links on different bands together. Failure stage: 1 MAC, 2 link add, 3 PHY, 4 link rates, 5 link
  * active, 6 station, 7 queue. A failure leaves the ROC listens as before.
  */
 int ItlIwx::
-iwx_mld_listener_setup(struct iwx_softc *sc, uint8_t home)
+iwx_mld_listener_setup(struct iwx_softc *sc, bool home2g)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     uint32_t stage = 0;
     int err = 0, queue;
-    uint8_t chan = home > 14 ? 149 : 6;
+    uint8_t chan = home2g ? 149 : 6;
     int generation = sc->sc_generation;
 
     if (ic->ic_mld_link_count > 2 || sc->sc_capa_num_stations <= IWX_LISTENER_STA_ID ||
@@ -14822,7 +14826,6 @@ iwx_stop(struct _ifnet *ifp)
     sc->sc_p2p_sta = 0;
     sc->sc_p2p_queue = 0;
     sc->sc_listener_up = 0;
-    sc->sc_listener_tries = 0;
     sc->sc_ic.ic_awdl_listener_chan = 0;
     sc->sc_flags &= ~IWX_FLAG_MAC_ACTIVE;
     sc->sc_flags &= ~IWX_FLAG_BINDING_ACTIVE;
