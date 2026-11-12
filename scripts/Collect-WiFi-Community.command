@@ -47,7 +47,8 @@ collect_crash_reports() {
         -o -name 'Sleep Wake Failure*' \) -print0 |
         while IFS= read -r -d '' report; do
             printf '%s\n' "$report"
-            /bin/cp -p "$report" "$out/crash-reports/" || return 1
+            # -X: no extended attributes, so an exFAT volume gets no ._ companion files.
+            /bin/cp -X "$report" "$out/crash-reports/" || return 1
         done
 }
 
@@ -324,8 +325,10 @@ done
 /usr/bin/grep -a -h -E 'iwx_mld_log_links|active links 0x|EMLSR|selected links'     "$out/driver-log.txt" "$out/live-log.txt" "$out/recent-log.txt" 2>/dev/null | /usr/bin/awk '!seen[$0]++' > "$out/negotiated-links.txt"
 
 archive="$out.tar.gz"
-if /usr/bin/tar -czf "$archive" -C "$base" "$(basename "$out")"; then
-    /bin/rm -r -- "$out" || exit 1
+# COPYFILE_DISABLE: no AppleDouble entries or xattr headers in the archive. rm -rf: the staging
+# directory is ours, and on exFAT rm -r asked about every hidden ._ file.
+if COPYFILE_DISABLE=1 /usr/bin/tar -czf "$archive" -C "$base" "$(basename "$out")"; then
+    /bin/rm -rf -- "$out" || exit 1
     if [ -n "${SUDO_UID:-}" ] && [ -n "${SUDO_GID:-}" ]; then
         /usr/sbin/chown "$SUDO_UID:$SUDO_GID" "$archive" || exit 1
     fi
