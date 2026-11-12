@@ -10568,8 +10568,12 @@ iwx_awdl_listen(struct ieee80211com *ic, uint8_t chan, uint16_t dwell_tu)
             ic->ic_bss && ic->ic_bss->ni_chan != IEEE80211_CHAN_ANYC) {
             sc->sc_listener_tries++;
             ic->ic_awdl_listener_tries = sc->sc_listener_tries;
-            if (that->iwx_mld_listener_setup(sc, IEEE80211_IS_CHAN_2GHZ(ic->ic_bss->ni_chan)))
+            err = that->iwx_mld_listener_setup(sc, IEEE80211_IS_CHAN_2GHZ(ic->ic_bss->ni_chan));
+            if (err) {
                 sc->sc_awdl_listen_fail++;
+                // Setup can sleep across a firmware restart; do not start ROC from that failed call.
+                return err;
+            }
         }
         if (sc->sc_listener_up) {
             /* The radio is already there for good; only the listener's own channel is on offer. */
@@ -11204,12 +11208,30 @@ iwx_mld_listener_setup(struct iwx_softc *sc, bool home2g)
     uint32_t qbit, qhad;
     uint8_t chan = home2g ? 149 : 6;
     int generation = sc->sc_generation;
+    /*
+     * Every command here can sleep across a firmware restart. Commands sent after one went to the freshly
+     * booted firmware (no MAC, no PHY context yet): AWDL-9 shows 0x309 error=6 and 0x517 error=35 in INIT
+     * right after the first crash, and the firmware died again twice. So each stage first checks that it is
+     * still talking to the firmware it started with.
+     */
+    auto setupStage = [&](uint32_t value) {
+        stage = value;
+        sc->sc_pcitag->setProperty("AirportItlwm-AWDLSetupStage", value, 32);
+    };
 
     if (ic->ic_mld_link_count > 2 || sc->sc_capa_num_stations <= IWX_LISTENER_STA_ID ||
         ic->ic_channels[chan].ic_flags == 0)
         return ENOTSUP;
 
-    stage = 1;
+    setupStage(1);
+
+    if (generation != sc->sc_generation) {
+
+        err = ENXIO;
+
+        goto fail;
+
+    }
     {
         struct iwx_mld_mac_config_cmd cmd;
         memset(&cmd, 0, sizeof(cmd));
@@ -11244,10 +11266,18 @@ iwx_mld_listener_setup(struct iwx_softc *sc, bool home2g)
         if (err)
             goto fail;
     }
-    stage = 2;
+    setupStage(2);
+    if (generation != sc->sc_generation) {
+        err = ENXIO;
+        goto fail;
+    }
     if ((err = iwx_mld_listener_link(sc, IWX_FW_CTXT_ACTION_ADD, 0, 0)) != 0)
         goto fail;
-    stage = 3;
+    setupStage(3);
+    if (generation != sc->sc_generation) {
+        err = ENXIO;
+        goto fail;
+    }
     memset(&sc->sc_listener_phy, 0, sizeof(sc->sc_listener_phy));
     sc->sc_listener_phy.id = IWX_NUM_PHY_CTX - 1;
     sc->sc_listener_phy.channel = &ic->ic_channels[chan];
@@ -11255,15 +11285,27 @@ iwx_mld_listener_setup(struct iwx_softc *sc, bool home2g)
     sc->sc_listener_phy.mld_width = IEEE80211_CHAN_WIDTH_20;
     if ((err = iwx_phy_ctxt_cmd(sc, &sc->sc_listener_phy, 1, 1, IWX_FW_CTXT_ACTION_ADD, 0)) != 0)
         goto fail;
-    stage = 4;
+    setupStage(4);
+    if (generation != sc->sc_generation) {
+        err = ENXIO;
+        goto fail;
+    }
     if ((err = iwx_mld_listener_link(sc, IWX_FW_CTXT_ACTION_MODIFY,
         IWX_MLD_LINK_CONTEXT_MODIFY_RATES_INFO | IWX_MLD_LINK_CONTEXT_MODIFY_QOS_PARAMS, 0)) != 0)
         goto fail;
-    stage = 5;
+    setupStage(5);
+    if (generation != sc->sc_generation) {
+        err = ENXIO;
+        goto fail;
+    }
     if ((err = iwx_mld_listener_link(sc, IWX_FW_CTXT_ACTION_MODIFY,
         IWX_MLD_LINK_CONTEXT_MODIFY_ACTIVE, 1)) != 0)
         goto fail;
-    stage = 6;
+    setupStage(6);
+    if (generation != sc->sc_generation) {
+        err = ENXIO;
+        goto fail;
+    }
     {
         struct iwx_mld_sta_cfg_cmd_v2 cmd;
         int cmd_ver = iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP, IWX_MLD_STA_CONFIG_CMD);
@@ -11291,7 +11333,11 @@ iwx_mld_listener_setup(struct iwx_softc *sc, bool home2g)
     if (iwx_awdl_client_enabled()) {
         /* iwl_mld_fill_mac_cmd_sta(): is_assoc is not allowed on ADD, set it when the station exists. */
         struct iwx_mld_mac_config_cmd cmd;
-        stage = 8;
+        setupStage(8);
+        if (generation != sc->sc_generation) {
+            err = ENXIO;
+            goto fail;
+        }
         memset(&cmd, 0, sizeof(cmd));
         cmd.id_and_color = htole32(IWX_LISTENER_MAC_ID);
         cmd.action = htole32(IWX_FW_CTXT_ACTION_MODIFY);
@@ -11312,18 +11358,16 @@ iwx_mld_listener_setup(struct iwx_softc *sc, bool home2g)
         if (err)
             goto fail;
     }
-    stage = 7;
+    setupStage(7);
+    if (generation != sc->sc_generation) {
+        err = ENXIO;
+        goto fail;
+    }
     if (!iwx_nic_lock(sc)) {
         err = EBUSY;
         goto fail;
     }
-    /*
-     * The queue's TID follows the station type, as in Linux: iwl_mld_add_mon_sta() (BCAST_MGMT) asks for
-     * IWL_MAX_TID_COUNT, but the queue of an ordinary peer station is the management queue,
-     * IWL_MGMT_TID (iwl_mld_allocate_txq: txq->tid == NUM_TIDS ? IWL_MGMT_TID : txq->tid). The client
-     * variant's station is a peer; AWDL-8 got it through MAC, link, PHY, activation, station and is_assoc
-     * and then took a UMAC_FATAL with SCD_QUEUE_CONFIG (0x517) as the last host command, with TID 8.
-     */
+    /* Peer stations use the management TID; monitor stations use the maximum TID. */
     qtid = iwx_awdl_client_enabled() ? IWX_MGMT_TID : IWX_MAX_TID_COUNT;
     qbit = 1U << qtid;
     qhad = sc->sc_mld_txq_tidmask & qbit;
@@ -11343,6 +11387,7 @@ iwx_mld_listener_setup(struct iwx_softc *sc, bool home2g)
     sc->sc_listener_chan = chan;
     ic->ic_awdl_listener_chan = chan;
     sc->sc_listener_up = 1;
+    setupStage(0);
     return 0;
 fail:
     ic->ic_awdl_listener_stage = (uint8_t)stage;
@@ -15179,6 +15224,8 @@ iwx_nic_umac_error(struct iwx_softc *sc)
         table.stack_pointer, table.nic_isr_pref, table.umac_major,
         table.umac_minor);
     sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorUm", error_umac);
+    if (sc->sc_fw_error_count == 1)
+        sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorFirstUm", error_umac);
 #endif
 }
 
@@ -15252,6 +15299,11 @@ iwx_nic_error(struct iwx_softc *sc)
         (unsigned)sc->sc_flags, sc->sc_ic.ic_state,
         (unsigned)sc->sc_ic.ic_if.if_flags, sc->sc_generation);
     sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorDriver", error_driver);
+    if (sc->sc_fw_error_count == 1) {
+        sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorFirstDriver", error_driver);
+        if (auto setup = sc->sc_pcitag->getProperty("AirportItlwm-AWDLSetupStage"))
+            sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorFirstSetupStage", setup);
+    }
 #endif
     base = sc->sc_uc.uc_lmac_error_event_table[0];
     if (base < (sc->sc_device_family >= IWX_DEVICE_FAMILY_BZ ? 0xd0000U : 0x400000U)) {
@@ -15340,6 +15392,8 @@ iwx_nic_error(struct iwx_softc *sc)
         table.isr4, table.fw_rev_type, table.major, table.minor,
         table.hw_ver, table.brd_ver);
     sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorLmac", error_lmac);
+    if (sc->sc_fw_error_count == 1)
+        sc->sc_pcitag->setProperty("AirportItlwm-FirmwareErrorFirstLmac", error_lmac);
 #endif
 
     if (sc->sc_uc.uc_umac_error_event_table)
