@@ -10558,8 +10558,14 @@ iwx_awdl_listen(struct ieee80211com *ic, uint8_t chan, uint16_t dwell_tu)
         return EINVAL;
     int err;
     if ((iwx_awdl_listener_enabled() || iwx_awdl_client_enabled()) && sc->sc_use_mld_api) {
-        /* sc_listener_tries survives firmware restarts: two attempts per boot, never a crash loop. */
-        if (!sc->sc_listener_up && sc->sc_listener_tries < 2 && ic->ic_bss) {
+        /*
+         * sc_listener_tries survives firmware restarts: one attempt per boot, never a crash loop.
+         * Only with the station associated: the hunt runs from the first scan on, and in AWDL-8 both
+         * attempts were spent right after a firmware start, in INIT, where ic_bss is a placeholder node
+         * whose channel says nothing, and neither the band choice nor the result meant anything.
+         */
+        if (!sc->sc_listener_up && sc->sc_listener_tries < 1 && ic->ic_state == IEEE80211_S_RUN &&
+            ic->ic_bss && ic->ic_bss->ni_chan != IEEE80211_CHAN_ANYC) {
             sc->sc_listener_tries++;
             ic->ic_awdl_listener_tries = sc->sc_listener_tries;
             if (that->iwx_mld_listener_setup(sc, IEEE80211_IS_CHAN_2GHZ(ic->ic_bss->ni_chan)))
@@ -11147,8 +11153,16 @@ iwx_mld_listener_link(struct iwx_softc *sc, uint32_t action, uint32_t changes, u
     if (action == IWX_FW_CTXT_ACTION_MODIFY) {
         static const uint8_t bz_fifo[] = { 1, 0, 2, 3 };
         cmd.active = htole32(active);
-        /* ACK rates: 6, 12 and 24 Mbit/s, the mandatory OFDM set. */
-        cmd.cck_rates = 0;
+        /*
+         * ACK rates as iwl_mld_fill_rates() ends up with them for a link on a band with no basic rates
+         * of its own: the mandatory OFDM set (6, 12, 24 Mbit/s), plus the four CCK rates on 2.4 GHz,
+         * where the firmware answers a CCK-only sender with them. ForbiddenItlwm's listener does the
+         * same (cck 0x0f on 2.4 GHz). Beacon interval and QoS flags stay 0: that is what Linux sends
+         * for a monitor interface, and the LISTENER link with exactly these fields is the one that
+         * came up on hardware.
+         */
+        const bool g24 = sc->sc_listener_phy.channel && IEEE80211_IS_CHAN_2GHZ(sc->sc_listener_phy.channel);
+        cmd.cck_rates = htole32(g24 ? 0x0f : 0);
         cmd.ofdm_rates = htole32(0x15);
         cmd.cck_short_preamble = 0;
         cmd.short_slot = htole32(1);
@@ -11186,7 +11200,8 @@ iwx_mld_listener_setup(struct iwx_softc *sc, bool home2g)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     uint32_t stage = 0;
-    int err = 0, queue;
+    int err = 0, queue, qtid;
+    uint32_t qbit, qhad;
     uint8_t chan = home2g ? 149 : 6;
     int generation = sc->sc_generation;
 
@@ -11302,12 +11317,22 @@ iwx_mld_listener_setup(struct iwx_softc *sc, bool home2g)
         err = EBUSY;
         goto fail;
     }
-    queue = iwx_tvqm_enable_txq(sc, IWX_MAX_TID_COUNT, 0, IWX_DEFAULT_QUEUE_SIZE, IWX_LISTENER_STA_ID);
+    /*
+     * The queue's TID follows the station type, as in Linux: iwl_mld_add_mon_sta() (BCAST_MGMT) asks for
+     * IWL_MAX_TID_COUNT, but the queue of an ordinary peer station is the management queue,
+     * IWL_MGMT_TID (iwl_mld_allocate_txq: txq->tid == NUM_TIDS ? IWL_MGMT_TID : txq->tid). The client
+     * variant's station is a peer; AWDL-8 got it through MAC, link, PHY, activation, station and is_assoc
+     * and then took a UMAC_FATAL with SCD_QUEUE_CONFIG (0x517) as the last host command, with TID 8.
+     */
+    qtid = iwx_awdl_client_enabled() ? IWX_MGMT_TID : IWX_MAX_TID_COUNT;
+    qbit = 1U << qtid;
+    qhad = sc->sc_mld_txq_tidmask & qbit;
+    queue = iwx_tvqm_enable_txq(sc, qtid, 0, IWX_DEFAULT_QUEUE_SIZE, IWX_LISTENER_STA_ID);
     if (generation != sc->sc_generation)
         return ENXIO;
     iwx_nic_unlock(sc);
-    /* The monitor station's queue is not one of the station's (see iwx_mld_aux_sta_add). */
-    sc->sc_mld_txq_tidmask &= ~(1U << IWX_MAX_TID_COUNT);
+    /* This queue is not one of the main station's (see iwx_mld_aux_sta_add). */
+    sc->sc_mld_txq_tidmask = (sc->sc_mld_txq_tidmask & ~qbit) | qhad;
     if (queue < 0) {
         err = -queue;
         goto fail;
