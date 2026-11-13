@@ -10720,8 +10720,9 @@ iwx_awdl_listen(struct ieee80211com *ic, uint8_t chan, uint16_t dwell_tu)
     if (chan == 0 || chan > IEEE80211_CHAN_MAX || ic->ic_channels[chan].ic_flags == 0)
         return EINVAL;
     int err;
-    if ((iwx_awdl_listener_enabled() || iwx_awdl_client_enabled()) && sc->sc_use_mld_api) {
-        if (iwx_awdl_client_enabled() && ic->ic_awdl_sync_period_tu < 17)
+    if ((iwx_awdl_listener_enabled() && !sc->sc_use_mld_api) ||
+        ((iwx_awdl_listener_enabled() || iwx_awdl_client_enabled()) && sc->sc_use_mld_api)) {
+        if (sc->sc_use_mld_api && iwx_awdl_client_enabled() && ic->ic_awdl_sync_period_tu < 17)
             return EAGAIN;
         /*
          * sc_listener_tries survives firmware restarts: one attempt per boot, never a crash loop.
@@ -10733,7 +10734,9 @@ iwx_awdl_listen(struct ieee80211com *ic, uint8_t chan, uint16_t dwell_tu)
             ic->ic_bss && ic->ic_bss->ni_chan != IEEE80211_CHAN_ANYC) {
             sc->sc_listener_tries++;
             ic->ic_awdl_listener_tries = sc->sc_listener_tries;
-            err = that->iwx_mld_listener_setup(sc, IEEE80211_IS_CHAN_2GHZ(ic->ic_bss->ni_chan));
+            err = sc->sc_use_mld_api ?
+                that->iwx_mld_listener_setup(sc, IEEE80211_IS_CHAN_2GHZ(ic->ic_bss->ni_chan)) :
+                that->iwx_legacy_listener_setup(sc);
             if (err) {
                 sc->sc_awdl_listen_fail++;
                 // Setup can sleep across a firmware restart; do not start ROC from that failed call.
@@ -11583,6 +11586,155 @@ iwx_mld_listener_setup(struct iwx_softc *sc, bool home2g)
     ic->ic_awdl_listener_chan = chan;
     sc->sc_listener_up = 1;
     setupStage(0);
+    return 0;
+fail:
+    ic->ic_awdl_listener_stage = (uint8_t)stage;
+    ic->ic_awdl_listener_code = err;
+    return err;
+}
+
+/*
+ * -itlawdllistener on pre-MLD firmware (AX200/AX201/AX210/AX211/AX411 and the 9xxx gen2 cards): the
+ * construction ForbiddenItlwm (retropineaple, GPL-2.0) runs on AX211 with AirDrop working both ways,
+ * and WarnerATCN's portable-rx branch on AX210/AX211: a LISTENER MAC (id 2) on the spare PHY context with
+ * a binding of its own, a general purpose station with any address and a management queue. The firmware
+ * time-shares the two bindings (DYNAMIC_QUOTA, present in every firmware here); the station keeps its
+ * binding untouched. Channel: 149 when the regulatory map lets us transmit there (not passive, no radar,
+ * ad hoc allowed), else 6, as ForbiddenItlwm's awdlCoexPickOwn does at 20 MHz. Promiscuous only on a
+ * channel other than the station's, where it can't take the station's frames. Stage: 1 PHY, 2 MAC,
+ * 3 binding, 4 station, 5 queue.
+ */
+int ItlIwx::
+iwx_legacy_listener_setup(struct iwx_softc *sc)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct iwx_node *in = (struct iwx_node *)ic->ic_bss;
+    struct iwx_phy_ctxt *phy = &sc->sc_phyctxt[IWX_NUM_PHY_CTX - 1];
+    const int generation = sc->sc_generation;
+    uint32_t stage = 0, status;
+    int err = 0, queue;
+    bool sameChannel;
+    auto usable = [ic](unsigned c) {
+        const struct ieee80211_channel &ch = ic->ic_channels[c];
+        return ch.ic_flags && isset(ic->ic_chan_active, c) &&
+            !(ch.ic_flags & (IEEE80211_CHAN_PASSIVE | IEEE80211_CHAN_DFS | IEEE80211_CHAN_NOADHOC));
+    };
+    const uint8_t chan = usable(149) ? 149 : (usable(6) ? 6 : 0);
+
+    if (!in || !in->in_phyctxt || !chan || sc->sc_capa_num_stations <= IWX_LISTENER_STA_ID ||
+        !isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_DYNAMIC_QUOTA) || in->in_phyctxt == phy)
+        return ENOTSUP;
+    sameChannel = ieee80211_chan2ieee(ic, in->in_phyctxt->channel) == chan;
+
+    /* The spare PHY context was added on channel 1 at init: MODIFY within the band, else REMOVE + ADD. */
+    stage = 1;
+    {
+        struct ieee80211_channel *c = &ic->ic_channels[chan];
+        const bool sameBand = phy->channel &&
+            IEEE80211_IS_CHAN_2GHZ(phy->channel) == IEEE80211_IS_CHAN_2GHZ(c);
+        phy->mld_config_valid = 1;
+        phy->mld_width = IEEE80211_CHAN_WIDTH_20;
+        phy->mld_center_freq = 0;
+        if (!sameBand && (err = iwx_phy_ctxt_cmd(sc, phy, 1, 1, IWX_FW_CTXT_ACTION_REMOVE, 0)) != 0)
+            goto fail;
+        phy->channel = c;
+        if ((err = iwx_phy_ctxt_cmd(sc, phy, 1, 1, sameBand ? IWX_FW_CTXT_ACTION_MODIFY :
+            IWX_FW_CTXT_ACTION_ADD, 0)) != 0)
+            goto fail;
+    }
+    if (generation != sc->sc_generation)
+        return ENXIO;
+    stage = 2;
+    {
+        static const uint8_t kAwdlBssid[6] = { 0x00, 0x25, 0x00, 0xff, 0x94, 0x73 };
+        struct iwx_mac_ctx_cmd cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        iwx_mac_ctxt_cmd_common(sc, in, &cmd, IWX_FW_CTXT_ACTION_ADD);
+        cmd.id_and_color = htole32(IWX_FW_CMD_ID_AND_COLOR(IWX_LISTENER_MAC_ID, 0));
+        cmd.mac_type = htole32(IWX_FW_MAC_TYPE_LISTENER);
+        cmd.tsf_id = htole32(IWX_TSF_ID_B);
+        /* Peers send unicast AWDL frames to awdl0's address and ACKs are only sent for it. */
+        if (ic->ic_awdl_addr_gen)
+            IEEE80211_ADDR_COPY(cmd.node_addr, ic->ic_awdl_addr);
+        else {
+            IEEE80211_ADDR_COPY(cmd.node_addr, ic->ic_myaddr);
+            cmd.node_addr[0] |= 0x02;
+            cmd.node_addr[5] ^= 0x5a;
+        }
+        IEEE80211_ADDR_COPY(cmd.bssid_addr, ic->ic_awdl_bssid_valid ? ic->ic_awdl_bssid : kAwdlBssid);
+        /* The mandatory OFDM rates on both bands, CCK on 2.4 GHz only: this channel's band, not the BSS's. */
+        cmd.cck_rates = htole32(chan <= 14 ? 0x0f : 0);
+        cmd.ofdm_rates = htole32(0x15);
+        cmd.filter_flags = htole32(IWX_MAC_FILTER_ACCEPT_GRP | IWX_MAC_FILTER_IN_CONTROL_AND_MGMT |
+            IWX_MAC_FILTER_IN_BEACON | IWX_MAC_FILTER_IN_PROBE_REQUEST |
+            (sameChannel ? 0 : IWX_MAC_FILTER_IN_PROMISC));
+        if ((err = iwx_send_cmd_pdu(sc, IWX_MAC_CONTEXT_CMD, 0, sizeof(cmd), &cmd)) != 0)
+            goto fail;
+    }
+    if (generation != sc->sc_generation)
+        return ENXIO;
+    stage = 3;
+    {
+        struct iwx_binding_cmd cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.id_and_color = htole32(IWX_FW_CMD_ID_AND_COLOR(phy->id, phy->color));
+        cmd.action = htole32(IWX_FW_CTXT_ACTION_ADD);
+        cmd.phy = htole32(IWX_FW_CMD_ID_AND_COLOR(phy->id, phy->color));
+        cmd.macs[0] = htole32(IWX_FW_CMD_ID_AND_COLOR(IWX_LISTENER_MAC_ID, 0));
+        for (int i = 1; i < IWX_MAX_MACS_IN_BINDING; i++)
+            cmd.macs[i] = htole32(IWX_FW_CTXT_INVALID);
+        cmd.lmac_id = htole32(iwx_lmac_id(sc, phy->channel));
+        status = 0;
+        err = iwx_send_cmd_pdu_status(sc, IWX_BINDING_CONTEXT_CMD, sizeof(cmd), &cmd, &status);
+        if (!err && status)
+            err = EIO;
+        if (err)
+            goto fail;
+    }
+    if (generation != sc->sc_generation)
+        return ENXIO;
+    stage = 4;
+    {
+        /* Like the monitor's: no peer address, sends to anyone at fixed rates, no aggregation. */
+        struct iwx_add_sta_cmd cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.sta_id = IWX_LISTENER_STA_ID;
+        cmd.station_type = IWX_STA_GENERAL_PURPOSE;
+        cmd.mac_id_n_color = htole32(IWX_FW_CMD_ID_AND_COLOR(IWX_LISTENER_MAC_ID, 0));
+        memset(cmd.addr, 0xff, sizeof(cmd.addr));
+        cmd.tid_disable_tx = htole16(0xffff);
+        cmd.station_flags = htole32(IWX_STA_FLG_FAT_EN_20MHZ | IWX_STA_FLG_MIMO_EN_SISO);
+        cmd.station_flags_msk = htole32(IWX_STA_FLG_FAT_EN_MSK | IWX_STA_FLG_MIMO_EN_MSK);
+        status = IWX_ADD_STA_SUCCESS;
+        err = iwx_send_cmd_pdu_status(sc, IWX_ADD_STA, sizeof(cmd), &cmd, &status);
+        if (!err && (status & IWX_ADD_STA_STATUS_MASK) != IWX_ADD_STA_SUCCESS)
+            err = EIO;
+        if (err)
+            goto fail;
+    }
+    if (generation != sc->sc_generation)
+        return ENXIO;
+    stage = 5;
+    if (!iwx_nic_lock(sc)) {
+        err = EBUSY;
+        goto fail;
+    }
+    queue = iwx_tvqm_enable_txq(sc, IWX_MGMT_TID, 0, IWX_DEFAULT_QUEUE_SIZE, IWX_LISTENER_STA_ID);
+    if (generation != sc->sc_generation)
+        return ENXIO;
+    iwx_nic_unlock(sc);
+    if (queue < 0) {
+        err = -queue;
+        goto fail;
+    }
+    sc->sc_p2p_queue = 1;
+    sc->sc_aux_roc_qid = queue;
+    ic->ic_awdl_roc_qid = queue;
+    sc->sc_listener_chan = chan;
+    ic->ic_awdl_listener_chan = chan;
+    sc->sc_listener_up = 1;
+    ic->ic_awdl_listener_stage = 0;
+    ic->ic_awdl_listener_code = 0;
     return 0;
 fail:
     ic->ic_awdl_listener_stage = (uint8_t)stage;

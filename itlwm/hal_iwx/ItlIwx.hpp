@@ -447,6 +447,7 @@ public:
     int    iwx_mld_p2p_mac_cmd(struct iwx_softc *, uint32_t, bool);
     int    iwx_mld_aux_sta_add(struct iwx_softc *);
     int    iwx_mld_listener_setup(struct iwx_softc *, bool);
+    int    iwx_legacy_listener_setup(struct iwx_softc *);
     int    iwx_mld_listener_link(struct iwx_softc *, uint32_t, uint32_t, uint32_t);
     int    iwx_mld_roc_cmd(struct iwx_softc *, uint32_t, uint32_t);
     void   iwx_mld_roc_notif(struct iwx_softc *, struct iwx_rx_packet *);
