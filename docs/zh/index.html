@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-Hans">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -12,9 +12,10 @@
 </head>
 <body>
 <a class="skip" href="#main">跳到正文</a>
-<header class="top"><div class="wrap bar">
+<header class="top"><div class="bar">
 <a class="brand" href="#top"><img src="../be200-icon.png" width="28" height="28" alt="">Eric-AirportItlwm</a>
-<nav aria-label="Sections">
+<button class="burger" type="button" aria-label="菜单" aria-expanded="false" aria-controls="sections"><span></span><span></span><span></span></button>
+<nav id="sections" aria-label="目录">
 <a href="#lineage">源流</a>
 <a href="#works">功能</a>
 <a href="#cards">网卡</a>
@@ -24,7 +25,13 @@
 <a href="#build">编译</a>
 <a href="#license">许可</a>
 </nav>
-<a class="lang" href="../" hreflang="en" lang="en">English</a>
+<details class="lang">
+<summary aria-label="Language / 语言"><span lang="zh-Hans">zh-Hans</span></summary>
+<ul>
+<li><a href="../" hreflang="en" lang="en">en-US<span>English</span></a></li>
+<li><a href="./" hreflang="zh-Hans" lang="zh-Hans" aria-current="true">zh-Hans<span>简体中文</span></a></li>
+</ul>
+</details>
 </div></header>
 <main id="main">
 <section class="hero" id="top"><div class="wrap hero-grid">

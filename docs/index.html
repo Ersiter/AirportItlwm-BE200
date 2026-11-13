@@ -12,9 +12,10 @@
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
-<header class="top"><div class="wrap bar">
+<header class="top"><div class="bar">
 <a class="brand" href="#top"><img src="be200-icon.png" width="28" height="28" alt="">Eric-AirportItlwm</a>
-<nav aria-label="Sections">
+<button class="burger" type="button" aria-label="Menu" aria-expanded="false" aria-controls="sections"><span></span><span></span><span></span></button>
+<nav id="sections" aria-label="Sections">
 <a href="#lineage">Lineage</a>
 <a href="#works">What works</a>
 <a href="#cards">Cards</a>
@@ -24,7 +25,13 @@
 <a href="#build">Build</a>
 <a href="#license">License</a>
 </nav>
-<a class="lang" href="zh/" hreflang="zh-CN" lang="zh-CN">简体中文</a>
+<details class="lang">
+<summary aria-label="Language / 语言"><span lang="en">en-US</span></summary>
+<ul>
+<li><a href="./" hreflang="en" lang="en" aria-current="true">en-US<span>English</span></a></li>
+<li><a href="zh/" hreflang="zh-Hans" lang="zh-Hans">zh-Hans<span>简体中文</span></a></li>
+</ul>
+</details>
 </div></header>
 <main id="main">
 <section class="hero" id="top"><div class="wrap hero-grid">
