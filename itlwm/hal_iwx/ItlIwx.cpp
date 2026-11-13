@@ -11386,8 +11386,8 @@ iwx_mld_listener_link(struct iwx_softc *sc, uint32_t action, uint32_t changes, u
  * The standing listener's channel, in Apple's AWDL order: 149, then 44 where 149 is not allowed (Japan, for
  * example), then 6, at 20 MHz, and only where we may transmit: no radar, and not passive unless an AP was heard
  * beaconing there (ic_beacon_hint, Linux's beacon hint). On top of that, per firmware:
- * - MLD (BE): another band than the station's (see iwx_mld_listener_setup); 2.4, 5 and 6 GHz count as
- *   separate bands, as for the driver's EMLSR pairs.
+ * - MLD (BE): another band than any of the station's links (see iwx_mld_listener_setup); 2.4, 5 and 6 GHz
+ *   count as separate bands, as for the driver's EMLSR pairs.
  * - legacy (AX): a station at 160 MHz holds its whole 160 MHz group, and a listener inside it on another
  *   channel got the station disconnected during transfers (ForbiddenItlwm, AX201), so not there.
  */
@@ -11404,7 +11404,12 @@ iwx_awdl_listener_pick(struct iwx_softc *sc)
     auto group160 = [](unsigned c) -> unsigned {
         return c >= 36 && c <= 64 ? 1U : c >= 100 && c <= 128 ? 2U : c >= 149 && c <= 177 ? 3U : 0U;
     };
-    unsigned stationNum = 0, groupA = 0, groupB = 0;
+    unsigned stationNum = 0, groupA = 0, groupB = 0, bands = station ? 1U << band(station) : 0U;
+    for (unsigned i = 0; i < ic->ic_mld_link_count && i < IEEE80211_MLD_MAX_LINKS; i++) {
+        const struct ieee80211_node *link = ic->ic_mld_links[i].ni;
+        if (link && link->ni_chan && link->ni_chan != IEEE80211_CHAN_ANYC)
+            bands |= 1U << band(link->ni_chan);
+    }
     if (station && band(station) == 5) {
         stationNum = ieee80211_chan2ieee(ic, station);
         if (ni->ni_chw == IEEE80211_CHAN_WIDTH_160 || ni->ni_chw == IEEE80211_CHAN_WIDTH_80P80)
@@ -11420,7 +11425,7 @@ iwx_awdl_listener_pick(struct iwx_softc *sc)
             ((ch.ic_flags & IEEE80211_CHAN_PASSIVE) && !isset(ic->ic_beacon_hint, c)))
             continue;
         if (sc->sc_use_mld_api) {
-            if (station && band(&ch) == band(station))
+            if (bands & (1U << band(&ch)))
                 continue;
         } else if (c != stationNum && group160(c) && (group160(c) == groupA || group160(c) == groupB)) {
             continue;
@@ -11641,14 +11646,107 @@ fail:
 }
 
 /*
+ * The pre-MLD listener's MAC: awdl0's address, AWDL's BSSID, the band's mandatory rates. Promiscuous only on a
+ * channel other than the station's, where it can't take the station's frames.
+ */
+int ItlIwx::
+iwx_legacy_listener_mac(struct iwx_softc *sc, uint32_t action, uint8_t chan, bool sameChannel)
+{
+    static const uint8_t kAwdlBssid[6] = { 0x00, 0x25, 0x00, 0xff, 0x94, 0x73 };
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct iwx_mac_ctx_cmd cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    iwx_mac_ctxt_cmd_common(sc, (struct iwx_node *)ic->ic_bss, &cmd, action);
+    cmd.id_and_color = htole32(IWX_FW_CMD_ID_AND_COLOR(IWX_LISTENER_MAC_ID, 0));
+    cmd.mac_type = htole32(IWX_FW_MAC_TYPE_LISTENER);
+    cmd.tsf_id = htole32(IWX_TSF_ID_B);
+    /* Peers send unicast AWDL frames to awdl0's address and ACKs are only sent for it. */
+    if (ic->ic_awdl_addr_gen)
+        IEEE80211_ADDR_COPY(cmd.node_addr, ic->ic_awdl_addr);
+    else {
+        IEEE80211_ADDR_COPY(cmd.node_addr, ic->ic_myaddr);
+        cmd.node_addr[0] |= 0x02;
+        cmd.node_addr[5] ^= 0x5a;
+    }
+    IEEE80211_ADDR_COPY(cmd.bssid_addr, ic->ic_awdl_bssid_valid ? ic->ic_awdl_bssid : kAwdlBssid);
+    /* The mandatory OFDM rates on both bands, CCK on 2.4 GHz only: this channel's band, not the BSS's. */
+    cmd.cck_rates = htole32(chan <= 14 ? 0x0f : 0);
+    cmd.ofdm_rates = htole32(0x15);
+    cmd.filter_flags = htole32(IWX_MAC_FILTER_ACCEPT_GRP | IWX_MAC_FILTER_IN_CONTROL_AND_MGMT |
+        IWX_MAC_FILTER_IN_BEACON | IWX_MAC_FILTER_IN_PROBE_REQUEST |
+        (sameChannel ? 0 : IWX_MAC_FILTER_IN_PROMISC));
+    return iwx_send_cmd_pdu(sc, IWX_MAC_CONTEXT_CMD, 0, sizeof(cmd), &cmd);
+}
+
+/*
+ * The listener stays for the whole AWDL session, across the station's joins, and a join can take the station
+ * somewhere the listener can't stay. Called once the station's channel (and, with MLD, its links) is known and
+ * before any of its contexts is programmed.
+ * - MLD: when a station link lands in the listener's band (band steering, a 2.4 GHz network), the listener
+ *   moves first, as mac80211 moves a link to another channel context: deactivate, PHY MODIFY (one LMAC without
+ *   CDB, so MODIFY crosses bands, as in iwlmvm), rates for the new band, activate. With no channel left it
+ *   stays inactive until the next join.
+ * - legacy: the firmware time-shares any two channels; only the promiscuous filter follows the station.
+ */
+void ItlIwx::
+iwx_awdl_listener_refit(struct iwx_softc *sc)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    const int generation = sc->sc_generation;
+    uint8_t chan;
+    int err = 0;
+
+    if (!sc->sc_listener_up || !ic->ic_bss || ic->ic_bss->ni_chan == IEEE80211_CHAN_ANYC)
+        return;
+    if (!sc->sc_use_mld_api) {
+        const bool sameChannel = ieee80211_chan2ieee(ic, ic->ic_bss->ni_chan) == sc->sc_listener_chan;
+        if ((err = iwx_legacy_listener_mac(sc, IWX_FW_CTXT_ACTION_MODIFY, sc->sc_listener_chan,
+            sameChannel)) != 0)
+            ic->ic_awdl_listener_code = err;
+        return;
+    }
+    chan = iwx_awdl_listener_pick(sc);
+    if (chan == sc->sc_listener_chan)
+        return;
+    if (sc->sc_listener_chan &&
+        (err = iwx_mld_listener_link(sc, IWX_FW_CTXT_ACTION_MODIFY, IWX_MLD_LINK_CONTEXT_MODIFY_ACTIVE, 0)) != 0)
+        goto fail;
+    if (generation != sc->sc_generation)
+        return;
+    sc->sc_listener_chan = 0;
+    ic->ic_awdl_listener_chan = 0;
+    if (!chan)
+        return;
+    sc->sc_listener_phy.channel = &ic->ic_channels[chan];
+    if ((err = iwx_phy_ctxt_cmd(sc, &sc->sc_listener_phy, 1, 1, IWX_FW_CTXT_ACTION_MODIFY, 0)) != 0)
+        goto fail;
+    if (generation != sc->sc_generation)
+        return;
+    if ((err = iwx_mld_listener_link(sc, IWX_FW_CTXT_ACTION_MODIFY,
+        IWX_MLD_LINK_CONTEXT_MODIFY_RATES_INFO | IWX_MLD_LINK_CONTEXT_MODIFY_QOS_PARAMS |
+        (iwx_awdl_client_enabled() ? IWX_MLD_LINK_CONTEXT_MODIFY_BEACON_TIMING : 0), 0)) != 0)
+        goto fail;
+    if (generation != sc->sc_generation)
+        return;
+    if ((err = iwx_mld_listener_link(sc, IWX_FW_CTXT_ACTION_MODIFY, IWX_MLD_LINK_CONTEXT_MODIFY_ACTIVE, 1)) != 0)
+        goto fail;
+    if (generation != sc->sc_generation)
+        return;
+    sc->sc_listener_chan = chan;
+    ic->ic_awdl_listener_chan = chan;
+    return;
+fail:
+    ic->ic_awdl_listener_code = err;
+}
+
+/*
  * -itlawdllistener on pre-MLD firmware (AX200/AX201/AX210/AX211/AX411 and the 9xxx gen2 cards): the
  * construction ForbiddenItlwm (retropineaple, GPL-2.0) runs on AX211 with AirDrop working both ways,
  * and WarnerATCN's portable-rx branch on AX210/AX211: a LISTENER MAC (id 2) on the spare PHY context with
  * a binding of its own, a general purpose station with any address and a management queue. The firmware
  * time-shares the two bindings (DYNAMIC_QUOTA, present in every firmware here); the station keeps its
  * binding untouched. Channel: iwx_awdl_listener_pick(), as ForbiddenItlwm's awdlCoexPickOwn at 20 MHz.
- * Promiscuous only on a channel other than the station's, where it can't take the station's frames. Stage: 1 PHY, 2 MAC,
- * 3 binding, 4 station, 5 queue.
+ * Stage: 1 PHY, 2 MAC, 3 binding, 4 station, 5 queue.
  */
 int ItlIwx::
 iwx_legacy_listener_setup(struct iwx_softc *sc)
@@ -11686,32 +11784,8 @@ iwx_legacy_listener_setup(struct iwx_softc *sc)
     if (generation != sc->sc_generation)
         return ENXIO;
     stage = 2;
-    {
-        static const uint8_t kAwdlBssid[6] = { 0x00, 0x25, 0x00, 0xff, 0x94, 0x73 };
-        struct iwx_mac_ctx_cmd cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        iwx_mac_ctxt_cmd_common(sc, in, &cmd, IWX_FW_CTXT_ACTION_ADD);
-        cmd.id_and_color = htole32(IWX_FW_CMD_ID_AND_COLOR(IWX_LISTENER_MAC_ID, 0));
-        cmd.mac_type = htole32(IWX_FW_MAC_TYPE_LISTENER);
-        cmd.tsf_id = htole32(IWX_TSF_ID_B);
-        /* Peers send unicast AWDL frames to awdl0's address and ACKs are only sent for it. */
-        if (ic->ic_awdl_addr_gen)
-            IEEE80211_ADDR_COPY(cmd.node_addr, ic->ic_awdl_addr);
-        else {
-            IEEE80211_ADDR_COPY(cmd.node_addr, ic->ic_myaddr);
-            cmd.node_addr[0] |= 0x02;
-            cmd.node_addr[5] ^= 0x5a;
-        }
-        IEEE80211_ADDR_COPY(cmd.bssid_addr, ic->ic_awdl_bssid_valid ? ic->ic_awdl_bssid : kAwdlBssid);
-        /* The mandatory OFDM rates on both bands, CCK on 2.4 GHz only: this channel's band, not the BSS's. */
-        cmd.cck_rates = htole32(chan <= 14 ? 0x0f : 0);
-        cmd.ofdm_rates = htole32(0x15);
-        cmd.filter_flags = htole32(IWX_MAC_FILTER_ACCEPT_GRP | IWX_MAC_FILTER_IN_CONTROL_AND_MGMT |
-            IWX_MAC_FILTER_IN_BEACON | IWX_MAC_FILTER_IN_PROBE_REQUEST |
-            (sameChannel ? 0 : IWX_MAC_FILTER_IN_PROMISC));
-        if ((err = iwx_send_cmd_pdu(sc, IWX_MAC_CONTEXT_CMD, 0, sizeof(cmd), &cmd)) != 0)
-            goto fail;
-    }
+    if ((err = iwx_legacy_listener_mac(sc, IWX_FW_CTXT_ACTION_ADD, chan, sameChannel)) != 0)
+        goto fail;
     if (generation != sc->sc_generation)
         return ENXIO;
     stage = 3;
@@ -13127,6 +13201,7 @@ iwx_auth(struct iwx_softc *sc)
     if (sc->sc_use_mld_api)
         return iwx_mld_auth(sc);
     XYLog("%s\n", __FUNCTION__);
+    iwx_awdl_listener_refit(sc);
     struct ieee80211com *ic = &sc->sc_ic;
     struct iwx_node *in = (struct iwx_node *)ic->ic_bss;
     uint32_t duration;

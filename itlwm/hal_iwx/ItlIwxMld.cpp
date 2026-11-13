@@ -150,6 +150,10 @@ iwx_mld_limit_link_resources(struct iwx_softc *sc)
     else if (max_links > sc->sc_capa_num_stations - IWX_MONITOR_STA_ID)
         max_links = sc->sc_capa_num_stations - IWX_MONITOR_STA_ID;
 
+    /* A standing AWDL listener holds the last PHY context (iwx_mld_listener_setup). */
+    if (sc->sc_listener_up && max_links > IWX_NUM_PHY_CTX - 1)
+        max_links = IWX_NUM_PHY_CTX - 1;
+
     while (ic->ic_mld_link_count > max_links) {
         struct ieee80211_mld_link_info *link =
             &ic->ic_mld_links[ic->ic_mld_link_count - 1];
@@ -2256,6 +2260,7 @@ iwx_mld_auth(struct iwx_softc *sc)
     ieee80211_mld_discover_links(ic, &in->in_ni);
 #endif
     iwx_mld_limit_link_resources(sc);
+    iwx_awdl_listener_refit(sc);
     /* Every context programmed below derives its centre from the BSS channel. */
     if (in->in_ni.ni_chan == NULL)
         return EINVAL;

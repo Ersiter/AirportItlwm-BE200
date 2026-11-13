@@ -448,6 +448,8 @@ public:
     int    iwx_mld_aux_sta_add(struct iwx_softc *);
     int    iwx_mld_listener_setup(struct iwx_softc *);
     int    iwx_legacy_listener_setup(struct iwx_softc *);
+    int    iwx_legacy_listener_mac(struct iwx_softc *, uint32_t, uint8_t, bool);
+    void   iwx_awdl_listener_refit(struct iwx_softc *);
     int    iwx_mld_listener_link(struct iwx_softc *, uint32_t, uint32_t, uint32_t);
     int    iwx_mld_roc_cmd(struct iwx_softc *, uint32_t, uint32_t);
     void   iwx_mld_roc_notif(struct iwx_softc *, struct iwx_rx_packet *);
