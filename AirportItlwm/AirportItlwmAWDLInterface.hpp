@@ -86,6 +86,9 @@ class AirportItlwmAWDLInterface : public IO80211AWDLProtocol {
 
 public:
     static AirportItlwmAWDLInterface *withController(AirportItlwm *controller, ether_addr *mac);
+    // nullptr when Apple's IO80211AWDLProtocol table has the layout this class was built against,
+    // otherwise the reason; awdl0 must not be created on any other table.
+    static const char *nativeTableMismatch();
 
     // IO80211VirtualInterface
     bool init(IO80211Controller *controller, ether_addr *mac, unsigned int role, char const *prefix) override;

@@ -16,6 +16,67 @@ extern IOCommandGate *_fCommandGate;
 OSDefineMetaClassAndStructors(AirportItlwmAWDLInterface, IO80211AWDLProtocol);
 OSDefineMetaClassAndStructors(AirportItlwmAWDLEthernetInterface, AirportItlwmEthernetInterface);
 
+#pragma mark - native table check
+
+/*
+ * This class overrides Apple's IO80211AWDLProtocol slot for slot. On a macOS build whose table moved,
+ * IO80211 would call the wrong function in this object and panic, so awdl0 is only created when the
+ * running table still has known functions at anchor slots spread over its whole length, its own pure
+ * methods where expected, and ends where expected. Anchors as in ForbiddenItlwm's AWDLBuildGuard
+ * (retropineaple/ForbiddenItlwm, GPL-2.0), checked against the AWDL-ABI reports of 25G229, 25G332 and
+ * 25G342 (identical 568-slot tables) and of 24H232 (563 slots). Slots count from the address point.
+ */
+extern "C" {
+extern const uintptr_t awdlNativeProtocolVtable[] __asm__("__ZTV19IO80211AWDLProtocol");
+void awdlAnchorProtocolD1() __asm__("__ZN19IO80211AWDLProtocolD1Ev");
+void awdlAnchorWakeFlags() __asm__("__ZN25IOSkywalkNetworkInterface21getSupportedWakeFlagsEPj");
+void awdlAnchorInterfaceCCA() __asm__("__ZN23IO80211SkywalkInterface15setInterfaceCCAE18apple80211_channeli");
+void awdlAnchorStatsDump() __asm__("__ZN23IO80211SkywalkInterface9statsDumpEv");
+#if __IO80211_TARGET == __MAC_15_2
+void awdlAnchorVirtualInit() __asm__("__ZN23IO80211VirtualInterface4initEP17IO80211ControllerP10ether_addrjPKc");
+#else
+void awdlAnchorSyncDPSStats() __asm__("__ZN23IO80211SkywalkInterface12syncDPSStatsEP26apple82011_postMessage_dps");
+#endif
+void awdlAnchorReserved15() __asm__("__ZN23IO80211VirtualInterface34_RESERVEDIO80211VirtualInterface15Ev");
+void awdlAnchorPureVirtual() __asm__("___cxa_pure_virtual");
+}
+
+const char *AirportItlwmAWDLInterface::
+nativeTableMismatch()
+{
+    struct Anchor { unsigned slot; uintptr_t expected; };
+    const uintptr_t pure = reinterpret_cast<uintptr_t>(&awdlAnchorPureVirtual);
+    const Anchor anchors[] = {
+        {0, reinterpret_cast<uintptr_t>(&awdlAnchorProtocolD1)},
+#if __IO80211_TARGET == __MAC_15_2
+        {299, reinterpret_cast<uintptr_t>(&awdlAnchorWakeFlags)},
+        {380, reinterpret_cast<uintptr_t>(&awdlAnchorInterfaceCCA)},
+        {415, pure},        // setMacAddress, pure in IO80211SkywalkInterface on macOS 15
+        {420, reinterpret_cast<uintptr_t>(&awdlAnchorStatsDump)},
+        {460, reinterpret_cast<uintptr_t>(&awdlAnchorVirtualInit)},
+        {499, reinterpret_cast<uintptr_t>(&awdlAnchorReserved15)},
+        {500, pure},        // first IO80211AWDLProtocol method
+        {562, pure},        // last one
+        {563, 0},
+#else
+        {300, reinterpret_cast<uintptr_t>(&awdlAnchorWakeFlags)},
+        {380, reinterpret_cast<uintptr_t>(&awdlAnchorInterfaceCCA)},
+        {420, reinterpret_cast<uintptr_t>(&awdlAnchorStatsDump)},
+        {460, reinterpret_cast<uintptr_t>(&awdlAnchorSyncDPSStats)},
+        {504, reinterpret_cast<uintptr_t>(&awdlAnchorReserved15)},
+        {505, pure},        // first IO80211AWDLProtocol method
+        {567, pure},        // last one
+        {568, 0},
+#endif
+    };
+    const uintptr_t *slots = awdlNativeProtocolVtable + 2;
+    for (const Anchor &a : anchors)
+        if (slots[a.slot] != a.expected)
+            return a.expected ? "blocked: IO80211AWDLProtocol table differs" :
+                "blocked: IO80211AWDLProtocol table is longer than expected";
+    return nullptr;
+}
+
 #define AWDL_LOG(fmt, ...) XYLog("AWDL %s: " fmt "\n", __FUNCTION__, ##__VA_ARGS__)
 
 #pragma mark - awdl0 BSD interface
