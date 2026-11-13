@@ -440,6 +440,8 @@ struct ieee80211_mld_link_info {
 };
 #endif
 
+#define IEEE80211_AWDL_DEFAULT_SYNC_PERIOD_TU 110
+
 struct ieee80211com {
 	struct arpcom		ic_ac;
 	LIST_ENTRY(ieee80211com) ic_list;	/* chain of all ieee80211com */
@@ -589,6 +591,7 @@ struct ieee80211com {
      */
     uint8_t         ic_awdl_addr[IEEE80211_ADDR_LEN];
     uint32_t        ic_awdl_addr_gen;
+    uint32_t        ic_awdl_sync_period_tu;
     /*
      * AWDL BSSID from setAWDL_BSSID (Broadcom configures it on its firmware
      * AWDL interface). Bumps ic_awdl_addr_gen too, so the P2P MAC picks it up.

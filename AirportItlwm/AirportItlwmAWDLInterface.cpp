@@ -1478,7 +1478,7 @@ buildAWDLFrame(uint8_t *buf, size_t cap, bool mi, uint64_t nowUs)
     v[3] = masterChan;
     v[4] = 0;                               // guard time
     put16(v + 5, (uint16_t)period);         // aw_period
-    put16(v + 7, (uint16_t)(fSyncParams.synchronization_frame_period ?: 110));
+    put16(v + 7, (uint16_t)(fSyncParams.synchronization_frame_period ?: IEEE80211_AWDL_DEFAULT_SYNC_PERIOD_TU));
     put16(v + 9, 0x1800);                   // flags, as OWL
     put16(v + 11, (uint16_t)period);        // aw_ext_length (16, else "Zero AWExt")
     put16(v + 13, (uint16_t)period);        // aw_com_length
@@ -2113,6 +2113,11 @@ setAWDL_SYNC_PARAMS(apple80211_awdl_sync_params *d)
 {
     fCallCount++;
     memcpy(&fSyncParams, d, sizeof(fSyncParams));
+    if (fController) {
+        auto ic = fController->fHalService->get80211Controller();
+        ic->ic_awdl_sync_period_tu = d->synchronization_frame_period ?:
+            IEEE80211_AWDL_DEFAULT_SYNC_PERIOD_TU;
+    }
     AWDL_LOG("aw_len %u aw_period %u ext_len %u sync_frame_period %u",
              d->availability_window_length, d->availability_window_period,
              d->extension_length, d->synchronization_frame_period);

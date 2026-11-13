@@ -2163,7 +2163,8 @@ ieee80211_get_assoc_req(struct ieee80211com *ic, struct ieee80211_node *ni,
 
 	frm = mtod(m, u_int8_t *);
 	capinfo = IEEE80211_CAPINFO_ESS;
-	if (ic->ic_flags & IEEE80211_F_WEPON)
+	if ((ic->ic_flags & IEEE80211_F_WEPON) ||
+	    (ni->ni_capinfo & IEEE80211_CAPINFO_PRIVACY))
 		capinfo |= IEEE80211_CAPINFO_PRIVACY;
 	if ((ic->ic_flags & IEEE80211_F_SHPREAMBLE) &&
 	    IEEE80211_IS_CHAN_2GHZ(ni->ni_chan))

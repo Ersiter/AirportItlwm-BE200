@@ -319,9 +319,8 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
         } else {
             hasLegacyChannel = true;
 #ifdef AIRPORT_WCL
-            if (AirportWCL::probeChannel(scanActive,
-                    c->ic_flags & IEEE80211_CHAN_PASSIVE,
-                    c->ic_flags & IEEE80211_CHAN_DFS))
+            // v17 selects the SSID here; firmware applies channel permissions and passive-to-active transitions.
+            if (scanActive)
 #else
             if (scanActive && !bgscan)
 #endif
@@ -362,6 +361,45 @@ iwx_umac_scan_v17(struct iwx_softc *sc, int bgscan)
 
     sc->sc_scan_batch_sent = 1;
     sc->sc_scan_batch_pending = 1;
+#ifdef AIRPORT_WCL
+    if (ic->ic_wcl_scan_requested && scanSSIDLength != 0) {
+        for (unsigned i = 0; i < cp->count; ++i) {
+            auto channel = &cp->channel_config[i];
+            if (channel->channel_num != 149 || (le32toh(channel->flags) >> 30) != IWX_PHY_BAND_5)
+                continue;
+            auto wh = reinterpret_cast<struct ieee80211_frame *>(req->scan_params.probe_params.preq.buf);
+            char state[352];
+            struct timeval now;
+            getmicrouptime(&now);
+            snprintf(state, sizeof(state),
+                "uptime=%ld.%06d gen=%d scanGen=%u batch=%u channels=%u active=%u ssidLen=%d "
+                "channel149flags=0x%x hostflags=0x%x source=%s general=0x%x bg=%d cmdver=%u",
+                (long)now.tv_sec, (int)now.tv_usec, sc->sc_generation, sc->sc_scan_generation,
+                sc->sc_scan_batch, cp->count, scanActive, scanSSIDLength, le32toh(channel->flags),
+                ic->ic_channels[149].ic_flags, ether_sprintf(wh->i_addr2),
+                le16toh(req->scan_params.general_params.flags), bgscan,
+                iwx_lookup_cmd_ver(sc, IWX_LONG_GROUP, IWX_SCAN_REQ_UMAC));
+            auto previous = OSDynamicCast(OSData, sc->sc_pcitag->getProperty("AirportItlwm-HotspotScanSSID"));
+            auto direct = &req->scan_params.probe_params.direct_scan[0];
+            const bool newTarget = !previous || previous->getLength() != direct->len ||
+                memcmp(previous->getBytesNoCopy(), direct->ssid, direct->len) != 0;
+            // Arm on the hotspot's single-channel request and retain that target for this boot.
+            if ((previous && newTarget) || (!previous &&
+                (cp->count != 1 || !ic->ic_wcl_scan_restricted)))
+                continue;
+            sc->sc_pcitag->setProperty("AirportItlwm-HotspotScanState", state);
+            sc->sc_pcitag->setProperty("AirportItlwm-HotspotScanSSID",
+                req->scan_params.probe_params.direct_scan[0].ssid,
+                (unsigned)req->scan_params.probe_params.direct_scan[0].len);
+            sc->sc_pcitag->setProperty("AirportItlwm-HotspotScanRequest", req, (unsigned)req_len);
+            if (!sc->sc_pcitag->getProperty("AirportItlwm-HotspotScanFirstRequest")) {
+                sc->sc_pcitag->setProperty("AirportItlwm-HotspotScanFirstState", state);
+                sc->sc_pcitag->setProperty("AirportItlwm-HotspotScanFirstRequest", req, (unsigned)req_len);
+            }
+            break;
+        }
+    }
+#endif
     err = iwx_send_cmd(sc, &hcmd);
     if (err)
         sc->sc_scan_batch_pending = 0;

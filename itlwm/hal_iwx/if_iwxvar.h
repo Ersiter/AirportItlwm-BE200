@@ -717,6 +717,7 @@ struct iwx_softc {
     int sc_use_mld_api;
     uint8_t sc_mld_link_active;
     uint8_t sc_mld_phy_active;
+    uint8_t sc_mld_mac_associated;
 	uint8_t sc_mld_active_links;
 	uint8_t sc_mld_primary_link;
 	uint8_t sc_mld_emlsr_active;

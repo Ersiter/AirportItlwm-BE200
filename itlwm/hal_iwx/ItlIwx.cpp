@@ -360,6 +360,7 @@ detach(IOPCIDevice *device)
     struct iwx_softc *sc = &com;
     sc->sc_flags |= IWX_FLAG_SHUTDOWN;
     sc->sc_generation++;
+    sc->sc_mld_mac_associated = 0;
     task_del(systq, &sc->mcc_task);
     iwx_setkey_queue_reset(sc);
     timeout_del(&sc->sc_mld_tpt_timer);
@@ -6592,6 +6593,114 @@ drop:
     return 1;
 }
 
+static void
+iwx_trace_hotspot_rx(struct iwx_softc *sc, struct iwx_rx_mpdu_desc *desc,
+    size_t desc_size, size_t packet_len)
+{
+    if (!sc->sc_pcitag->getProperty("AirportItlwm-HotspotScanRequest"))
+        return;
+    const uint8_t channel = sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210 ?
+        desc->v3.channel : desc->v1.channel;
+    if (isset(sc->sc_ucode_api, IWX_UCODE_TLV_API_BAND_IN_RX_DATA) &&
+        ((desc->mac_phy_idx & IWX_RX_MPDU_BAND_MASK) >> IWX_RX_MPDU_BAND_POS) != IWX_PHY_BAND_5)
+        return;
+    const size_t length = le16toh(desc->mpdu_len);
+    if (channel != 149 || length < sizeof(struct ieee80211_frame) + 2 ||
+        length > packet_len - desc_size)
+        return;
+    auto frame = reinterpret_cast<uint8_t *>(desc) + desc_size;
+    auto wh = reinterpret_cast<struct ieee80211_frame *>(frame);
+    const uint8_t subtype = wh->i_fc[0] & IEEE80211_FC0_SUBTYPE_MASK;
+    if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) != IEEE80211_FC0_TYPE_MGT ||
+        (subtype != IEEE80211_FC0_SUBTYPE_BEACON &&
+         subtype != IEEE80211_FC0_SUBTYPE_PROBE_RESP &&
+         subtype != IEEE80211_FC0_SUBTYPE_DISASSOC &&
+         subtype != IEEE80211_FC0_SUBTYPE_DEAUTH))
+        return;
+    auto records = OSDynamicCast(OSDictionary,
+        sc->sc_pcitag->getProperty("AirportItlwm-HotspotRx149"));
+    if (!records) {
+        records = OSDictionary::withCapacity(128);
+        if (!records)
+            return;
+        sc->sc_pcitag->setProperty("AirportItlwm-HotspotRx149", records);
+        records->release();
+    }
+    char key[40];
+    snprintf(key, sizeof(key), "%02x%02x%02x%02x%02x%02x-%02x-%04x",
+        wh->i_addr3[0], wh->i_addr3[1], wh->i_addr3[2], wh->i_addr3[3],
+        wh->i_addr3[4], wh->i_addr3[5], subtype, le16toh(desc->status));
+    // Preserve the first frame of each BSSID/subtype/status across firmware recovery.
+    if (records->getObject(key) || records->getCount() >= 128)
+        return;
+    auto record = OSDictionary::withCapacity(8);
+    if (!record)
+        return;
+    auto bytes = [&](const char *name, const void *data, unsigned size) {
+        auto value = OSData::withBytes(data, size);
+        if (value) {
+            record->setObject(name, value);
+            value->release();
+        }
+    };
+    bytes("Frame", frame, (unsigned)length);
+    bytes("RxDescriptor", desc, (unsigned)desc_size);
+    bytes("BSSID", wh->i_addr3, 6);
+    struct timeval now;
+    getmicrouptime(&now);
+    char state[144];
+    snprintf(state, sizeof(state), "uptime_us=%llu gen=%d channel=149 subtype=0x%x status=0x%x",
+        (unsigned long long)now.tv_sec * 1000000 + now.tv_usec, sc->sc_generation, subtype,
+        le16toh(desc->status));
+    auto text = OSString::withCString(state);
+    if (text) {
+        record->setObject("State", text);
+        text->release();
+    }
+    auto request = sc->sc_pcitag->getProperty("AirportItlwm-HotspotScanState");
+    if (request)
+        record->setObject("ScanState", request);
+    size_t offset = sizeof(struct ieee80211_frame) + 12 +
+        ((desc->mac_flags2 & IWX_RX_MPDU_MFLG2_PAD) ? 2 : 0);
+    const unsigned trailer = (desc->mac_flags1 & IWX_RX_MPDU_MFLG1_MIC_CRC_LEN_MASK) >>
+        IWX_RX_MPDU_MFLG1_MIC_CRC_LEN_SHIFT;
+    const size_t end = length >= trailer ? length - trailer : 0;
+    if (subtype == IEEE80211_FC0_SUBTYPE_DISASSOC || subtype == IEEE80211_FC0_SUBTYPE_DEAUTH)
+        offset = end;
+    auto apple = OSDictionary::withCapacity(4);
+    while (offset + 2 <= end) {
+        const size_t size = size_t(frame[offset + 1]) + 2;
+        if (size > end - offset)
+            break;
+        if (frame[offset] == IEEE80211_ELEMID_SSID)
+            bytes("SSID", frame + offset + 2, (unsigned)size - 2);
+        if (apple && frame[offset] == IEEE80211_ELEMID_VENDOR && size >= 5 &&
+            frame[offset + 2] == 0 &&
+            ((frame[offset + 3] == 0x17 && frame[offset + 4] == 0xf2) ||
+             (frame[offset + 3] == 0x03 && frame[offset + 4] == 0x93))) {
+            char ieKey[16];
+            snprintf(ieKey, sizeof(ieKey), "%u", (unsigned)offset);
+            auto value = OSData::withBytes(frame + offset, (unsigned)size);
+            if (value) {
+                apple->setObject(ieKey, value);
+                value->release();
+            }
+        }
+        offset += size;
+    }
+    if (apple) {
+        record->setObject("AppleIE", apple);
+        apple->release();
+    }
+    auto updated = OSDictionary::withDictionary(records);
+    if (updated) {
+        updated->setObject(key, record);
+        sc->sc_pcitag->setProperty("AirportItlwm-HotspotRx149", updated);
+        updated->release();
+    }
+    record->release();
+}
+
 void ItlIwx::
 iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
                size_t packet_len, struct mbuf_list *ml)
@@ -6615,6 +6724,7 @@ iwx_rx_mpdu_mq(struct iwx_softc *sc, mbuf_t m, void *pktdata,
         return;
     }
     desc = (struct iwx_rx_mpdu_desc *)pktdata;
+    iwx_trace_hotspot_rx(sc, desc, desc_size, packet_len);
     
     /*
      * AWDL diagnostics: did the firmware deliver anything addressed to
@@ -7111,6 +7221,59 @@ iwx_rx_tx_cmd(struct iwx_softc *sc, struct iwx_rx_packet *pkt,
         if (idx == ring->tail)
             return;
         txd = &ring->data[(idx + ring->ring_count - 1) % ring->ring_count];
+        auto target = OSDynamicCast(OSData, sc->sc_pcitag->getProperty("AirportItlwm-HotspotScanSSID"));
+        if (target && txd->m && txd->in && target->getLength() == txd->in->in_ni.ni_esslen &&
+            memcmp(target->getBytesNoCopy(), txd->in->in_ni.ni_essid, target->getLength()) == 0 &&
+            sc->sc_device_family >= IWX_DEVICE_FAMILY_AX210) {
+            uint8_t payload[128];
+            const unsigned size = MIN(mbuf_pkthdr_len(txd->m), sizeof(payload));
+            mbuf_copydata(txd->m, 0, size, payload);
+            const bool eapol = size >= 8 && payload[0] == 0xaa && payload[1] == 0xaa &&
+                payload[6] == 0x88 && payload[7] == 0x8e;
+            const unsigned ipHeader = size >= 9 ? (payload[8] & 15) * 4 : 0;
+            const bool dhcp = size >= 8 + ipHeader + 4 && ipHeader >= 20 &&
+                payload[0] == 0xaa && payload[1] == 0xaa && payload[6] == 8 && payload[7] == 0 &&
+                payload[17] == 17 && payload[8 + ipHeader] == 0 && payload[9 + ipHeader] == 68 &&
+                payload[10 + ipHeader] == 0 && payload[11 + ipHeader] == 67;
+            auto records = OSDynamicCast(OSArray, sc->sc_pcitag->getProperty("AirportItlwm-HotspotTx"));
+            if ((eapol || dhcp) && (!records || records->getCount() < 64)) {
+                auto updated = records ? OSArray::withArray(records) : OSArray::withCapacity(64);
+                auto record = OSDictionary::withCapacity(4);
+                if (updated && record) {
+                    auto command = &ring->cmd[(idx + ring->ring_count - 1) % ring->ring_count];
+                    auto tx = reinterpret_cast<iwx_tx_cmd_gen3 *>(command->data);
+                    auto wh = reinterpret_cast<ieee80211_frame *>(command->data + sizeof(*tx));
+                    char state[256];
+                    struct timeval now;
+                    getmicrouptime(&now);
+                    snprintf(state, sizeof(state),
+                        "uptime=%ld.%06d gen=%d kind=%s qid=%d idx=%d status=0x%x acked=%u flags=0x%x offload=0x%x fc=%02x/%02x",
+                        (long)now.tv_sec, (int)now.tv_usec, sc->sc_generation, eapol ? "eapol" : "dhcp",
+                        qid, (idx + ring->ring_count - 1) % ring->ring_count,
+                        le16toh(tx_resp->status.status), iwx_tx_status_is_acked(le16toh(tx_resp->status.status)),
+                        le16toh(tx->flags), le32toh(tx->offload_assist), wh->i_fc[0], wh->i_fc[1]);
+                    auto text = OSString::withCString(state);
+                    if (text) {
+                        record->setObject("State", text);
+                        text->release();
+                    }
+                    auto bytes = [&](const char *key, const void *data, unsigned length) {
+                        auto value = OSData::withBytes(data, length);
+                        if (value) {
+                            record->setObject(key, value);
+                            value->release();
+                        }
+                    };
+                    bytes("PayloadPrefix", payload, size);
+                    bytes("TxCommand", tx, sizeof(*tx) + ieee80211_get_hdrlen(wh));
+                    bytes("TxResponse", tx_resp, (unsigned)length);
+                    updated->setObject(record);
+                    sc->sc_pcitag->setProperty("AirportItlwm-HotspotTx", updated);
+                }
+                if (record) record->release();
+                if (updated) updated->release();
+            }
+        }
         if (sc->sc_p2p_queue && qid == sc->sc_aux_roc_qid) {
             /* AWDL frames sent during a P2P listen dwell (iwx_awdl_tx). */
             int st = le16toh(tx_resp->status.status) & IWX_TX_STATUS_MSK;
@@ -10558,6 +10721,8 @@ iwx_awdl_listen(struct ieee80211com *ic, uint8_t chan, uint16_t dwell_tu)
         return EINVAL;
     int err;
     if ((iwx_awdl_listener_enabled() || iwx_awdl_client_enabled()) && sc->sc_use_mld_api) {
+        if (iwx_awdl_client_enabled() && ic->ic_awdl_sync_period_tu < 17)
+            return EAGAIN;
         /*
          * sc_listener_tries survives firmware restarts: one attempt per boot, never a crash loop.
          * Only with the station associated: the hunt runs from the first scan on, and in AWDL-8 both
@@ -11148,6 +11313,8 @@ iwx_mld_listener_link(struct iwx_softc *sc, uint32_t action, uint32_t changes, u
     cmd.spec_link_id = 0;
     cmd.phy_id = htole32(action == IWX_FW_CTXT_ACTION_ADD ? IWX_FW_CTXT_INVALID :
         sc->sc_listener_phy.id);
+    if (iwx_awdl_client_enabled())
+        cmd.bi = htole32(ic->ic_awdl_sync_period_tu);
     if (ic->ic_awdl_addr_gen)
         IEEE80211_ADDR_COPY(cmd.local_link_addr, ic->ic_awdl_addr);
     else {
@@ -11180,6 +11347,33 @@ iwx_mld_listener_link(struct iwx_softc *sc, uint32_t action, uint32_t changes, u
             cmd.ac[txf].edca_txop = htole16(ac->ac_txoplimit * 32);
         }
         cmd.modify_mask = htole32(changes);
+    }
+    if (active && (changes & IWX_MLD_LINK_CONTEXT_MODIFY_ACTIVE) &&
+        !sc->sc_pcitag->getProperty("AWDLActivationLink")) {
+        char state[768];
+        auto phy = &sc->sc_listener_phy;
+        auto ni = ic->ic_bss;
+        snprintf(state, sizeof(state),
+            "uptime_us=%llu gen=%d mac=%u type=%u link=%u phy=%u channel=%u phyflags=0x%x width=%u "
+            "homechannel=%u mldlinks=%u fwlinks=0x%x active=0x%x phys=0x%x primary=%u "
+            "emlsr=%u enabled=%u blocked=0x%x update=%u flags=0x%x state=%u icflags=0x%x "
+            "scan=%u scanpending=%u scanbatch=%u scanbg=%u wclscan=%u rocPending=%d rocRunning=%d "
+            "rocUid=%u rocChannel=%u listen=%u cmdver=%u",
+            (unsigned long long)iwx_uptime_us(), sc->sc_generation,
+            IWX_LISTENER_MAC_ID, iwx_awdl_client_enabled() ? IWX_FW_MAC_TYPE_P2P_STA : IWX_FW_MAC_TYPE_LISTENER,
+            IWX_LISTENER_LINK_ID, phy->id, ieee80211_chan2number(ic, phy->channel),
+            phy->channel->ic_flags, phy->mld_width,
+            ni && ni->ni_chan != IEEE80211_CHAN_ANYC ? ieee80211_chan2number(ic, ni->ni_chan) : 0,
+            ic->ic_mld_link_count, sc->sc_mld_link_active, sc->sc_mld_active_links,
+            sc->sc_mld_phy_active, sc->sc_mld_primary_link, sc->sc_mld_emlsr_active,
+            sc->sc_mld_emlsr_enabled, sc->sc_mld_emlsr_blocked, sc->sc_mld_link_update_pending,
+            sc->sc_flags, ic->ic_state, ic->ic_flags, sc->sc_scan_active,
+            sc->sc_scan_batch_pending, sc->sc_scan_batch, sc->sc_scan_bgscan,
+            ic->ic_wcl_scan_requested, sc->sc_aux_roc_pending, sc->sc_aux_roc_running,
+            sc->sc_aux_roc_uid, sc->sc_p2p_roc_chan, sc->sc_awdl_listen_active,
+            iwx_lookup_cmd_ver(sc, IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD));
+        sc->sc_pcitag->setProperty("AWDLActivationState", state);
+        sc->sc_pcitag->setProperty("AWDLActivationLink", &cmd, sizeof(cmd));
     }
     return iwx_send_cmd_pdu(sc, IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_LINK_CONFIG_CMD),
         0, sizeof(cmd), &cmd);
@@ -11291,7 +11485,8 @@ iwx_mld_listener_setup(struct iwx_softc *sc, bool home2g)
         goto fail;
     }
     if ((err = iwx_mld_listener_link(sc, IWX_FW_CTXT_ACTION_MODIFY,
-        IWX_MLD_LINK_CONTEXT_MODIFY_RATES_INFO | IWX_MLD_LINK_CONTEXT_MODIFY_QOS_PARAMS, 0)) != 0)
+        IWX_MLD_LINK_CONTEXT_MODIFY_RATES_INFO | IWX_MLD_LINK_CONTEXT_MODIFY_QOS_PARAMS |
+        (iwx_awdl_client_enabled() ? IWX_MLD_LINK_CONTEXT_MODIFY_BEACON_TIMING : 0), 0)) != 0)
         goto fail;
     setupStage(5);
     if (generation != sc->sc_generation) {
@@ -14887,6 +15082,7 @@ iwx_stop(struct _ifnet *ifp)
 #endif
     sc->sc_flags |= IWX_FLAG_SHUTDOWN; /* Disallow new tasks. */
     sc->sc_generation++;
+    sc->sc_mld_mac_associated = 0;
     getMainCommandGate()->commandWakeup(&sc->sc_flags);
     getMainCommandGate()->commandWakeup(&sc->sc_uc.uc_intr);
     getMainCommandGate()->commandWakeup(&sc->sc_init_complete);

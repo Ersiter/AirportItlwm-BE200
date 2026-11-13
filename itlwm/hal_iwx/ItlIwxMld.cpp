@@ -1692,6 +1692,7 @@ iwx_mld_mac_ctxt_cmd(struct iwx_softc *sc, struct iwx_node *in,
     struct ieee80211com *ic = &sc->sc_ic;
     struct ieee80211_node *ni = &in->in_ni;
     struct iwx_mld_mac_config_cmd cmd;
+    int err;
 
     if (ic->ic_opmode != IEEE80211_M_STA)
         return ENOTSUP;
@@ -1703,9 +1704,12 @@ iwx_mld_mac_ctxt_cmd(struct iwx_softc *sc, struct iwx_node *in,
     cmd.action = htole32(action);
 
     if (action == IWX_FW_CTXT_ACTION_REMOVE) {
-        return iwx_send_cmd_pdu(sc,
+        err = iwx_send_cmd_pdu(sc,
             IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_MAC_CONFIG_CMD),
             0, sizeof(cmd), &cmd);
+        if (!err)
+            sc->sc_mld_mac_associated = 0;
+        return err;
     }
 
     /*
@@ -1755,9 +1759,12 @@ iwx_mld_mac_ctxt_cmd(struct iwx_softc *sc, struct iwx_node *in,
         le32toh(cmd.eht_support), cmd.client.esr_transition_timeout,
         le16toh(cmd.client.medium_sync_delay), le32toh(cmd.filter_flags),
         ni->ni_mld_valid);
-    return iwx_send_cmd_pdu(sc,
+    err = iwx_send_cmd_pdu(sc,
         IWX_WIDE_ID(IWX_MAC_CONF_GROUP, IWX_MLD_MAC_CONFIG_CMD),
         0, sizeof(cmd), &cmd);
+    if (!err)
+        sc->sc_mld_mac_associated = cmd.client.is_assoc;
+    return err;
 }
 
 int ItlIwx::
@@ -2505,6 +2512,11 @@ iwx_mld_deauth(struct iwx_softc *sc)
             return err;
         }
         sc->sc_flags &= ~IWX_FLAG_TE_ACTIVE;
+    }
+    if (sc->sc_mld_mac_associated) {
+        err = iwx_mld_mac_ctxt_cmd(sc, in, IWX_FW_CTXT_ACTION_MODIFY, 0);
+        if (err)
+            return err;
     }
     err = iwx_mld_rm_sta_cmd(sc, in);
     if (err)

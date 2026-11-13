@@ -587,6 +587,16 @@ IOReturn AirportItlwmSkywalkInterface::startWCLScan(const AirportWCL::ScanReques
     scanPending = true;
     scanCompleted = false;
     deferredScan = scan;
+    if (scan.ssidLength && scan.channelCount == 1 &&
+        AirportWCL::scanChannelSelected(scan.channels, true, 149) &&
+        !getProperty("WCLHotspotTraceEnabled")) {
+        auto data = OSData::withBytes(scan.ssid, scan.ssidLength);
+        if (data) {
+            setProperty("WCLHotspotTraceSSID", data);
+            data->release();
+        }
+        setProperty("WCLHotspotTraceEnabled", true);
+    }
     clearWCLScanResults();
     wclScanCount++;
     absolutetime_to_nanoseconds(mach_absolute_time(), &wclScanStartNs);
@@ -706,12 +716,68 @@ void AirportItlwmSkywalkInterface::completeWCLScan()
         finishWCLScan(scanCompleted || wclScanResultCount ? kIOReturnSuccess : kIOReturnTimeout);
 }
 
+static void wclTraceHotspot149(AirportItlwmSkywalkInterface *interface,
+    const ieee80211_node *node, const uint8_t *ies, size_t length,
+    const char *stage, unsigned scan, bool pending, IOReturn result = kIOReturnSuccess)
+{
+    if (!interface->getProperty("WCLHotspotTraceEnabled") || !node || !node->ni_chan ||
+        node->ni_chan == IEEE80211_CHAN_ANYC || !IEEE80211_IS_CHAN_5GHZ(node->ni_chan) ||
+        ieee80211_mhz2ieee(node->ni_chan->ic_freq, node->ni_chan->ic_flags) != 149)
+        return;
+    auto records = OSDynamicCast(OSDictionary, interface->getProperty("WCLHotspot149"));
+    if (!records) {
+        records = OSDictionary::withCapacity(128);
+        if (!records)
+            return;
+        interface->setProperty("WCLHotspot149", records);
+        records->release();
+    }
+    char key[20];
+    snprintf(key, sizeof(key), "%02x%02x%02x%02x%02x%02x",
+        node->ni_bssid[0], node->ni_bssid[1], node->ni_bssid[2],
+        node->ni_bssid[3], node->ni_bssid[4], node->ni_bssid[5]);
+    if (!records->getObject(key) && records->getCount() >= 128)
+        return;
+    auto record = OSDictionary::withCapacity(4);
+    if (!record)
+        return;
+    uint64_t now;
+    absolutetime_to_nanoseconds(mach_absolute_time(), &now);
+    char state[192];
+    snprintf(state, sizeof(state), "uptime_us=%llu scan=%u pending=%u stage=%s result=0x%x nodeSSIDLen=%u ieLength=%zu",
+        (unsigned long long)(now / 1000), scan, pending, stage, result, node->ni_esslen, length);
+    auto text = OSString::withCString(state);
+    if (text) {
+        record->setObject("State", text);
+        text->release();
+    }
+    auto data = OSData::withBytes(ies, (unsigned)length);
+    if (data) {
+        record->setObject("IE", data);
+        data->release();
+    }
+    data = OSData::withBytes(node->ni_essid, MIN(node->ni_esslen, IEEE80211_NWID_LEN));
+    if (data) {
+        record->setObject("NodeSSID", data);
+        data->release();
+    }
+    auto updated = OSDictionary::withDictionary(records);
+    if (updated) {
+        updated->setObject(key, record);
+        interface->setProperty("WCLHotspot149", updated);
+        updated->release();
+    }
+    record->release();
+}
+
 void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, const uint8_t *ies, size_t length)
 {
+    wclTraceHotspot149(this, node, ies, length, "entry", wclScanCount, scanPending);
     // The event ends at the last complete element parsed by net80211.
     size_t iePrefix = AirportWCL::validIEPrefix(ies, length, 0);
     /* Two keys: a reader cannot tell an element id from a length in one number. */
     if (!node || !iePrefix) {
+        wclTraceHotspot149(this, node, ies, length, "drop-invalid-ie", wclScanCount, scanPending);
         return;
     }
     ieee80211com *ic = fHalService->get80211Controller();
@@ -767,6 +833,7 @@ void AirportItlwmSkywalkInterface::publishWCLBeacon(const ieee80211_node *node, 
     const bool joinedBssid = assocNotified &&
         IEEE80211_ADDR_EQ(node->ni_bssid, joinBSSID);
     if (ssidBytes == 0 && !joinedBssid) {
+        wclTraceHotspot149(this, node, ies, length, "drop-hidden-ssid", wclScanCount, scanPending);
         return;
     }
     {
@@ -809,8 +876,10 @@ void AirportItlwmSkywalkInterface::postWCLScanResult(const ieee80211_node *node,
 {
     size_t size = sizeof(AirportWCL::BeaconMetadata) + length;
     auto metadata = static_cast<AirportWCL::BeaconMetadata *>(IOMalloc(size));
-    if (!metadata)
+    if (!metadata) {
+        wclTraceHotspot149(this, node, ies, length, "drop-allocation", wclScanCount, scanPending, kIOReturnNoMemory);
         return;
+    }
     *metadata = {};
     metadata->ieLength = uint32_t(length);
     metadata->channelSpec = spec;
@@ -857,7 +926,8 @@ void AirportItlwmSkywalkInterface::postWCLScanResult(const ieee80211_node *node,
         setProperty("WCLScanTarget", target);
         setProperty("WCLScanTargetIE", metadata + 1, (unsigned)length);
     }
-    instance->postMessage(this, AirportWCL::ScanResult, metadata, messageSize, true);
+    IOReturn result = instance->postMessage(this, AirportWCL::ScanResult, metadata, messageSize, true);
+    wclTraceHotspot149(this, node, ies, length, "posted-to-wcl", wclScanCount, scanPending, result);
     IOFree(metadata, size);
 }
 
