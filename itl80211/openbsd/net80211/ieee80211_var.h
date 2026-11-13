@@ -658,6 +658,8 @@ struct ieee80211com {
 	struct ieee80211_channel ic_channels[IEEE80211_CHAN_MAX+1];
 	u_char			ic_chan_avail[howmany(IEEE80211_CHAN_MAX,NBBY)];
 	u_char			ic_chan_active[howmany(IEEE80211_CHAN_MAX, NBBY)];
+	/* Channels an AP was heard beaconing on (see ieee80211_recv_probe_resp) */
+	u_char			ic_beacon_hint[howmany(IEEE80211_CHAN_MAX, NBBY)];
 	u_char			ic_chan_scan[howmany(IEEE80211_CHAN_MAX,NBBY)];
 	struct mbuf_queue	ic_mgtq;
 	struct mbuf_queue	ic_pwrsaveq;

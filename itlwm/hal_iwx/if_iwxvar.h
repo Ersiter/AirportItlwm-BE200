@@ -771,6 +771,7 @@ struct iwx_softc {
     char sc_fw_mcc[3];
     uint16_t sc_fw_mcc_int;
     char sc_mcc_last[3];
+    char sc_beacon_hint_mcc[2];    /* country the beacon hints were heard under */
     uint8_t sc_mcc_last_source;
     int sc_mcc_last_valid;
     int sc_mcc_profile_synced;

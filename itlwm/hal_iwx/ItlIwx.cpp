@@ -10735,7 +10735,7 @@ iwx_awdl_listen(struct ieee80211com *ic, uint8_t chan, uint16_t dwell_tu)
             sc->sc_listener_tries++;
             ic->ic_awdl_listener_tries = sc->sc_listener_tries;
             err = sc->sc_use_mld_api ?
-                that->iwx_mld_listener_setup(sc, IEEE80211_IS_CHAN_2GHZ(ic->ic_bss->ni_chan)) :
+                that->iwx_mld_listener_setup(sc) :
                 that->iwx_legacy_listener_setup(sc);
             if (err) {
                 sc->sc_awdl_listen_fail++;
@@ -11383,6 +11383,54 @@ iwx_mld_listener_link(struct iwx_softc *sc, uint32_t action, uint32_t changes, u
 }
 
 /*
+ * The standing listener's channel, in Apple's AWDL order: 149, then 44 where 149 is not allowed (Japan, for
+ * example), then 6, at 20 MHz, and only where we may transmit: no radar, and not passive unless an AP was heard
+ * beaconing there (ic_beacon_hint, Linux's beacon hint). On top of that, per firmware:
+ * - MLD (BE): another band than the station's (see iwx_mld_listener_setup); 2.4, 5 and 6 GHz count as
+ *   separate bands, as for the driver's EMLSR pairs.
+ * - legacy (AX): a station at 160 MHz holds its whole 160 MHz group, and a listener inside it on another
+ *   channel got the station disconnected during transfers (ForbiddenItlwm, AX201), so not there.
+ */
+static uint8_t
+iwx_awdl_listener_pick(struct iwx_softc *sc)
+{
+    struct ieee80211com *ic = &sc->sc_ic;
+    struct ieee80211_node *ni = ic->ic_bss;
+    const struct ieee80211_channel *station = ni && ni->ni_chan != IEEE80211_CHAN_ANYC ? ni->ni_chan : nullptr;
+    static const uint8_t kOrder[] = { 149, 44, 6 };
+    auto band = [](const struct ieee80211_channel *c) {
+        return IEEE80211_IS_CHAN_2GHZ(c) ? 2 : IEEE80211_IS_CHAN_6GHZ(c) ? 6 : 5;
+    };
+    auto group160 = [](unsigned c) -> unsigned {
+        return c >= 36 && c <= 64 ? 1U : c >= 100 && c <= 128 ? 2U : c >= 149 && c <= 177 ? 3U : 0U;
+    };
+    unsigned stationNum = 0, groupA = 0, groupB = 0;
+    if (station && band(station) == 5) {
+        stationNum = ieee80211_chan2ieee(ic, station);
+        if (ni->ni_chw == IEEE80211_CHAN_WIDTH_160 || ni->ni_chw == IEEE80211_CHAN_WIDTH_80P80)
+            groupA = group160(stationNum);
+        if (ni->ni_chw == IEEE80211_CHAN_WIDTH_80P80 && station->ic_center_freq2)
+            groupB = group160(ieee80211_mhz2ieee(station->ic_center_freq2, 0));
+    }
+    for (unsigned i = 0; i < nitems(kOrder); i++) {
+        const unsigned c = kOrder[i];
+        const struct ieee80211_channel &ch = ic->ic_channels[c];
+        if (!ch.ic_flags || !isset(ic->ic_chan_active, c) ||
+            (ch.ic_flags & (IEEE80211_CHAN_DFS | IEEE80211_CHAN_NOADHOC)) ||
+            ((ch.ic_flags & IEEE80211_CHAN_PASSIVE) && !isset(ic->ic_beacon_hint, c)))
+            continue;
+        if (sc->sc_use_mld_api) {
+            if (station && band(&ch) == band(station))
+                continue;
+        } else if (c != stationNum && group160(c) && (group160(c) == groupA || group160(c) == groupB)) {
+            continue;
+        }
+        return c;
+    }
+    return 0;
+}
+
+/*
  * -itlawdllistener: what Linux iwl-mld does for a monitor interface, kept for as long as AWDL
  * runs instead of the short ROC listens that never delivered a broadcast frame:
  * MAC_CONFIG (LISTENER, promiscuous, awdl0's address), LINK_CONFIG ADD, PHY_CONTEXT ADD, LINK_CONFIG
@@ -11397,13 +11445,13 @@ iwx_mld_listener_link(struct iwx_softc *sc, uint32_t action, uint32_t changes, u
  * active, 6 station, 7 queue. A failure leaves the ROC listens as before.
  */
 int ItlIwx::
-iwx_mld_listener_setup(struct iwx_softc *sc, bool home2g)
+iwx_mld_listener_setup(struct iwx_softc *sc)
 {
     struct ieee80211com *ic = &sc->sc_ic;
     uint32_t stage = 0;
     int err = 0, queue, qtid;
     uint32_t qbit, qhad;
-    uint8_t chan = home2g ? 149 : 6;
+    const uint8_t chan = iwx_awdl_listener_pick(sc);
     int generation = sc->sc_generation;
     /*
      * Every command here can sleep across a firmware restart. Commands sent after one went to the freshly
@@ -11416,8 +11464,7 @@ iwx_mld_listener_setup(struct iwx_softc *sc, bool home2g)
         sc->sc_pcitag->setProperty("AirportItlwm-AWDLSetupStage", value, 32);
     };
 
-    if (ic->ic_mld_link_count > 2 || sc->sc_capa_num_stations <= IWX_LISTENER_STA_ID ||
-        ic->ic_channels[chan].ic_flags == 0)
+    if (ic->ic_mld_link_count > 2 || sc->sc_capa_num_stations <= IWX_LISTENER_STA_ID || !chan)
         return ENOTSUP;
 
     setupStage(1);
@@ -11599,9 +11646,8 @@ fail:
  * and WarnerATCN's portable-rx branch on AX210/AX211: a LISTENER MAC (id 2) on the spare PHY context with
  * a binding of its own, a general purpose station with any address and a management queue. The firmware
  * time-shares the two bindings (DYNAMIC_QUOTA, present in every firmware here); the station keeps its
- * binding untouched. Channel: 149 when the regulatory map lets us transmit there (not passive, no radar,
- * ad hoc allowed), else 6, as ForbiddenItlwm's awdlCoexPickOwn does at 20 MHz. Promiscuous only on a
- * channel other than the station's, where it can't take the station's frames. Stage: 1 PHY, 2 MAC,
+ * binding untouched. Channel: iwx_awdl_listener_pick(), as ForbiddenItlwm's awdlCoexPickOwn at 20 MHz.
+ * Promiscuous only on a channel other than the station's, where it can't take the station's frames. Stage: 1 PHY, 2 MAC,
  * 3 binding, 4 station, 5 queue.
  */
 int ItlIwx::
@@ -11614,12 +11660,7 @@ iwx_legacy_listener_setup(struct iwx_softc *sc)
     uint32_t stage = 0, status;
     int err = 0, queue;
     bool sameChannel;
-    auto usable = [ic](unsigned c) {
-        const struct ieee80211_channel &ch = ic->ic_channels[c];
-        return ch.ic_flags && isset(ic->ic_chan_active, c) &&
-            !(ch.ic_flags & (IEEE80211_CHAN_PASSIVE | IEEE80211_CHAN_DFS | IEEE80211_CHAN_NOADHOC));
-    };
-    const uint8_t chan = usable(149) ? 149 : (usable(6) ? 6 : 0);
+    const uint8_t chan = iwx_awdl_listener_pick(sc);
 
     if (!in || !in->in_phyctxt || !chan || sc->sc_capa_num_stations <= IWX_LISTENER_STA_ID ||
         !isset(sc->sc_enabled_capa, IWX_UCODE_TLV_CAPA_DYNAMIC_QUOTA) || in->in_phyctxt == phy)
@@ -14653,6 +14694,14 @@ iwx_send_update_mcc_cmd(struct iwx_softc *sc, const char *alpha2,
     }
 
     countryChanged = memcmp(sc->sc_fw_mcc, effectiveMcc, 2) != 0;
+    /*
+     * Beacon hints were heard under the old country's rules; Linux drops them on a regulatory change too.
+     * A detour through the world domain is not a change of country, so only a resolved one counts.
+     */
+    if (iwx_resolved_mcc(effectiveMcc) && memcmp(sc->sc_beacon_hint_mcc, effectiveMcc, 2) != 0) {
+        memset(sc->sc_ic.ic_beacon_hint, 0, sizeof(sc->sc_ic.ic_beacon_hint));
+        memcpy(sc->sc_beacon_hint_mcc, effectiveMcc, 2);
+    }
     notif.mcc = htole16(response.mcc);
     notif.source_id = response.source_id;
     iwx_mcc_update(sc, &notif);

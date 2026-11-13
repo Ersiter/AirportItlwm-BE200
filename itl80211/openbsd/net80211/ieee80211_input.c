@@ -2647,6 +2647,41 @@ ieee80211_recv_probe_resp_bss(struct ieee80211com *ic, mbuf_t m,
         ic->ic_stats.is_rx_chanmismatch++;
         return;
     }
+
+    /*
+     * Beacon hint, as Linux's regulatory code (reg_process_beacons) does: an
+     * AP beaconing on the channel it was heard on shows that initiating there
+     * is allowed, even where the NVM leaves the channel passive until the
+     * country is known. Only a beacon received on its own channel counts, and
+     * radar (DFS) channels are never lifted. An AP running 80 MHz or wider
+     * vouches for its whole 80 MHz block: 149-161 (centre 155) and 36-48
+     * (centre 42), the two blocks Apple's AWDL uses, 44 where 149 is not
+     * allowed. The 160 MHz forms are centre 42/155 with a second segment
+     * (current) or width 2 with centre 50/163 (deprecated).
+     */
+    if (!isprobe && channel_band != IEEE80211_CHAN_6GHZ &&
+        rxi->rxi_chan != 0 && chan == rxi->rxi_chan &&
+        (capinfo & IEEE80211_CAPINFO_ESS) &&
+        !(ic->ic_channels[chanidx].ic_flags & IEEE80211_CHAN_DFS)) {
+        setbit(ic->ic_beacon_hint, chanidx);
+        if (vhtopmode != NULL) {
+            const struct ieee80211_ie_vht_operation *op =
+                (const struct ieee80211_ie_vht_operation *)vhtopmode;
+            unsigned first = 0;
+            if (chan >= 149 && chan <= 161 &&
+                ((op->chan_width == 1 && op->center_freq_seg1_idx == 155) ||
+                 (op->chan_width == 2 && op->center_freq_seg1_idx == 163)))
+                first = 149;
+            else if (chan >= 36 && chan <= 48 &&
+                ((op->chan_width == 1 && op->center_freq_seg1_idx == 42) ||
+                 (op->chan_width == 2 && op->center_freq_seg1_idx == 50)))
+                first = 36;
+            for (unsigned c = first; first && c <= first + 12; c += 4)
+                if (ic->ic_channels[c].ic_flags &&
+                    !(ic->ic_channels[c].ic_flags & IEEE80211_CHAN_DFS))
+                    setbit(ic->ic_beacon_hint, c);
+        }
+    }
     
 #ifdef IEEE80211_DEBUG
     if (ieee80211_debug > 1 &&
