@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-Hans" data-lang="zh-hans">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Eric-AirportItlwm：Intel 无线网卡的 macOS 原生驱动，从 802.11n 到 Wi-Fi 7</title>
+<meta name="description" content="macOS Tahoe 26、Sequoia 15 · WPA3 · 6 GHz · 802.11be · BE200 / BE201 以及 itlwm 支持的全部网卡">
+<link rel="canonical" href="https://ersiter.github.io/Eric-AirportItlwm/zh-hans/">
+<link rel="alternate" hreflang="en" href="https://ersiter.github.io/Eric-AirportItlwm/">
+<link rel="alternate" hreflang="zh-Hans" href="https://ersiter.github.io/Eric-AirportItlwm/zh-hans/">
+<link rel="alternate" hreflang="zh-Hant" href="https://ersiter.github.io/Eric-AirportItlwm/zh-hant/">
+<link rel="alternate" hreflang="de" href="https://ersiter.github.io/Eric-AirportItlwm/de/">
+<link rel="alternate" hreflang="fr" href="https://ersiter.github.io/Eric-AirportItlwm/fr/">
+<link rel="alternate" hreflang="ru" href="https://ersiter.github.io/Eric-AirportItlwm/ru/">
+<link rel="alternate" hreflang="x-default" href="https://ersiter.github.io/Eric-AirportItlwm/">
+<link rel="icon" type="image/png" href="../be200-icon.png">
+<link rel="stylesheet" href="../style.css">
+<script src="../lang.js"></script>
+<script defer src="../app.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">跳到正文</a>
+<header class="top"><div class="bar">
+<a class="brand" href="#top"><img src="../be200-icon.png" width="28" height="28" alt="">Eric-AirportItlwm</a>
+<button class="burger" type="button" aria-label="菜单" aria-expanded="false" aria-controls="sections"><span></span><span></span><span></span></button>
+<nav id="sections" aria-label="目录">
+<a href="#lineage">源流</a>
+<a href="#works">功能</a>
+<a href="#cards">网卡</a>
+<a href="#install">安装</a>
+<a href="#continuity">接续互通</a>
+<a href="#report">反馈</a>
+<a href="#build">编译</a>
+<a href="#license">许可</a>
+</nav>
+<details class="lang">
+<summary aria-label="Language"><span lang="zh-Hans">zh-Hans</span></summary>
+<ul>
+<li><a href="../" hreflang="en" lang="en" data-lang="en-us">en-US<span>English</span></a></li>
+<li><a href="./" hreflang="zh-Hans" lang="zh-Hans" data-lang="zh-hans" aria-current="true">zh-Hans<span>简体中文</span></a></li>
+<li><a href="../zh-hant/" hreflang="zh-Hant" lang="zh-Hant" data-lang="zh-hant">zh-Hant<span>繁體中文</span></a></li>
+<li><a href="../de/" hreflang="de" lang="de" data-lang="de">de<span>Deutsch</span></a></li>
+<li><a href="../fr/" hreflang="fr" lang="fr" data-lang="fr">fr<span>Français</span></a></li>
+<li><a href="../ru/" hreflang="ru" lang="ru" data-lang="ru">ru<span>Русский</span></a></li>
+</ul>
+</details>
+</div></header>
+<main id="main">
+<section class="hero" id="top"><div class="wrap hero-grid">
+<div class="hero-text">
+<p class="eyebrow">开源 · <wbr><span class="nw">GPL-2</span>.0 · <wbr>x86_<wbr>64</p>
+<h1>Intel <wbr>无线<wbr>网卡<wbr>的 <wbr>macOS <wbr>原生<wbr>驱动，<wbr>从 <wbr><span class="nw">802.11n</span> <wbr>到 <wbr><span class="nw">Wi-Fi 7</span></h1>
+<p class="sub">macOS <wbr>Tahoe 26、<wbr>Sequoia 15 · <wbr>WPA3 <wbr>· <wbr>6 GHz · <wbr><span class="nw">802.11be</span> · <wbr><span class="nw">BE200 / BE201</span> <wbr>以及 <wbr>itlwm <wbr>支持<wbr>的<wbr>全部<wbr>网卡</p>
+<p class="lead">在 <wbr>AirportItlwm <wbr>的 <wbr><span class="nw">Wi-Fi 6</span> <wbr>基础上<wbr>做到<wbr>了 <wbr><span class="nw">Wi-Fi 7</span><wbr>（BE200、<wbr>BE201），<wbr>并<wbr>在<wbr>做隔<wbr>空投送、<wbr>即时<wbr>热点。<wbr>原有<wbr>网卡<wbr>全部<wbr>保留，<wbr>用<wbr>的<wbr>是 <wbr>macOS <wbr>自带<wbr>的<wbr> <wbr><span class="nw">Wi-Fi</span>，<wbr>不需要 <wbr>HeliPort。</p>
+<p class="cta"><a target="_blank" rel="noopener noreferrer" class="btn primary" href="https://github.com/Ersiter/Eric-AirportItlwm/releases/latest">前往 Releases 下载</a><a target="_blank" rel="noopener noreferrer" class="btn" href="https://github.com/Ersiter/Eric-AirportItlwm">GitHub 仓库</a><a target="_blank" rel="noopener noreferrer" class="btn" href="https://github.com/Ersiter/Eric-AirportItlwm/issues">Issues</a></p>
+<p class="credit-line">基于 <a target="_blank" rel="noopener noreferrer" href="https://github.com/OpenIntelWireless/itlwm">itlwm</a> <wbr>与 <a target="_blank" rel="noopener noreferrer" href="https://github.com/laobamac/itlwm">laobamac/itlwm</a>。<wbr>见<a href="#lineage">源流<wbr>与<wbr>致谢</a>。</p>
+</div>
+<div class="hero-art"><img src="../be200-icon.png" width="256" height="256" alt="Eric-AirportItlwm"></div>
+</div>
+<div class="wrap"><dl class="stats">
+<div><dt>链路速率</dt><dd><span class="num">2882</span> <span class="unit">Mbit/s</span></dd></div>
+<div><dt>发送</dt><dd><span class="num">2.55</span> <span class="unit">Gbit/s</span></dd></div>
+<div><dt>接收</dt><dd><span class="num">1.84</span> <span class="unit">Gbit/s</span></dd></div>
+<div><dt>实机</dt><dd><span class="num">320</span> <span class="unit">MHz</span></dd></div>
+</dl><p class="note">BE200 <wbr>实测：<wbr>macOS 26，<wbr>6 GHz，<wbr>320<wbr> MHz，<wbr>双流。<wbr>数值为<wbr>链路速率<wbr>与<wbr>接口实测。<wbr>5 GHz <wbr>HE <wbr>160 MHz。<wbr>睡眠：<wbr>任意<wbr>时<wbr>长<wbr>睡眠后<wbr>立即重连<wbr>（测试者<wbr>反馈）。</p>
+<ul class="chips"><li>macOS 26 Tahoe</li><li>macOS 15.2+ Sequoia</li><li>x86_64</li><li>GPL-2.0</li></ul></div>
+</section>
+<section class="lineage" id="lineage"><div class="wrap">
+<h2>源流<wbr>与<wbr>致谢</h2>
+<p class="big">本<wbr>项目<wbr>的<wbr>存在<wbr>完全<wbr>依赖<wbr>他<wbr>人<wbr>的<wbr>源代码。<wbr>它<wbr>保留 <wbr>itlwm <wbr>与 <wbr>AirportItlwm <wbr>的<wbr>全部<wbr>内容<wbr>并<wbr>在<wbr>其上<wbr>增加<wbr>功能，<wbr>并非<wbr>替代。<wbr>感谢<wbr>下列<wbr>所有人。</p>
+<ol class="chain">
+<li><strong>itlwm</strong><span><a target="_blank" rel="noopener noreferrer" href="https://github.com/zxystd">zxystd</a> / <a target="_blank" rel="noopener noreferrer" href="https://github.com/OpenIntelWireless/itlwm">OpenIntelWireless</a></span></li>
+<li><strong>laobamac/itlwm</strong><span><span class="nw">Tahoe/Sequoia</span> <wbr>原生 <wbr>Apple <wbr>无线<wbr>接口</span></li>
+<li><strong>Eric-AirportItlwm</strong><span>本<wbr>仓库</span></li>
+</ol>
+<p><a target="_blank" rel="noopener noreferrer" href="https://github.com/zxystd">zxystd</a> / <a target="_blank" rel="noopener noreferrer" href="https://github.com/OpenIntelWireless/itlwm">OpenIntelWireless</a> <wbr>的 <strong>itlwm</strong> → <a target="_blank" rel="noopener noreferrer" href="https://github.com/laobamac/itlwm">laobamac/itlwm</a>（<span class="nw">Tahoe/Sequoia</span> <wbr>原生 <wbr>Apple <wbr>无线<wbr>接口）<wbr>→ <wbr>本仓库：<wbr>保留<wbr>以<wbr>上<wbr>全部，<wbr>并新<wbr>增 <wbr><span class="nw">Wi-Fi 7</span> <wbr>传输<wbr>层与 <wbr>MLD <wbr>固件<wbr>路径、<wbr>WPA3 <wbr>SAE/H2E <wbr>与 <wbr>OWE、<wbr>6 GHz、<wbr>320<wbr> MHz <wbr>和<wbr>多链路，<wbr>按 <wbr>Linux <code>iwlwifi</code>（<code>mld</code>、<code>mvm</code>）<wbr>与 <code>mac80211</code> <wbr>逐条命令<wbr>实现。</p>
+<h3>致谢</h3>
+<ul class="credits">
+<li><a target="_blank" rel="noopener noreferrer" href="https://github.com/zxystd">zxystd</a> <wbr>与 <a target="_blank" rel="noopener noreferrer" href="https://github.com/OpenIntelWireless">OpenIntelWireless</a>：<wbr>itlwm、<wbr>AirportItlwm</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://github.com/laobamac/itlwm">laobamac</a>：<wbr>Tahoe <wbr>与 <wbr>Sequoia <wbr>的<wbr>原生 <wbr>IO80211 <wbr>/ <wbr>Skywalk <wbr>/ <wbr>WCL <wbr>接口，<wbr>以及<wbr>审阅<wbr>与<wbr>指导</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://github.com/openbsd/src">OpenBSD</a>、<wbr>Stefan <wbr>Sperling <wbr>与贡献者：<wbr>net80211、<wbr>iwn、<wbr>iwm、<wbr>iwx <wbr>与 <wbr>SAE <wbr>实现</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://bearssl.org/">BearSSL</a>，<wbr>Thomas <wbr>Pornin：<wbr>SAE <wbr>所用<wbr>的 <wbr><span class="nw">P-256</span> <wbr>运算</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://github.com/torvalds/linux/tree/master/drivers/net/wireless/intel/iwlwifi">Linux <wbr>iwlwifi <wbr>与 <wbr>mac80211</a>：<wbr>每条<wbr>固件<wbr>命令<wbr>的<wbr>行为<wbr>参照</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://w1.fi/">hostap / wpa_supplicant</a>：<wbr>SAE、<wbr>RSNXE <wbr>与<wbr>握手行为<wbr>参照</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://github.com/retropineaple/ForbiddenItlwm">retropineaple/ForbiddenItlwm</a>：<wbr>Intel <wbr>网卡上<wbr>的 <wbr>AWDL；<wbr>AX <wbr>监听器<wbr>与 <wbr>AWDL <wbr>接口表检<wbr>查<wbr>参照<wbr>它</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://github.com/crazyhulk">crazyhulk</a>：<wbr>AWDL <wbr>接口<wbr>的<wbr>前期<wbr>工作<wbr>和 <wbr>BlueToolFixup <wbr>的 <wbr>BLE <wbr>补丁</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://github.com/seemoo-lab/owl"><span class="nw">seemoo-lab</span>/owl</a>：<wbr>开源 <wbr>AWDL <wbr>实现，<wbr>用<wbr>作<wbr>协议<wbr>参照</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://github.com/acidanthera">Acidanthera</a>：<wbr>MacKernelSDK、<wbr>Lilu、<wbr>BrcmPatchRAM <wbr>/ <wbr>BlueToolFixup</li>
+<li>Mieze：<wbr>macOS <wbr>接收路<wbr>径<wbr>方面<wbr>的<wbr>指导</li>
+<li>itlwm <wbr>原有<wbr>致谢<wbr>的<wbr>项目：<a target="_blank" rel="noopener noreferrer" href="https://github.com/AppleIntelWiFi/Black80211-Catalina"><span class="nw">Black80211-Catalina</span></a>、<a target="_blank" rel="noopener noreferrer" href="https://github.com/rpeshkov/black80211">black80211</a>、<a target="_blank" rel="noopener noreferrer" href="https://github.com/mercurysquad/Voodoo80211">Voodoo80211</a>、<wbr><span class="nw">usr-sse2</span> <wbr>等</li>
+<li>Intel：<wbr>固件，<wbr>按 <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/blob/be200-tahoe/iwlwifi-firmware-license">Intel <wbr>固件<wbr>许可</a>分发</li>
+<li>所有<wbr>提供<wbr>路由<wbr>器、<wbr>硬件<wbr>和<wbr>日志<wbr>的<wbr>测试<wbr>者</li>
+</ul></div></section>
+<section id="works"><div class="wrap"><h2>功能</h2>
+<div class="table-wrap"><table><thead><tr><th>功能</th><th>网卡</th><th>状态</th></tr></thead><tbody>
+<tr><td>扫描、<wbr>连接、<wbr>漫游、<wbr>私有 <wbr><span class="nw">Wi-Fi</span> <wbr>地址</td><td>全部</td><td><span class="pill ok"><span aria-hidden="true">✅</span> 可用</span></td></tr>
+<tr><td>WPA2 <wbr>个<wbr>人级、<wbr>WPA2 <wbr>企业级<wbr>（PEAP）、<wbr>WPA2/WPA3 <wbr>过<wbr>渡网络</td><td>全部</td><td><span class="pill ok"><span aria-hidden="true">✅</span> 可用</span></td></tr>
+<tr><td>WPA3 <wbr>个<wbr>人<wbr>级<wbr>（SAE、<wbr>H2E）、<wbr>增强<wbr>型开放网络<wbr>（OWE）</td><td>全部</td><td><span class="pill ok"><span aria-hidden="true">✅</span> 可用</span> <span class="snote">BE200 <wbr>实机</span></td></tr>
+<tr><td><span class="nw">802.11ac</span><wbr>（VHT）、<wbr>160 MHz</td><td>AC 及以上</td><td><span class="pill ok"><span aria-hidden="true">✅</span> 可用</span></td></tr>
+<tr><td><span class="nw">802.11ax</span><wbr>（HE）</td><td>AX、BE</td><td><span class="pill ok"><span aria-hidden="true">✅</span> 可用</span> <span class="snote">需 <code>itlwm_he=1</code></span></td></tr>
+<tr><td>6 GHz</td><td>AX210/AX211/AX411、BE</td><td><span class="pill ok"><span aria-hidden="true">✅</span> 可用</span> <span class="snote">BE200 <wbr>实机</span></td></tr>
+<tr><td><span class="nw">802.11be</span><wbr>（EHT）、<wbr>320<wbr> MHz、<wbr>多链路<wbr>（eMLSR）</td><td>BE</td><td><span class="pill ok"><span aria-hidden="true">✅</span> 可用</span> <span class="snote">320<wbr> MHz <wbr>实机；<wbr>可加入开启 <wbr>MLO <wbr>的<wbr>路由器；<wbr>链路配对<wbr>仍属实验</span></td></tr>
+<tr><td>睡眠<wbr>唤醒、<wbr>固件<wbr>出错<wbr>自动<wbr>恢复</td><td>全部</td><td><span class="pill ok"><span aria-hidden="true">✅</span> 可用</span></td></tr>
+<tr><td>隔空投送 <wbr>/ <wbr>AWDL</td><td>AX、BE</td><td><span class="pill dev"><span aria-hidden="true">🧪</span> 开发中</span> <span class="snote">见<a href="#continuity">接续<wbr>互通</a></span></td></tr>
+<tr><td>即时<wbr>热点<wbr>（在 <wbr><span class="nw">Wi-Fi</span> <wbr>菜单里<wbr>直接连 <wbr>iPhone）</td><td>全部</td><td><span class="pill dev"><span aria-hidden="true">🧪</span> 开发中</span></td></tr>
+</tbody></table></div></div></section>
+<section id="cards"><div class="wrap"><h2>支持<wbr>的<wbr>网卡</h2>
+<div class="table-wrap"><table class="cards"><thead><tr><th>代际</th><th>型<wbr>号</th><th>PCI <wbr>设备 <wbr>ID<wbr>（<code>8086:xxxx</code>）</th><th>驱动层 <wbr>/ <wbr>固件</th></tr></thead><tbody>
+<tr><td><span class="nw">Wi-Fi 7</span></td><td>BE200, BE202, Killer BE1750 x/w</td><td><code>272B</code></td><td>iwx, MLD API 92 (86)</td></tr>
+<tr><td><span class="nw">Wi-Fi 7</span></td><td>BE201, Killer BE1750 i/s</td><td><code>A840</code> <code>7740</code> <code>4D40</code></td><td>iwx, MLD API 92</td></tr>
+<tr><td><span class="nw">Wi-Fi 6E</span></td><td>AX210, AX211, AX411</td><td><code>2725</code> <code>2726</code> <code>7A70</code> <code>7AF0</code> <code>51F0</code> <code>51F1</code> <code>54F0</code> <code>7F70</code> <code>2729</code> <code>7E40</code></td><td>iwx, API 68</td></tr>
+<tr><td><span class="nw">Wi-Fi 6</span></td><td>AX200, AX201, AX1650</td><td><code>2723</code> <code>2720</code> <code>02F0</code> <code>06F0</code> <code>34F0</code> <code>3DF0</code> <code>4DF0</code> <code>43F0</code> <code>A0F0</code></td><td>iwx, API 68</td></tr>
+<tr><td><span class="nw">Wi-Fi 5</span></td><td>9260, 9461, 9462, 9560, 8265, 8260, 7265, 7260, 3168, 3165, 3160</td><td>见 <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/blob/be200-tahoe/AirportItlwm/WCL/Info.plist">Info.plist</a></td><td>iwm</td></tr>
+<tr><td><span class="nw">Wi-Fi 4</span></td><td>6xxx, 5xxx, 4965, 2200, 2230, 1000, 1030, 100, 105, 130, 135</td><td>见 <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/blob/be200-tahoe/AirportItlwm/WCL/Info.plist">Info.plist</a></td><td>iwn</td></tr>
+</tbody></table></div><p>所有<wbr>网卡<wbr>的<wbr>固件<wbr>都<wbr>已<wbr>内置。<wbr>BE <wbr>系列<wbr>按硬件<wbr>版本<wbr>选择<wbr>固件，<wbr>先试<wbr>最<wbr>高<wbr>的<wbr>已适配 <wbr>API。<wbr>暂不<wbr>支持：<wbr><span class="nw">Wi-Fi 7</span> <wbr>的<wbr>「SC」代<wbr>（BE211/BE213，<code>6E70</code> <code>D240</code> <code>D340</code> <code>E340</code> <code>E440</code> <code>9327</code>），<wbr>它<wbr>需要<wbr>本项<wbr>目尚未<wbr>提供<wbr>的<wbr>固件。</p></div></section>
+<section id="install"><div class="wrap"><h2>安装</h2><ol class="steps">
+<li>在 <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/releases">Releases</a> <wbr>下载<wbr>对<wbr>应系统<wbr>的<wbr>包：<wbr>macOS 26 <wbr>用 <code>macOS26-Tahoe</code>，<wbr>macOS 15.2 <wbr>及以上用 <code>macOS15-Sequoia</code>。<wbr>日常<wbr>用 <strong>Release</strong>；<strong>Debug</strong> <wbr>保留<wbr>反馈<wbr>问题<wbr>所需<wbr>的<wbr>诊断<wbr>日志。</li>
+<li>放进 <code>EFI/OC/Kexts/</code>，<wbr>在 <code>Kernel → Add</code> <wbr>里<wbr>添加，<wbr>只保留<wbr>一个 <wbr>Intel <wbr>无线<wbr>驱动。<wbr>一份<wbr>配置同时<wbr>引导<wbr>两个<wbr>系统<wbr>时，<wbr>Tahoe <wbr>版限定 <wbr>Darwin <code>25.0.0</code>–<code>25.99.99</code>，<wbr>Sequoia <wbr>版限定 <code>24.2.0</code>–<code>24.99.99</code>。</li>
+<li>不要<wbr>与 <wbr>OpenCore <wbr>Legacy <wbr>Patcher <wbr>的<wbr>「Modern <wbr>Wireless」根补丁<wbr>或<wbr>任何 <wbr>IO80211 <wbr>/ <wbr>Skywalk <wbr>替换<wbr>混用：<wbr>本<wbr>驱动用<wbr>的<wbr>就是<wbr>系统<wbr>自带<wbr>的<wbr>无线栈。</li>
+<li>保留<wbr>一份<wbr>能<wbr>启动<wbr>的 <wbr>EFI，<wbr>先用 <wbr>U <wbr>盘测试。</li>
+</ol><p>国<wbr>家<wbr>码<wbr>和<wbr>可用<wbr>信道<wbr>由<wbr>周围<wbr>的<wbr>路由<wbr>器经网卡<wbr>自身<wbr>的<wbr>法规<wbr>逻辑<wbr>确定，<wbr>与 <wbr>Linux <wbr>相同，<wbr>不需要<wbr>设置。</p>
+<h3>启动<wbr>参数</h3><div class="table-wrap"><table><thead><tr><th>参数</th><th>作用</th></tr></thead><tbody>
+<tr><td><code>itlwm_he=1</code></td><td>打开 <wbr><span class="nw">802.11ax</span>/be<wbr>（HE/EHT），<wbr>默认关<wbr>闭</td></tr>
+<tr><td><code>itlwm_gl_api=86</code></td><td>BE200/BE202 <wbr>限定固件 <wbr>API 86</td></tr>
+<tr><td><code>-itlawdl …</code></td><td>实验性<wbr>隔空投送，<wbr>见下文，<wbr>不测试<wbr>就<wbr>别加</td></tr>
+</tbody></table></div></div></section>
+<section id="continuity"><div class="wrap"><h2>接续<wbr>互通</h2>
+<p><span class="pill dev"><span aria-hidden="true">🧪</span> 开发中</span></p>
+<h3>即时<wbr>热点</h3><p>蓝牙唤起 <wbr>iPhone <wbr>热点、<wbr>定向<wbr>扫描、<wbr>WPA3 <wbr>关联<wbr>都<wbr>已能<wbr>完成；<wbr>目前 <wbr>iPhone <wbr>在<wbr>四次<wbr>握手后<wbr>立刻<wbr>断开，<wbr>这<wbr>是<wbr>正在<wbr>查<wbr>的<wbr>问题，<wbr>修复<wbr>对<wbr>所有<wbr>网卡<wbr>都有效。</p>
+<h3>隔空投送<wbr>（AWDL）</h3><p><code>awdl0</code> <wbr>已经<wbr>创建，<wbr>由 <wbr>macOS <wbr>自己<wbr>的 <wbr>AWDL <wbr>协议<wbr>栈<wbr>驱动。<wbr>隔空投送<wbr>要求<wbr>网卡<wbr>一边<wbr>留<wbr>在<wbr>你<wbr>的<wbr>网络<wbr>上，<wbr>一边<wbr>在 <wbr>AWDL <wbr>信道<wbr>上<wbr>监听。<wbr>除 <wbr>AX411 <wbr>外所有 <wbr>Intel <wbr>网卡<wbr>都是<wbr>单射频<wbr>（<span class="nw">Wi-Fi 7</span> <wbr>的 <wbr>eMLSR <wbr>也是<wbr>单射频），<wbr>由固<wbr>件<wbr>在<wbr>两者<wbr>之间<wbr>分时：</p><ul>
+<li><strong>AX <wbr>系列</strong>（非 <wbr>MLD <wbr>固件）：<wbr>常驻监<wbr>听器，<wbr>有<wbr>自己<wbr>的<wbr>信道<wbr>上<wbr>下文，<wbr>与 <a target="_blank" rel="noopener noreferrer" href="https://github.com/retropineaple/ForbiddenItlwm">ForbiddenItlwm</a> <wbr>在 <wbr>AX211 <wbr>上<wbr>实现<wbr>双向<wbr>隔空<wbr>的<wbr>做法<wbr>相同。</li>
+<li><strong>BE <wbr>系列</strong>（MLD <wbr>固件）：<wbr>同样<wbr>的<wbr>思路<wbr>换成 <wbr>MLD <wbr>命令集，<wbr>在<wbr>主链<wbr>路旁加<wbr>一条 <wbr>P2P <wbr>客户端链路<wbr>（Linux <wbr>允许<wbr>两条<wbr>不同<wbr>信道<wbr>的<wbr>组合）。<wbr>正在<wbr>按固件自身代码梳理它<wbr>的<wbr>激活<wbr>条件，<wbr>尚未<wbr>走通。</li>
+<li><strong>AC <wbr>及<wbr>更早</strong>：<wbr>不在<wbr>计划内。</li>
+</ul><p>前提<wbr>是<wbr>蓝牙 <wbr>LE <wbr>广播<wbr>与<wbr>扫描<wbr>在 <wbr>macOS <wbr>上<wbr>可用。<wbr>测试包<wbr>附带<wbr>配套<wbr>的 <a target="_blank" rel="noopener noreferrer" href="https://github.com/acidanthera/BrcmPatchRAM">BlueToolFixup</a>，<wbr>支持 <code>-btlfxadvsets</code>（第三<wbr>方控制器<wbr>的<wbr> <wbr>LE <wbr>广<wbr>播集，<wbr>macOS 26.4–26.7.3）<wbr>和 <code>-btlfxrpa</code>（连接<wbr>使用<wbr>私有<wbr>地址<wbr>的<wbr> <wbr>iPhone，<wbr>目前<wbr>支持 <wbr>macOS 26.4 <wbr>与 <wbr>26.7）。<wbr>加<wbr>了 <code>-itlawdl</code> <wbr>时，<wbr>驱动<wbr>先检查 <wbr>Apple <wbr>的 <wbr>AWDL <wbr>接口表<wbr>是否<wbr>与<wbr>编译<wbr>时<wbr>一致<wbr>（I/O <wbr>Registry <wbr>里<wbr>的 <code>AWDLBuildCheck</code>），<wbr>不一致<wbr>就只做普通 <wbr><span class="nw">Wi-Fi</span>，<wbr>系统<wbr>更新<wbr>不会<wbr>因此<wbr>变成<wbr>内核崩溃。<wbr>监听信<wbr>道<wbr>依次<wbr>选 <wbr>149、<wbr>44、<wbr>6，<wbr>只用<wbr>当<wbr>地<wbr>允许<wbr>发射<wbr>的<wbr>信道<wbr>（没有 <wbr>149 <wbr>的<wbr>国家<wbr>用 <wbr>44；<wbr>被<wbr>动信<wbr>道<wbr>在<wbr>听到<wbr>附近<wbr>路<wbr>由器<wbr>的<wbr>信标<wbr>后<wbr>才算可用）。<wbr>149 <wbr>最快：<wbr>路由器<wbr>在 <wbr>149、<wbr>iPhone <wbr>也<wbr>在 <wbr>149 <wbr>或<wbr>没连 <wbr><span class="nw">Wi-Fi</span> <wbr>时隔空速度<wbr>最好。</p></div></section>
+<section id="report"><div class="wrap"><h2>反馈<wbr>问题</h2><p>请<wbr>用 <wbr>Debug <wbr>包。<wbr>先复现<wbr>一次<wbr>问题，<wbr>再运行<wbr>包里<wbr>的 <code>Collect-WiFi-Community.command</code>，<wbr>把<wbr>生成<wbr>的<wbr>压缩<wbr>包附到 <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/issues">GitHub Issue</a>，<wbr>写明<wbr>网卡、<wbr>macOS <wbr>版本、<wbr>路由器<wbr>型号、<wbr>加密<wbr>方式<wbr>和<wbr>操作<wbr>过程；<wbr><span class="nw">Wi-Fi 7</span> <wbr>路由器请<wbr>说明<wbr>是<wbr>否开<wbr>了 <wbr>MLO、<wbr>组合<wbr>了<wbr>哪些<wbr>频段。<wbr>压缩<wbr>包含<wbr>网络元数据，<wbr>可以<wbr>私下<wbr>发送。<wbr>能<wbr>编译<wbr>不等于<wbr>能用，<wbr>请<wbr>写<wbr>你<wbr>在<wbr>自己<wbr>机器上<wbr>看到<wbr>的<wbr>结果。</p><p><a target="_blank" rel="noopener noreferrer" class="btn" href="https://github.com/Ersiter/Eric-AirportItlwm/issues/new">提交 Issue</a></p></div></section>
+<section id="build"><div class="wrap"><h2>编译</h2>
+<div class="code"><button type="button" class="copy" data-copied="已复制" hidden>复制</button><pre><code>git clone https://github.com/acidanthera/MacKernelSDK.git MacKernelSDK
+git -C MacKernelSDK checkout 3f750085caa17ec3a7880f11c11bf4f48cd6a164
+python3 scripts/prepare_tahoe_sdk.py
+xcodebuild -project itlwm.xcodeproj -scheme AirportItlwm-Tahoe   -configuration Release ARCHS=x86_64 CODE_SIGNING_ALLOWED=NO build
+xcodebuild -project itlwm.xcodeproj -scheme AirportItlwm-Sequoia -configuration Release ARCHS=x86_64 CODE_SIGNING_ALLOWED=NO build</code></pre></div>
+<p><span class="nw">Wi-Fi 7</span> <wbr>的<wbr>实现<wbr>说明、<wbr>各阶<wbr>段实机状态<wbr>与<wbr>对应<wbr>的 <wbr>Linux <wbr>代码见 <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/blob/be200-tahoe/BE200.md">BE200.md</a>。</p></div></section>
+<section id="license"><div class="wrap"><h2>许可</h2><p><span class="nw">GPL-2</span>.0，<wbr>沿袭 <wbr>itlwm。<wbr>Intel <wbr>固件<wbr>按其<wbr>自身<wbr>许可<wbr>分发，<wbr>见 <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/blob/be200-tahoe/iwlwifi-firmware-license">Intel <wbr>固件<wbr>许可</a>。<wbr>全文：<a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/blob/be200-tahoe/LICENSE">LICENSE</a>。</p></div></section>
+</main>
+<footer><div class="wrap"><p>Eric-AirportItlwm · <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm">仓库</a> · <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/releases">Releases</a> · <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/issues">Issues</a></p></div></footer>
+</body>
+</html>

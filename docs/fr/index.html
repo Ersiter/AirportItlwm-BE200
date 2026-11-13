@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="fr" data-lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Eric-AirportItlwm : le Wi-Fi natif de macOS pour les cartes Intel, du 802.11n au Wi-Fi 7</title>
+<meta name="description" content="macOS Tahoe 26 et Sequoia 15 · WPA3 · 6 GHz · 802.11be · BE200 / BE201 et toutes les cartes prises en charge par itlwm">
+<link rel="canonical" href="https://ersiter.github.io/Eric-AirportItlwm/fr/">
+<link rel="alternate" hreflang="en" href="https://ersiter.github.io/Eric-AirportItlwm/">
+<link rel="alternate" hreflang="zh-Hans" href="https://ersiter.github.io/Eric-AirportItlwm/zh-hans/">
+<link rel="alternate" hreflang="zh-Hant" href="https://ersiter.github.io/Eric-AirportItlwm/zh-hant/">
+<link rel="alternate" hreflang="de" href="https://ersiter.github.io/Eric-AirportItlwm/de/">
+<link rel="alternate" hreflang="fr" href="https://ersiter.github.io/Eric-AirportItlwm/fr/">
+<link rel="alternate" hreflang="ru" href="https://ersiter.github.io/Eric-AirportItlwm/ru/">
+<link rel="alternate" hreflang="x-default" href="https://ersiter.github.io/Eric-AirportItlwm/">
+<link rel="icon" type="image/png" href="../be200-icon.png">
+<link rel="stylesheet" href="../style.css">
+<script src="../lang.js"></script>
+<script defer src="../app.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Aller au contenu</a>
+<header class="top"><div class="bar">
+<a class="brand" href="#top"><img src="../be200-icon.png" width="28" height="28" alt="">Eric-AirportItlwm</a>
+<button class="burger" type="button" aria-label="Menu" aria-expanded="false" aria-controls="sections"><span></span><span></span><span></span></button>
+<nav id="sections" aria-label="Sections">
+<a href="#lineage">Origines</a>
+<a href="#works">Fonctions</a>
+<a href="#cards">Cartes</a>
+<a href="#install">Installation</a>
+<a href="#continuity">Continuité</a>
+<a href="#report">Signaler</a>
+<a href="#build">Compiler</a>
+<a href="#license">Licence</a>
+</nav>
+<details class="lang">
+<summary aria-label="Language"><span lang="fr">fr</span></summary>
+<ul>
+<li><a href="../" hreflang="en" lang="en" data-lang="en-us">en-US<span>English</span></a></li>
+<li><a href="../zh-hans/" hreflang="zh-Hans" lang="zh-Hans" data-lang="zh-hans">zh-Hans<span>简体中文</span></a></li>
+<li><a href="../zh-hant/" hreflang="zh-Hant" lang="zh-Hant" data-lang="zh-hant">zh-Hant<span>繁體中文</span></a></li>
+<li><a href="../de/" hreflang="de" lang="de" data-lang="de">de<span>Deutsch</span></a></li>
+<li><a href="./" hreflang="fr" lang="fr" data-lang="fr" aria-current="true">fr<span>Français</span></a></li>
+<li><a href="../ru/" hreflang="ru" lang="ru" data-lang="ru">ru<span>Русский</span></a></li>
+</ul>
+</details>
+</div></header>
+<main id="main">
+<section class="hero" id="top"><div class="wrap hero-grid">
+<div class="hero-text">
+<p class="eyebrow">Open source · <span class="nw">GPL-2</span>.0 · x86_64</p>
+<h1>Le <span class="nw">Wi-Fi</span> natif de macOS pour les cartes Intel, du <span class="nw">802.11n</span> au <span class="nw">Wi-Fi 7</span></h1>
+<p class="sub">macOS Tahoe 26 et Sequoia 15 · WPA3 · 6 GHz · <span class="nw">802.11be</span> · <span class="nw">BE200 / BE201</span> et toutes les cartes prises en charge par itlwm</p>
+<p class="lead">AirportItlwm porté du <span class="nw">Wi-Fi 6</span> au <span class="nw">Wi-Fi 7</span> (BE200, BE201), avec AirDrop et le point d'accès instantané en cours de développement. Toutes les cartes déjà prises en charge continuent de fonctionner, avec le <span class="nw">Wi-Fi</span> propre à macOS et sans HeliPort.</p>
+<p class="cta"><a target="_blank" rel="noopener noreferrer" class="btn primary" href="https://github.com/Ersiter/Eric-AirportItlwm/releases/latest">Télécharger depuis Releases</a><a target="_blank" rel="noopener noreferrer" class="btn" href="https://github.com/Ersiter/Eric-AirportItlwm">Voir sur GitHub</a><a target="_blank" rel="noopener noreferrer" class="btn" href="https://github.com/Ersiter/Eric-AirportItlwm/issues">Issues</a></p>
+<p class="credit-line">Construit sur <a target="_blank" rel="noopener noreferrer" href="https://github.com/OpenIntelWireless/itlwm">itlwm</a> et <a target="_blank" rel="noopener noreferrer" href="https://github.com/laobamac/itlwm">laobamac/itlwm</a>. Voir <a href="#lineage">origines et remerciements</a>.</p>
+</div>
+<div class="hero-art"><img src="../be200-icon.png" width="256" height="256" alt="Eric-AirportItlwm"></div>
+</div>
+<div class="wrap"><dl class="stats">
+<div><dt>débit de liaison</dt><dd><span class="num">2882</span> <span class="unit">Mbit/s</span></dd></div>
+<div><dt>émission</dt><dd><span class="num">2.55</span> <span class="unit">Gbit/s</span></dd></div>
+<div><dt>réception</dt><dd><span class="num">1.84</span> <span class="unit">Gbit/s</span></dd></div>
+<div><dt>sur matériel réel</dt><dd><span class="num">320</span> <span class="unit">MHz</span></dd></div>
+</dl><p class="note">Mesuré sur une BE200 : macOS 26, 6 GHz, 320 MHz, deux flux. Les valeurs sont le débit de liaison et le débit mesuré sur l'interface. HE 160 MHz en 5 GHz. Mise en veille : reconnexion immédiate après une veille de n'importe quelle durée (retours de testeurs).</p>
+<ul class="chips"><li>macOS 26 Tahoe</li><li>macOS 15.2+ Sequoia</li><li>x86_64</li><li>GPL-2.0</li></ul></div>
+</section>
+<section class="lineage" id="lineage"><div class="wrap">
+<h2>Origines et remerciements</h2>
+<p class="big">Ce projet n'existe que grâce au code source des autres. Il conserve tout itlwm et AirportItlwm et y ajoute des fonctions ; il ne les remplace pas. Merci à toutes les personnes citées <span class="nw">ci-dessous</span>.</p>
+<ol class="chain">
+<li><strong>itlwm</strong><span><a target="_blank" rel="noopener noreferrer" href="https://github.com/zxystd">zxystd</a> / <a target="_blank" rel="noopener noreferrer" href="https://github.com/OpenIntelWireless/itlwm">OpenIntelWireless</a></span></li>
+<li><strong>laobamac/itlwm</strong><span>L'interface sans fil native d'Apple pour <span class="nw">Tahoe/Sequoia</span></span></li>
+<li><strong>Eric-AirportItlwm</strong><span>Ce dépôt</span></li>
+</ol>
+<p><strong>itlwm</strong> de <a target="_blank" rel="noopener noreferrer" href="https://github.com/zxystd">zxystd</a> / <a target="_blank" rel="noopener noreferrer" href="https://github.com/OpenIntelWireless/itlwm">OpenIntelWireless</a> → <a target="_blank" rel="noopener noreferrer" href="https://github.com/laobamac/itlwm">laobamac/itlwm</a> (l'interface sans fil native d'Apple pour <span class="nw">Tahoe/Sequoia</span>) → ce dépôt : il conserve tout cela et ajoute la couche de transport <span class="nw">Wi-Fi 7</span> et le chemin du micrologiciel MLD, WPA3 SAE/H2E et OWE, le 6 GHz, le 320 MHz et le <span class="nw">multi-lien</span>, en suivant Linux <code>iwlwifi</code> (<code>mld</code>, <code>mvm</code>) et <code>mac80211</code> commande par commande.</p>
+<h3>Remerciements</h3>
+<ul class="credits">
+<li><a target="_blank" rel="noopener noreferrer" href="https://github.com/zxystd">zxystd</a> et <a target="_blank" rel="noopener noreferrer" href="https://github.com/OpenIntelWireless">OpenIntelWireless</a> : itlwm et AirportItlwm</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://github.com/laobamac/itlwm">laobamac</a> : l'interface native IO80211 / Skywalk / WCL pour Tahoe et Sequoia, ainsi que relectures et orientation</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://github.com/openbsd/src">OpenBSD</a>, Stefan Sperling et les contributeurs : net80211, iwn, iwm, iwx et l'implémentation de SAE</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://bearssl.org/">BearSSL</a>, Thomas Pornin : arithmétique <span class="nw">P-256</span> pour SAE</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://github.com/torvalds/linux/tree/master/drivers/net/wireless/intel/iwlwifi">Linux iwlwifi et mac80211</a> : le comportement de référence pour chaque commande du micrologiciel</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://w1.fi/">hostap / wpa_supplicant</a> : référence pour SAE, RSNXE et le comportement de la poignée de main</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://github.com/retropineaple/ForbiddenItlwm">retropineaple/ForbiddenItlwm</a> : AWDL sur les cartes Intel ; l'écouteur AX et la vérification de la table AWDL s'en inspirent</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://github.com/crazyhulk">crazyhulk</a> : travaux préparatoires sur l'interface AWDL et correctifs BLE de BlueToolFixup</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://github.com/seemoo-lab/owl"><span class="nw">seemoo-lab</span>/owl</a> : implémentation ouverte d'AWDL, utilisée comme référence du protocole</li>
+<li><a target="_blank" rel="noopener noreferrer" href="https://github.com/acidanthera">Acidanthera</a> : MacKernelSDK, Lilu, BrcmPatchRAM / BlueToolFixup</li>
+<li>Mieze, pour ses conseils sur le chemin de réception sous macOS</li>
+<li>Les projets cités par itlwm : <a target="_blank" rel="noopener noreferrer" href="https://github.com/AppleIntelWiFi/Black80211-Catalina"><span class="nw">Black80211-Catalina</span></a>, <a target="_blank" rel="noopener noreferrer" href="https://github.com/rpeshkov/black80211">black80211</a>, <a target="_blank" rel="noopener noreferrer" href="https://github.com/mercurysquad/Voodoo80211">Voodoo80211</a>, <span class="nw">usr-sse2</span> et d'autres</li>
+<li>Intel, pour le micrologiciel, distribué sous la <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/blob/be200-tahoe/iwlwifi-firmware-license">licence de micrologiciel d'Intel</a></li>
+<li>Toutes les personnes qui ont fourni routeurs, matériel et journaux</li>
+</ul></div></section>
+<section id="works"><div class="wrap"><h2>Fonctions</h2>
+<div class="table-wrap"><table><thead><tr><th>Fonction</th><th>Cartes</th><th>État</th></tr></thead><tbody>
+<tr><td>Recherche, connexion, itinérance, adresse <span class="nw">Wi-Fi</span> privée</td><td>toutes</td><td><span class="pill ok"><span aria-hidden="true">✅</span> Fonctionne</span></td></tr>
+<tr><td>WPA2 Personnel, WPA2 Entreprise (PEAP), réseaux de transition WPA2/WPA3</td><td>toutes</td><td><span class="pill ok"><span aria-hidden="true">✅</span> Fonctionne</span></td></tr>
+<tr><td>WPA3 Personnel (SAE, H2E), Enhanced Open (OWE)</td><td>toutes</td><td><span class="pill ok"><span aria-hidden="true">✅</span> Fonctionne</span> <span class="snote">sur BE200</span></td></tr>
+<tr><td><span class="nw">802.11ac</span> (VHT), 160 MHz</td><td>AC et plus récentes</td><td><span class="pill ok"><span aria-hidden="true">✅</span> Fonctionne</span></td></tr>
+<tr><td><span class="nw">802.11ax</span> (HE)</td><td>AX et BE</td><td><span class="pill ok"><span aria-hidden="true">✅</span> Fonctionne</span> <span class="snote">avec <code>itlwm_he=1</code></span></td></tr>
+<tr><td>6 GHz</td><td>AX210/AX211/AX411, BE</td><td><span class="pill ok"><span aria-hidden="true">✅</span> Fonctionne</span> <span class="snote">sur BE200</span></td></tr>
+<tr><td><span class="nw">802.11be</span> (EHT), 320 MHz, <span class="nw">multi-lien</span> (eMLSR)</td><td>BE</td><td><span class="pill ok"><span aria-hidden="true">✅</span> Fonctionne</span> <span class="snote">320 MHz sur matériel réel ; un routeur <span class="nw">multi-lien</span> est rejoint ; l'appairage des liens reste expérimental</span></td></tr>
+<tr><td>Veille et réveil, reprise après erreur du micrologiciel</td><td>toutes</td><td><span class="pill ok"><span aria-hidden="true">✅</span> Fonctionne</span></td></tr>
+<tr><td>AirDrop / AWDL</td><td>AX et BE</td><td><span class="pill dev"><span aria-hidden="true">🧪</span> En développement</span> <span class="snote">voir <a href="#continuity">Continuité</a></span></td></tr>
+<tr><td>Point d'accès instantané (iPhone dans le menu <span class="nw">Wi-Fi</span>)</td><td>toutes</td><td><span class="pill dev"><span aria-hidden="true">🧪</span> En développement</span></td></tr>
+</tbody></table></div></div></section>
+<section id="cards"><div class="wrap"><h2>Cartes prises en charge</h2>
+<div class="table-wrap"><table class="cards"><thead><tr><th>Génération</th><th>Cartes</th><th>ID de périphérique PCI (<code>8086:xxxx</code>)</th><th>HAL / micrologiciel</th></tr></thead><tbody>
+<tr><td><span class="nw">Wi-Fi 7</span></td><td>BE200, BE202, Killer BE1750 x/w</td><td><code>272B</code></td><td>iwx, MLD API 92 (86)</td></tr>
+<tr><td><span class="nw">Wi-Fi 7</span></td><td>BE201, Killer BE1750 i/s</td><td><code>A840</code> <code>7740</code> <code>4D40</code></td><td>iwx, MLD API 92</td></tr>
+<tr><td><span class="nw">Wi-Fi 6E</span></td><td>AX210, AX211, AX411</td><td><code>2725</code> <code>2726</code> <code>7A70</code> <code>7AF0</code> <code>51F0</code> <code>51F1</code> <code>54F0</code> <code>7F70</code> <code>2729</code> <code>7E40</code></td><td>iwx, API 68</td></tr>
+<tr><td><span class="nw">Wi-Fi 6</span></td><td>AX200, AX201, AX1650</td><td><code>2723</code> <code>2720</code> <code>02F0</code> <code>06F0</code> <code>34F0</code> <code>3DF0</code> <code>4DF0</code> <code>43F0</code> <code>A0F0</code></td><td>iwx, API 68</td></tr>
+<tr><td><span class="nw">Wi-Fi 5</span></td><td>9260, 9461, 9462, 9560, 8265, 8260, 7265, 7260, 3168, 3165, 3160</td><td>voir <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/blob/be200-tahoe/AirportItlwm/WCL/Info.plist">Info.plist</a></td><td>iwm</td></tr>
+<tr><td><span class="nw">Wi-Fi 4</span></td><td>6xxx, 5xxx, 4965, 2200, 2230, 1000, 1030, 100, 105, 130, 135</td><td>voir <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/blob/be200-tahoe/AirportItlwm/WCL/Info.plist">Info.plist</a></td><td>iwn</td></tr>
+</tbody></table></div><p>Le micrologiciel de chaque carte est intégré à la kext. Pour la famille BE, la révision du matériel choisit le micrologiciel et l'API adaptée la plus élevée est essayée en premier. Pas encore prise en charge : la génération « SC » du <span class="nw">Wi-Fi 7</span> (BE211/BE213, <code>6E70</code> <code>D240</code> <code>D340</code> <code>E340</code> <code>E440</code> <code>9327</code>), qui exige un micrologiciel que ce projet ne fournit pas.</p></div></section>
+<section id="install"><div class="wrap"><h2>Installation</h2><ol class="steps">
+<li>Téléchargez le paquet correspondant à votre macOS depuis <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/releases">Releases</a> : <code>macOS26-Tahoe</code> pour macOS 26, <code>macOS15-Sequoia</code> pour macOS 15.2 ou ultérieur. <strong>Release</strong> pour un usage quotidien ; <strong>Debug</strong> conserve les journaux de diagnostic dont un rapport a besoin.</li>
+<li>Placez la kext dans <code>EFI/OC/Kexts/</code> et <span class="nw">ajoutez-la</span> dans <code>Kernel → Add</code>. N'utilisez qu'une seule kext <span class="nw">Wi-Fi</span> Intel. Si une même configuration démarre les deux systèmes, limitez la kext Tahoe à Darwin <code>25.0.0</code>–<code>25.99.99</code> et la kext Sequoia à <code>24.2.0</code>–<code>24.99.99</code>.</li>
+<li>Ne la combinez pas avec les correctifs racine « Modern Wireless » d'OpenCore Legacy Patcher ni avec un remplacement d'IO80211 / Skywalk : ce pilote utilise la pile <span class="nw">Wi-Fi</span> du système <span class="nw">elle-même</span>.</li>
+<li>Gardez une copie amorçable de votre EFI et testez d'abord depuis une clé USB.</li>
+</ol><p>Le pays et les canaux qui y sont autorisés viennent des réseaux environnants, grâce à la logique de réglementation de la carte <span class="nw">elle-même</span>, comme sous Linux. Il n'y a rien à régler.</p>
+<h3>Arguments de démarrage</h3><div class="table-wrap"><table><thead><tr><th>Argument</th><th>Effet</th></tr></thead><tbody>
+<tr><td><code>itlwm_he=1</code></td><td>Active le <span class="nw">802.11ax</span>/be (HE/EHT). Désactivé par défaut</td></tr>
+<tr><td><code>itlwm_gl_api=86</code></td><td>Limite les BE200/BE202 à l'API 86 du micrologiciel</td></tr>
+<tr><td><code>-itlawdl …</code></td><td>AirDrop expérimental, voir <span class="nw">ci-dessous</span>. À n'utiliser que pour tester</td></tr>
+</tbody></table></div></div></section>
+<section id="continuity"><div class="wrap"><h2>Continuité</h2>
+<p><span class="pill dev"><span aria-hidden="true">🧪</span> En développement</span></p>
+<h3>Point d'accès instantané</h3><p>Le réveil Bluetooth du point d'accès de l'iPhone, le balayage dirigé et l'association WPA3 fonctionnent ; pour l'instant, l'iPhone coupe la liaison juste après la poignée de main à quatre voies. C'est le bogue ouvert, et la correction vaut pour toutes les cartes.</p>
+<h3>AirDrop (AWDL)</h3><p><code>awdl0</code> est créée et c'est la pile AWDL de macOS <span class="nw">elle-même</span> qui la pilote. AirDrop exige que la carte écoute sur le canal AWDL tout en restant sur votre réseau. Toutes les cartes Intel sauf l'AX411 n'ont qu'une seule radio (l'eMLSR du <span class="nw">Wi-Fi 7</span> est aussi une radio unique), si bien que le micrologiciel se partage le temps entre les deux :</p><ul>
+<li><strong>Cartes AX</strong> (micrologiciel sans MLD) : un écouteur permanent avec son propre contexte de canal, la construction que <a target="_blank" rel="noopener noreferrer" href="https://github.com/retropineaple/ForbiddenItlwm">ForbiddenItlwm</a> fait tourner sur l'AX211 avec AirDrop dans les deux sens.</li>
+<li><strong>Cartes BE</strong> (micrologiciel MLD) : la même idée avec le jeu de commandes MLD, sous la forme d'un lien client P2P à côté du lien station (la combinaison que Linux autorise sur deux canaux). Les règles d'activation du micrologiciel sont en cours d'élucidation à partir de son propre code ; ne fonctionne pas encore.</li>
+<li><strong>AC et plus anciennes :</strong> non prévu.</li>
+</ul><p>La publicité et le balayage Bluetooth LE doivent d'abord fonctionner sous macOS. Les paquets de test embarquent un <a target="_blank" rel="noopener noreferrer" href="https://github.com/acidanthera/BrcmPatchRAM">BlueToolFixup</a> assorti avec <code>-btlfxadvsets</code> (ensembles de publicité LE pour contrôleurs tiers, macOS 26.4–26.7.3) et <code>-btlfxrpa</code> (connexion à un iPhone qui utilise une adresse privée ; macOS 26.4 et 26.7 pour l'instant). Avec <code>-itlawdl</code>, le pilote vérifie d'abord que la table d'interface AWDL d'Apple a la disposition pour laquelle il a été compilé (<code>AWDLBuildCheck</code> dans l'I/O Registry), sinon il fonctionne comme un simple <span class="nw">Wi-Fi</span> : une mise à jour de macOS ne peut donc pas provoquer de kernel panic. Le canal d'écoute est 149, puis 44, puis 6, et seulement un canal sur lequel le pays autorise l'émission (44 là où il n'y a pas de 149 ; un canal passif dès qu'un routeur voisin y émet des balises). Le 149 est le plus rapide : routeurs sur 149 et iPhone sur 149 ou hors <span class="nw">Wi-Fi</span> donnent la meilleure vitesse AirDrop.</p></div></section>
+<section id="report"><div class="wrap"><h2>Signaler un problème</h2><p>Utilisez le paquet Debug. Reproduisez le problème une fois, puis lancez <code>Collect-WiFi-Community.command</code> depuis le paquet et joignez l'archive à un <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/issues">ticket GitHub</a> avec votre carte, la version de macOS, le modèle du routeur, le mode de sécurité et ce que vous avez fait. Pour un routeur <span class="nw">Wi-Fi 7</span>, indiquez si le MLO est activé et quelles bandes il combine. L'archive contient des métadonnées réseau : <span class="nw">envoyez-la</span> en privé si vous préférez. Une version qui compile n'est pas un résultat ; dites ce que vous avez observé sur votre machine.</p><p><a target="_blank" rel="noopener noreferrer" class="btn" href="https://github.com/Ersiter/Eric-AirportItlwm/issues/new">Ouvrir un ticket</a></p></div></section>
+<section id="build"><div class="wrap"><h2>Compiler</h2>
+<div class="code"><button type="button" class="copy" data-copied="Copié" hidden>Copier</button><pre><code>git clone https://github.com/acidanthera/MacKernelSDK.git MacKernelSDK
+git -C MacKernelSDK checkout 3f750085caa17ec3a7880f11c11bf4f48cd6a164
+python3 scripts/prepare_tahoe_sdk.py
+xcodebuild -project itlwm.xcodeproj -scheme AirportItlwm-Tahoe   -configuration Release ARCHS=x86_64 CODE_SIGNING_ALLOWED=NO build
+xcodebuild -project itlwm.xcodeproj -scheme AirportItlwm-Sequoia -configuration Release ARCHS=x86_64 CODE_SIGNING_ALLOWED=NO build</code></pre></div>
+<p>Les notes d'implémentation du <span class="nw">Wi-Fi 7</span>, l'état du matériel étape par étape et les références Linux sont dans <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/blob/be200-tahoe/BE200.md">BE200.md</a> (en anglais).</p></div></section>
+<section id="license"><div class="wrap"><h2>Licence</h2><p><span class="nw">GPL-2</span>.0, héritée d'itlwm. Le micrologiciel Intel est distribué sous sa propre licence : voir la <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/blob/be200-tahoe/iwlwifi-firmware-license">licence de micrologiciel d'Intel</a>. Texte complet : <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/blob/be200-tahoe/LICENSE">LICENSE</a>.</p></div></section>
+</main>
+<footer><div class="wrap"><p>Eric-AirportItlwm · <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm">Dépôt</a> · <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/releases">Releases</a> · <a target="_blank" rel="noopener noreferrer" href="https://github.com/Ersiter/Eric-AirportItlwm/issues">Issues</a></p></div></footer>
+</body>
+</html>
